@@ -12,6 +12,7 @@ import argparse
 import copy
 import json
 import math
+import re
 import sys
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -23,6 +24,7 @@ POLICY_PATH = Path(__file__).with_name("evaluation-policy.v0.json")
 POLICY_CONTRACT = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 SCHEMA_VERSION = POLICY_CONTRACT["properties"]["schema_version"]["const"]
 METHODOLOGY_REFERENCE = POLICY_CONTRACT["properties"]["methodology_reference"]["const"]
+ID_RE = re.compile(POLICY_CONTRACT["$defs"]["id"]["pattern"])
 
 REQUIRED_GATE_IDS = {"eligibility", "language", "location_logistics"}
 REQUIRED_DIMENSION_IDS = {
@@ -85,6 +87,7 @@ def validate_evaluation_policy(policy: Any) -> None:
     _object_shape(policy, required, required, "$", errors)
     if policy.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"$.schema_version: unsupported policy version; expected {SCHEMA_VERSION!r}")
+    _id(policy.get("id"), "$.id", errors)
     if policy.get("methodology_reference") != METHODOLOGY_REFERENCE:
         errors.append(f"$.methodology_reference: must point to the canonical methodology")
 
@@ -207,6 +210,7 @@ def evaluate_scores(
     validate_evaluation_policy(policy)
     normalized_gates = _normalized_gate_results(gate_results, policy)
     blocking_gate_ids = _blocking_gate_ids(normalized_gates, policy)
+    scores = _validated_dimension_scores(dimension_scores, policy)
     flags = [
         {"gate_id": gate["gate_id"], "status": gate["status"], "reason": gate.get("reason")}
         for gate in normalized_gates
@@ -216,7 +220,7 @@ def evaluate_scores(
     result = {
         "policy_version": policy["schema_version"],
         "gate_results": normalized_gates,
-        "dimension_scores": copy.deepcopy(dimension_scores),
+        "dimension_scores": scores,
         "overall_score": None,
         "verdict": None,
         "blocked": bool(blocking_gate_ids),
@@ -228,7 +232,6 @@ def evaluate_scores(
         result["notes"].append("Scoring blocked by hard-stop gate failure.")
         return result
 
-    scores = _validated_dimension_scores(dimension_scores, policy)
     overall = calculate_overall_score(scores, policy)
     result["dimension_scores"] = scores
     result["overall_score"] = overall
@@ -266,24 +269,36 @@ def _validate_gates(value: Any, errors: list[str]) -> set[str]:
         ):
             continue
         gate_id = gate.get("id")
-        _nonempty_string(gate_id, f"{path}.id", errors)
+        _id(gate_id, f"{path}.id", errors)
         if isinstance(gate_id, str):
             if gate_id in ids:
                 errors.append(f"{path}.id: duplicate gate id {gate_id!r}")
             ids.add(gate_id)
         _nonempty_string(gate.get("display_name"), f"{path}.display_name", errors)
         _nonempty_string(gate.get("description"), f"{path}.description", errors)
+        status_sets: dict[str, set[str]] = {}
         for field in (
             "blocking_statuses",
             "warning_statuses",
             "unverified_statuses",
             "proceed_statuses",
         ):
-            for item_index, status in enumerate(_string_list(gate.get(field), f"{path}.{field}", errors)):
+            statuses = _string_list(gate.get(field), f"{path}.{field}", errors)
+            status_sets[field] = set(statuses)
+            for item_index, status in enumerate(statuses):
                 if status not in GATE_STATUSES:
                     errors.append(f"{path}.{field}[{item_index}]: unknown gate status {status!r}")
-        if "FAIL" not in gate.get("blocking_statuses", []):
+        if "FAIL" not in status_sets.get("blocking_statuses", set()):
             errors.append(f"{path}.blocking_statuses: FAIL must be blocking")
+        contradictions = (
+            status_sets.get("blocking_statuses", set())
+            & status_sets.get("proceed_statuses", set())
+        )
+        if contradictions:
+            errors.append(
+                f"{path}: blocking_statuses and proceed_statuses overlap: "
+                f"{', '.join(sorted(contradictions))}"
+            )
     return ids
 
 
@@ -302,7 +317,7 @@ def _validate_dimensions(value: Any, errors: list[str]) -> set[str]:
         ):
             continue
         dimension_id = dimension.get("id")
-        _nonempty_string(dimension_id, f"{path}.id", errors)
+        _id(dimension_id, f"{path}.id", errors)
         if isinstance(dimension_id, str):
             if dimension_id in ids:
                 errors.append(f"{path}.id: duplicate dimension id {dimension_id!r}")
@@ -345,7 +360,7 @@ def _validate_contiguous_bands(value: Any, parent_path: str, errors: list[str]) 
                 f"{path}.max_score_exclusive",
                 errors,
             )
-        _nonempty_string(band.get("label"), f"{path}.label", errors)
+        _id(band.get("label"), f"{path}.label", errors)
         _nonempty_string(band.get("description"), f"{path}.description", errors)
         if minimum is None:
             continue
@@ -376,7 +391,7 @@ def _validate_verdict_thresholds(value: Any, errors: list[str]) -> None:
         ):
             continue
         verdict_id = threshold.get("id")
-        _nonempty_string(verdict_id, f"{path}.id", errors)
+        _id(verdict_id, f"{path}.id", errors)
         if isinstance(verdict_id, str):
             if verdict_id in ids:
                 errors.append(f"{path}.id: duplicate verdict id {verdict_id!r}")
@@ -579,6 +594,11 @@ def _string_list(value: Any, path: str, errors: list[str]) -> list[str]:
 def _nonempty_string(value: Any, path: str, errors: list[str]) -> None:
     if not isinstance(value, str) or not value.strip():
         errors.append(f"{path}: must be a non-empty string")
+
+
+def _id(value: Any, path: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or not ID_RE.fullmatch(value):
+        errors.append(f"{path}: must match schema id pattern {ID_RE.pattern!r}")
 
 
 def _finite_decimal(value: Any, path: str, errors: list[str]) -> Decimal | None:

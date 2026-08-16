@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import product.evaluation_policy as evaluation_policy
 from product.evaluation_policy import (
     EXPERIENCE_MATCH_CLASSES,
     GATE_STATUSES,
@@ -208,6 +209,27 @@ class EvaluationPolicyTests(unittest.TestCase):
         self.assertIsNone(result["overall_score"])
         self.assertIsNone(result["verdict"])
 
+    def test_hard_gate_fail_does_not_hide_malformed_dimension_scores(self):
+        cases = [
+            ("missing", lambda scores: scores.pop("career_alignment")),
+            ("unknown", lambda scores: scores.__setitem__("salary", 100)),
+            ("non_numeric", lambda scores: scores.__setitem__("technical_skills", "high")),
+            ("nan", lambda scores: scores.__setitem__("technical_skills", math.nan)),
+            ("infinity", lambda scores: scores.__setitem__("technical_skills", math.inf)),
+            ("below_range", lambda scores: scores.__setitem__("technical_skills", -1)),
+            ("above_range", lambda scores: scores.__setitem__("technical_skills", 101)),
+        ]
+        for label, mutate in cases:
+            with self.subTest(case=label):
+                scores = valid_scores()
+                mutate(scores)
+                self.assert_input_invalid(
+                    lambda: evaluate_scores(
+                        scores,
+                        {**passing_gates(), "eligibility": "FAIL"},
+                    )
+                )
+
     def test_flag_does_not_block(self):
         result = evaluate_scores(
             valid_scores(),
@@ -226,11 +248,33 @@ class EvaluationPolicyTests(unittest.TestCase):
 
         policy = valid_policy()
         policy["gates"][0]["blocking_statuses"].append("UNVERIFIED")
+        policy["gates"][0]["proceed_statuses"].remove("UNVERIFIED")
         validate_evaluation_policy(policy)
         result = evaluate_scores(valid_scores(), {**passing_gates(), "eligibility": "UNVERIFIED"}, policy)
 
         self.assertTrue(result["blocked"])
         self.assertEqual(result["blocking_gate_ids"], ["eligibility"])
+
+    def test_gate_status_arrays_reject_wrong_structural_types_without_raw_exceptions(self):
+        malformed_values = [None, {}, "FAIL", 1]
+        fields = [
+            "blocking_statuses",
+            "warning_statuses",
+            "unverified_statuses",
+            "proceed_statuses",
+        ]
+        for field in fields:
+            for value in malformed_values:
+                with self.subTest(field=field, value=repr(value)):
+                    policy = valid_policy()
+                    policy["gates"][0][field] = value
+                    self.assert_policy_invalid(policy, "must be an array")
+
+    def test_contradictory_blocking_and_proceeding_gate_status_rejected(self):
+        policy = valid_policy()
+        policy["gates"][0]["blocking_statuses"].append("UNVERIFIED")
+
+        self.assert_policy_invalid(policy, "blocking_statuses and proceed_statuses overlap")
 
     def test_multiple_blocking_gates_reported(self):
         result = evaluate_scores(
@@ -390,6 +434,47 @@ class EvaluationPolicyTests(unittest.TestCase):
         policy["llm_prompt"] = "score this candidate"
 
         self.assert_policy_invalid(policy, "unsupported field")
+
+    def test_python_identifier_validation_uses_schema_pattern(self):
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            evaluation_policy.ID_RE.pattern,
+            schema["$defs"]["id"]["pattern"],
+        )
+
+    def test_policy_id_must_match_schema_identifier_pattern(self):
+        policy = valid_policy()
+        policy["id"] = "Default Job Fit Policy"
+
+        self.assert_policy_invalid(policy, "schema id pattern")
+
+    def test_gate_dimension_verdict_and_band_ids_match_schema_identifier_pattern(self):
+        cases = [
+            ("gate", lambda policy: policy["gates"][0].__setitem__("id", "Eligibility")),
+            (
+                "dimension",
+                lambda policy: policy["dimensions"][0].__setitem__(
+                    "id", "technical-skills"
+                ),
+            ),
+            (
+                "verdict",
+                lambda policy: policy["verdict_thresholds"][0].__setitem__(
+                    "id", "poor fit"
+                ),
+            ),
+            (
+                "band",
+                lambda policy: policy["dimensions"][0]["bands"][0].__setitem__(
+                    "label", "fundamental-mismatch"
+                ),
+            ),
+        ]
+        for label, mutate in cases:
+            with self.subTest(identifier=label):
+                policy = valid_policy()
+                mutate(policy)
+                self.assert_policy_invalid(policy, "schema id pattern")
 
 
 if __name__ == "__main__":
