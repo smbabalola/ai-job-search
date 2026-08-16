@@ -380,6 +380,7 @@ def _build_result(
     provider: JobUnderstandingProvider,
 ) -> dict[str, Any]:
     candidate = response.payload
+    rejection_counts: dict[str, int] = {}
     result = _empty_result(
         request,
         status="READY",
@@ -394,12 +395,7 @@ def _build_result(
     for proposal in candidate["items"]:
         citation = _resolve_quote(request["source"], proposal["quote"], proposal.get("occurrence"))
         if citation is None:
-            result["warnings"].append(
-                _rejection_warning(
-                    proposal["proposal_id"],
-                    "exact quote occurrence is ambiguous",
-                )
-            )
+            _count_rejection(rejection_counts, "ambiguous_quote_occurrence")
             continue
         if proposal["certainty"] != "explicit":
             result["suggestions"].append(
@@ -444,16 +440,12 @@ def _build_result(
                 request["source"], proposal["quote"], proposal.get("occurrence")
             )
             if citation is None:
-                result["warnings"].append(
-                    _rejection_warning(
-                        proposal["proposal_id"],
-                        "exact quote occurrence is ambiguous",
-                    )
-                )
+                _count_rejection(rejection_counts, "ambiguous_quote_occurrence")
                 continue
             result[field].append(
                 _review_record(proposal, proposal["reason"], citation, request["source"])
             )
+    result["warnings"].extend(_aggregated_rejection_warnings(rejection_counts))
     if candidate["warnings"]:
         result["warnings"].append(
             f"Provider returned {len(candidate['warnings'])} warning message(s); "
@@ -535,14 +527,7 @@ def _resolve_quote(
     source: dict[str, Any], quote: str, occurrence: int | None
 ) -> dict[str, Any] | None:
     text = source["text"]
-    starts: list[int] = []
-    cursor = 0
-    while True:
-        position = text.find(quote, cursor)
-        if position < 0:
-            break
-        starts.append(position)
-        cursor = position + 1
+    starts = _exact_occurrence_starts(text, quote)
     if not starts:
         raise JobUnderstandingValidationError(
             "$.candidate: proposed quote does not occur exactly in selected source"
@@ -567,6 +552,20 @@ def _resolve_quote(
     }
 
 
+def _exact_occurrence_starts(text: str, quote: str) -> list[int]:
+    """Return overlapping exact-match starts in deterministic source order."""
+
+    starts: list[int] = []
+    cursor = 0
+    while True:
+        position = text.find(quote, cursor)
+        if position < 0:
+            break
+        starts.append(position)
+        cursor = position + 1
+    return starts
+
+
 def _review_record(
     proposal: dict[str, Any],
     reason: str,
@@ -589,11 +588,21 @@ def _review_record(
     return record
 
 
-def _rejection_warning(proposal_id: str, reason: str) -> str:
-    """Return bounded local metadata without retaining provider assertion text."""
+def _count_rejection(counts: dict[str, int], reason: str) -> None:
+    counts[reason] = counts.get(reason, 0) + 1
 
-    proposal_fingerprint = hashlib.sha256(proposal_id.encode("utf-8")).hexdigest()[:16]
-    return f"Provider proposal {proposal_fingerprint} was not retained: {reason}."
+
+def _aggregated_rejection_warnings(counts: dict[str, int]) -> list[str]:
+    """Return bounded local summaries without provider IDs or assertion text."""
+
+    warnings: list[str] = []
+    ambiguous_count = counts.get("ambiguous_quote_occurrence", 0)
+    if ambiguous_count:
+        warnings.append(
+            f"{ambiguous_count} provider proposal(s) were not retained because "
+            "the exact quote occurrence was ambiguous."
+        )
+    return warnings
 
 
 def _accepted_item_id(category: str, kind: str, citation: dict[str, Any]) -> str:
@@ -904,10 +913,19 @@ def _validate_citation(
         and isinstance(end, int) and not isinstance(end, bool)
         and isinstance(value.get("quote"), str)
     ):
+        quote = value["quote"]
         if end <= start or end > len(source["text"]):
             errors.append(f"{path}: citation span is outside source bounds")
-        elif source["text"][start:end] != value["quote"]:
+        elif end != start + len(quote):
+            errors.append(f"{path}.end: must equal start plus exact quote length")
+        elif source["text"][start:end] != quote:
             errors.append(f"{path}: citation quote does not match source span")
+        if isinstance(occurrence, int) and not isinstance(occurrence, bool) and occurrence >= 0:
+            starts = _exact_occurrence_starts(source["text"], quote)
+            if occurrence >= len(starts):
+                errors.append(f"{path}.occurrence: outside exact quote occurrences")
+            elif starts[occurrence] != start:
+                errors.append(f"{path}.occurrence: does not identify the cited source span")
 
 
 def _validate_result_review_records(

@@ -429,6 +429,62 @@ class ReviewSeparationTests(Ticket6TestCase):
         self.assertEqual(citation["occurrence"], 1)
         self.assertEqual(citation["start"], snapshot()["raw_text"].rindex("Repeated phrase."))
 
+    def test_final_validation_accepts_correct_second_occurrence(self):
+        job = snapshot()
+        candidate = one_item("Repeated phrase.", proposal_id="proposal-second-valid")
+        candidate["items"][0]["occurrence"] = 1
+        request = build_job_understanding_request(job, "request-second-valid")
+        result = extract_job_understanding(
+            job,
+            DeterministicFakeProvider(candidate),
+            "request-second-valid",
+        )
+        validate_job_understanding_result(job, request, result)
+
+    def test_final_validation_rejects_occurrence_that_points_to_other_span(self):
+        job = snapshot()
+        candidate = one_item("Repeated phrase.", proposal_id="proposal-second-forged")
+        candidate["items"][0]["occurrence"] = 1
+        request = build_job_understanding_request(job, "request-second-forged")
+        result = extract_job_understanding(
+            job,
+            DeterministicFakeProvider(candidate),
+            "request-second-forged",
+        )
+        result["requirements"][0]["citations"][0]["occurrence"] = 0
+        self.assert_invalid(
+            lambda: validate_job_understanding_result(job, request, result),
+            "does not identify the cited source span",
+        )
+
+    def test_final_validation_rejects_out_of_range_occurrence(self):
+        job = snapshot()
+        request = build_job_understanding_request(job, "request-occurrence-range")
+        result = extract_job_understanding(
+            job,
+            DeterministicFakeProvider(one_item()),
+            "request-occurrence-range",
+        )
+        result["requirements"][0]["citations"][0]["occurrence"] = 7
+        self.assert_invalid(
+            lambda: validate_job_understanding_result(job, request, result),
+            "outside exact quote occurrences",
+        )
+
+    def test_final_validation_rejects_nonzero_single_occurrence(self):
+        job = snapshot()
+        request = build_job_understanding_request(job, "request-single-forged")
+        result = extract_job_understanding(
+            job,
+            DeterministicFakeProvider(one_item()),
+            "request-single-forged",
+        )
+        result["requirements"][0]["citations"][0]["occurrence"] = 1
+        self.assert_invalid(
+            lambda: validate_job_understanding_result(job, request, result),
+            "outside exact quote occurrences",
+        )
+
     def test_unknown_kind_is_grounded_but_requires_review(self):
         candidate = one_item(kind="unknown")
         result = extract_job_understanding(
@@ -524,6 +580,48 @@ class ReviewSeparationTests(Ticket6TestCase):
         )
         self.assertEqual(result["suggestions"], [])
         self.assertEqual(len(result["warnings"]), 1)
+
+    def test_many_repeated_quote_rejections_are_aggregated_and_bounded(self):
+        candidate = empty_candidate()
+        for index in range(40):
+            candidate["items"].append(
+                {
+                    "proposal_id": f"proposal-item-{index}",
+                    "category": "requirements",
+                    "kind": "required",
+                    "quote": "Repeated phrase.",
+                    "certainty": "explicit",
+                }
+            )
+            candidate["suggestions"].append(
+                {
+                    "proposal_id": f"proposal-suggestion-{index}",
+                    "text": f"Provider assertion text suggestion {index}",
+                    "reason": "Repeated wording",
+                    "quote": "Repeated phrase.",
+                }
+            )
+            candidate["ambiguous_statements"].append(
+                {
+                    "proposal_id": f"proposal-ambiguity-{index}",
+                    "text": f"Provider assertion text ambiguity {index}",
+                    "reason": "Repeated wording",
+                    "quote": "Repeated phrase.",
+                }
+            )
+        result = extract_job_understanding(
+            snapshot(),
+            DeterministicFakeProvider(candidate),
+            "extract-many-rejections",
+        )
+        self.assertEqual(result["requirements"], [])
+        self.assertEqual(result["suggestions"], [])
+        self.assertEqual(result["ambiguous_statements"], [])
+        self.assertEqual(result["status"], "NEEDS_REVIEW")
+        self.assertLessEqual(len(result["warnings"]), 100)
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("120 provider proposal(s)", result["warnings"][0])
+        self.assertNotIn("Provider assertion text", result["warnings"][0])
 
     def test_arbitrary_provider_warning_content_is_not_retained(self):
         candidate = empty_candidate()
@@ -700,7 +798,7 @@ class ResultTrustBoundaryTests(Ticket6TestCase):
         result["ambiguous_statements"][0]["citation"]["start"] = 0
         self.assert_invalid(
             lambda: validate_job_understanding_result(job, request, result),
-            "does not match source span",
+            "does not identify the cited source span",
         )
 
     def test_result_rejects_duplicate_accepted_ids(self):
