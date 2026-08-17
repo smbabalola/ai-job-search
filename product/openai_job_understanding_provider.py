@@ -34,6 +34,43 @@ REQUEST_TIMEOUT_SECONDS = 60.0
 MAX_RETRY_AFTER_SECONDS = 15.0
 DEFAULT_RETRY_DELAY_SECONDS = 1.0
 OPENAI_RESPONSE_SCHEMA_NAME = "job_understanding_candidate_v0"
+OPENAI_SUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "$ref",
+        "additionalProperties",
+        "anyOf",
+        "const",
+        "enum",
+        "items",
+        "maxItems",
+        "maximum",
+        "minimum",
+        "multipleOf",
+        "pattern",
+        "properties",
+        "required",
+        "type",
+    }
+)
+# The product validator remains authoritative for these constraints. They are
+# intentionally omitted only from the strict OpenAI Structured Outputs schema.
+OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS = frozenset({"minLength", "maxLength"})
+OPENAI_SCHEMA_DIAGNOSTIC_KEYWORDS = frozenset(
+    OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS
+    | {
+        "allOf",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "if",
+        "not",
+        "oneOf",
+        "patternProperties",
+        "then",
+        "uniqueItems",
+    }
+)
 OPTIONAL_PRODUCT_FIELDS = frozenset(
     {
         ("providerItem", "occurrence"),
@@ -107,8 +144,9 @@ class OpenAIJobUnderstandingProvider:
             except Exception as exc:
                 failure = _classify_exception(exc)
                 if not failure["retryable"] or attempt_count >= MAX_ATTEMPTS:
+                    diagnostic = _live_api_diagnostic(exc, self._environ)
                     raise JobUnderstandingProviderError(
-                        f"openai provider failed: {failure['category']}"
+                        f"openai provider failed: {failure['category']}{diagnostic}"
                     ) from None
                 self._sleep(_retry_delay(exc))
 
@@ -210,7 +248,7 @@ def openai_call_parameters(
 
 
 def openai_candidate_schema() -> dict[str, Any]:
-    """Derive OpenAI's required/nullable wire schema from the product schema."""
+    """Derive the strict OpenAI-dialect wire schema from the product schema."""
 
     root = copy.deepcopy(SCHEMA["$defs"]["candidateResponse"])
     reachable = _reachable_definitions(root)
@@ -235,7 +273,7 @@ def openai_candidate_schema() -> dict[str, Any]:
     }
     converted_root = _require_and_nullable(root, definition_name="candidateResponse")
     converted_root["$defs"] = converted_defs
-    return converted_root
+    return _project_openai_schema(converted_root)
 
 
 def normalize_openai_candidate(value: Any) -> Any:
@@ -336,6 +374,48 @@ def _require_and_nullable(value: Any, *, definition_name: str) -> Any:
     return converted
 
 
+def _project_openai_schema(value: Any, *, path: str = "$") -> Any:
+    """Project reviewed product-schema features into OpenAI's strict dialect."""
+
+    if not isinstance(value, dict):
+        raise JobUnderstandingProviderError(
+            f"openai schema translation expected an object at {path}"
+        )
+    projected: dict[str, Any] = {}
+    for keyword, child in value.items():
+        if keyword in OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS:
+            continue
+        if keyword not in OPENAI_SUPPORTED_SCHEMA_KEYWORDS:
+            raise JobUnderstandingProviderError(
+                f"openai schema translation found unreviewed keyword {keyword!r} at {path}"
+            )
+        if keyword in {"properties", "$defs"}:
+            if not isinstance(child, dict):
+                raise JobUnderstandingProviderError(
+                    f"openai schema translation expected an object at {path}.{keyword}"
+                )
+            projected[keyword] = {
+                name: _project_openai_schema(schema, path=f"{path}.{keyword}.{name}")
+                for name, schema in child.items()
+            }
+        elif keyword == "items":
+            projected[keyword] = _project_openai_schema(
+                child, path=f"{path}.{keyword}"
+            )
+        elif keyword == "anyOf":
+            if not isinstance(child, list):
+                raise JobUnderstandingProviderError(
+                    f"openai schema translation expected a list at {path}.{keyword}"
+                )
+            projected[keyword] = [
+                _project_openai_schema(schema, path=f"{path}.{keyword}[{index}]")
+                for index, schema in enumerate(child)
+            ]
+        else:
+            projected[keyword] = copy.deepcopy(child)
+    return projected
+
+
 def _decode_response(response: Any) -> Any:
     if response is None:
         raise JobUnderstandingProviderError("openai provider returned no response")
@@ -411,6 +491,53 @@ def _classify_exception(exc: Exception) -> dict[str, Any]:
             return {"category": "authentication", "retryable": False}
         return {"category": f"http_{status}", "retryable": False}
     return {"category": "sdk_error", "retryable": False}
+
+
+def _live_api_diagnostic(exc: Exception, environ: Mapping[str, str]) -> str:
+    """Return bounded schema diagnostics only for the opt-in live-test path."""
+
+    if environ.get("RUN_OPENAI_LIVE_TESTS") != "1":
+        return ""
+    if getattr(exc, "status_code", None) != 400:
+        return ""
+    error = _api_error_fields(exc)
+    details: list[str] = []
+    for field in ("code", "param"):
+        safe = _safe_diagnostic_token(error.get(field), limit=160)
+        if safe is not None:
+            details.append(f"{field}={safe}")
+    message = error.get("message")
+    if isinstance(message, str):
+        for keyword in sorted(OPENAI_SCHEMA_DIAGNOSTIC_KEYWORDS):
+            if keyword in message:
+                details.append(f"schema_keyword={keyword}")
+                break
+    return f" [{'; '.join(details)}]" if details else ""
+
+
+def _api_error_fields(exc: Exception) -> dict[str, Any]:
+    fields = {
+        "code": getattr(exc, "code", None),
+        "param": getattr(exc, "param", None),
+        "message": getattr(exc, "message", None),
+    }
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        nested = body.get("error", body)
+        if isinstance(nested, dict):
+            for field in fields:
+                if fields[field] is None:
+                    fields[field] = nested.get(field)
+    return fields
+
+
+def _safe_diagnostic_token(value: Any, *, limit: int) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > limit:
+        return None
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.$:-[]")
+    if any(character not in allowed for character in value):
+        return None
+    return value
 
 
 def _retry_delay(exc: Exception) -> float:

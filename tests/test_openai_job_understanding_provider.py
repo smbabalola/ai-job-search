@@ -26,6 +26,8 @@ from product.openai_job_understanding_provider import (
     MAX_RETRY_AFTER_SECONDS,
     MAX_SOURCE_CHARACTERS,
     OPENAI_MODEL,
+    OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS,
+    OPENAI_SUPPORTED_SCHEMA_KEYWORDS,
     OpenAIJobUnderstandingProvider,
     normalize_openai_candidate,
     openai_call_parameters,
@@ -103,8 +105,11 @@ class FakeClient:
 def provider(outcomes, **kwargs):
     client = FakeClient(outcomes)
     times = iter([10.0, 10.125])
+    environ = {"OPENAI_API_KEY": "test-secret-key"}
+    if kwargs.get("live_debug"):
+        environ["RUN_OPENAI_LIVE_TESTS"] = "1"
     instance = OpenAIJobUnderstandingProvider(
-        environ={"OPENAI_API_KEY": "test-secret-key"},
+        environ=environ,
         client_factory=lambda _: client,
         clock=lambda: next(times),
         utc_now=lambda: datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc),
@@ -114,6 +119,54 @@ def provider(outcomes, **kwargs):
 
 
 class OpenAISchemaTranslationTests(unittest.TestCase):
+    def test_wire_schema_contains_only_reviewed_openai_dialect_keywords(self):
+        discovered = set()
+
+        def visit(schema):
+            self.assertIsInstance(schema, dict)
+            for keyword, value in schema.items():
+                discovered.add(keyword)
+                if keyword in {"properties", "$defs"}:
+                    for child in value.values():
+                        visit(child)
+                elif keyword == "items":
+                    visit(value)
+                elif keyword == "anyOf":
+                    for child in value:
+                        visit(child)
+
+        visit(openai_candidate_schema())
+        self.assertLessEqual(discovered, OPENAI_SUPPORTED_SCHEMA_KEYWORDS)
+        self.assertTrue(discovered.isdisjoint(OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS))
+        self.assertNotIn("minLength", discovered)
+        self.assertNotIn("maxLength", discovered)
+
+    def test_removed_wire_constraints_remain_product_enforced(self):
+        request = build_job_understanding_request(
+            snapshot(), "product-constraints", requested_categories=["requirements"]
+        )
+        blank_quote = candidate()
+        blank_quote["items"][0]["quote"] = ""
+        oversized_warning = candidate()
+        oversized_warning["warnings"] = ["x" * 20_001]
+        for malformed in (blank_quote, oversized_warning):
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(JobUnderstandingValidationError):
+                    validate_provider_candidate(request, malformed)
+
+    def test_projection_does_not_mutate_authoritative_product_schema(self):
+        before = copy.deepcopy(SCHEMA)
+        openai_candidate_schema()
+        self.assertEqual(SCHEMA, before)
+
+    def test_schema_translation_fails_closed_for_unreviewed_keyword(self):
+        candidate_schema = SCHEMA["$defs"]["candidateResponse"]
+        with patch.dict(candidate_schema, {"title": "unreviewed"}):
+            with self.assertRaises(JobUnderstandingProviderError) as error:
+                openai_candidate_schema()
+        self.assertIn("unreviewed keyword", str(error.exception))
+        self.assertIn("title", str(error.exception))
+
     def test_root_and_every_object_require_all_properties(self):
         schema = openai_candidate_schema()
 
@@ -174,6 +227,17 @@ class OpenAISchemaTranslationTests(unittest.TestCase):
             snapshot(), "schema-parity", requested_categories=["requirements"]
         )
         validate_provider_candidate(request, normalize_openai_candidate(candidate()))
+
+    def test_wire_projection_does_not_weaken_local_citation_grounding(self):
+        instance, client = provider([response(candidate("fabricated requirement"))])
+        with self.assertRaises(JobUnderstandingValidationError):
+            extract_job_understanding(
+                snapshot(),
+                instance,
+                "projection-grounding",
+                requested_categories=["requirements"],
+            )
+        self.assertEqual(len(client.responses.calls), 1)
 
 
 class OpenAIProviderTests(unittest.TestCase):
@@ -376,6 +440,46 @@ class OpenAIProviderTests(unittest.TestCase):
                     instance.extract(internal_request())
                 self.assertEqual(len(client.responses.calls), 1)
 
+    def test_live_debug_400_diagnostic_is_bounded_and_schema_specific(self):
+        failure = StatusError(
+            400,
+            body={
+                "error": {
+                    "code": "invalid_json_schema",
+                    "param": "text.format.schema",
+                    "message": (
+                        "Invalid schema near minLength; secret job text and auth must not leak"
+                    ),
+                }
+            },
+        )
+        instance, _ = provider([failure], live_debug=True)
+        with self.assertRaises(JobUnderstandingProviderError) as error:
+            instance.extract(internal_request())
+        rendered = str(error.exception)
+        self.assertEqual(
+            rendered,
+            "openai provider failed: http_400 "
+            "[code=invalid_json_schema; param=text.format.schema; schema_keyword=minLength]",
+        )
+        self.assertNotIn("secret job text", rendered)
+
+    def test_normal_400_never_exposes_provider_error_details(self):
+        failure = StatusError(
+            400,
+            body={
+                "error": {
+                    "code": "invalid_json_schema",
+                    "param": "text.format.schema",
+                    "message": "Invalid schema near minLength and private content",
+                }
+            },
+        )
+        instance, _ = provider([failure])
+        with self.assertRaises(JobUnderstandingProviderError) as error:
+            instance.extract(internal_request())
+        self.assertEqual(str(error.exception), "openai provider failed: http_400")
+
     def test_refusal_incomplete_empty_and_malformed_outputs_are_not_retried(self):
         refusal = response(
             None,
@@ -432,10 +536,17 @@ class OpenAIProviderTests(unittest.TestCase):
 
 
 class StatusError(Exception):
-    def __init__(self, status_code: int, *, retry_after: str | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        retry_after: str | None = None,
+        body: dict | None = None,
+    ):
         super().__init__(f"sensitive HTTP {status_code} body")
         self.status_code = status_code
         self.response = SimpleNamespace(headers={"retry-after": retry_after})
+        self.body = body
 
 
 if __name__ == "__main__":
