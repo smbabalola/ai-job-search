@@ -91,7 +91,7 @@ def proposals_for_full_fit(bundle: dict) -> dict:
     work_id = next(
         item["id"]
         for item in bundle["evidence"]
-        if item["category"] == "eligibility_requirements"
+        if item["text"] == "Applicants must already have the right to work in the UK."
     )
     german_id = next(
         item["id"]
@@ -153,7 +153,38 @@ def proposals_for_full_fit(bundle: dict) -> dict:
     }
 
 
-def semantic_request(profile=None, job=None, bundle=None, proposals=None, active_extensions=None) -> dict:
+def fully_scoring_policy() -> dict:
+    policy = load_semantic_fit_policy()
+    by_id = {rule["id"]: rule for rule in policy["dimension_rules"]}
+    by_id["behavioral_fit"]["job_categories"] = ["responsibilities"]
+    by_id["behavioral_fit"]["scores_by_classification"] = {
+        "direct": 88,
+        "functionally_equivalent": 80,
+        "transferable": 65,
+        "adjacent": None,
+        "unsupported": None,
+    }
+    by_id["career_alignment"]["job_categories"] = ["requirements"]
+    by_id["career_alignment"]["scores_by_classification"] = {
+        "direct": 90,
+        "functionally_equivalent": 80,
+        "transferable": 65,
+        "adjacent": None,
+        "unsupported": None,
+    }
+    validate_semantic_fit_policy(policy)
+    return policy
+
+
+def semantic_request(
+    profile=None,
+    job=None,
+    bundle=None,
+    proposals=None,
+    active_extensions=None,
+    semantic_policy=None,
+    user_intent=None,
+) -> dict:
     job = job or job_snapshot()
     if bundle is None:
         understanding_request, understanding_result = understanding_pair(job)
@@ -168,6 +199,8 @@ def semantic_request(profile=None, job=None, bundle=None, proposals=None, active
         job_snapshot=job,
         resolved_job_evidence=bundle,
         active_extensions=[extension()] if active_extensions is None else active_extensions,
+        semantic_fit_policy=semantic_policy,
+        user_intent=user_intent,
         semantic_proposals=proposals or proposals_for_full_fit(bundle),
     )
 
@@ -271,6 +304,8 @@ class SemanticJobFitTests(unittest.TestCase):
     def test_transferable_match_requires_active_extension_mapping_and_profile_evidence(self):
         req = semantic_request()
         pipeline_id = req["semantic_proposals"]["matches"][1]["job_evidence_id"]
+        conditionless_extension = extension()
+        conditionless_extension["transferable_mappings"][0]["conditions"] = []
         req["semantic_proposals"]["matches"] = [
             {
                 "proposal_id": "sem-transfer",
@@ -287,6 +322,7 @@ class SemanticJobFitTests(unittest.TestCase):
                 },
             }
         ]
+        req["active_extensions"] = [conditionless_extension]
 
         result = analyze_semantic_job_fit(req)
 
@@ -295,7 +331,81 @@ class SemanticJobFitTests(unittest.TestCase):
             result["transferable_matches"][0]["limitations"],
             ["Does not prove employment history"],
         )
-        self.assertTrue(result["human_judgment_questions"])
+        self.assertEqual(result["transferable_matches"][0]["status"], "READY")
+
+    def test_unresolved_transferable_conditions_do_not_contribute_to_scoring(self):
+        req = semantic_request()
+        pipeline_id = req["semantic_proposals"]["matches"][1]["job_evidence_id"]
+        req["semantic_proposals"]["matches"] = [
+            {
+                "proposal_id": "sem-transfer-conditional",
+                "job_evidence_id": pipeline_id,
+                "profile_evidence_ids": ["clm_2222222222222222"],
+                "classification": "transferable",
+                "rationale": "Mapping conditions have not been resolved.",
+                "confidence": "medium",
+                "extension_ref": {
+                    "extension_id": "data-transfer",
+                    "extension_version": "0.1.0",
+                    "record_type": "transferable_mapping",
+                    "record_id": "field-models-to-pipelines",
+                },
+            }
+        ]
+
+        result = analyze_semantic_job_fit(req)
+
+        self.assertEqual(result["transferable_matches"][0]["status"], "NEEDS_REVIEW")
+        self.assertEqual(
+            result["transferable_matches"][0]["conditions"],
+            ["Candidate evidence exists"],
+        )
+        experience = next(
+            item
+            for item in result["dimension_assessments"]
+            if item["dimension_id"] == "experience_match"
+        )
+        self.assertEqual(experience["status"], "NEEDS_REVIEW")
+        self.assertIsNone(experience["score"])
+        self.assertNotIn("experience_match", result["dimension_scores"])
+        self.assertIsNone(result["overall_score"])
+        self.assertIsNone(result["verdict"])
+        self.assertTrue(
+            any(
+                question["topic"] == "extension_conditions"
+                for question in result["human_judgment_questions"]
+            )
+        )
+
+    def test_evaluate_intent_rejects_transferable_proposals(self):
+        req = semantic_request(user_intent={"intent": "evaluate"})
+        pipeline_id = req["semantic_proposals"]["matches"][1]["job_evidence_id"]
+        req["semantic_proposals"]["matches"] = [
+            {
+                "proposal_id": "sem-transfer-disabled",
+                "job_evidence_id": pipeline_id,
+                "profile_evidence_ids": ["clm_2222222222222222"],
+                "classification": "transferable",
+                "rationale": "Transferability was not requested.",
+                "confidence": "medium",
+                "extension_ref": {
+                    "extension_id": "data-transfer",
+                    "extension_version": "0.1.0",
+                    "record_type": "transferable_mapping",
+                    "record_id": "field-models-to-pipelines",
+                },
+            }
+        ]
+
+        result = analyze_semantic_job_fit(req)
+
+        self.assertFalse(result["transferable_matches"])
+        self.assertTrue(
+            any(
+                "not permitted for evaluate intent" in item["reason"]
+                for item in result["unsupported_claims"]
+            )
+        )
 
     def test_extension_only_candidate_claim_fails(self):
         req = semantic_request()
@@ -355,6 +465,58 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertEqual(statuses["language"], "UNVERIFIED")
         self.assertEqual(statuses["location_logistics"], "UNVERIFIED")
         self.assertFalse(result["blocked"])
+
+    def test_gate_provenance_preserves_only_the_adjudicated_job_refs(self):
+        job = job_snapshot()
+        candidate = ready_candidate()
+        candidate["items"].append(
+            {
+                "proposal_id": "proposal-second-eligibility",
+                "category": "eligibility_requirements",
+                "kind": "preferred",
+                "quote": "Caf\u00e9 collaboration is encouraged.",
+                "certainty": "explicit",
+            }
+        )
+        understanding_request, understanding_result = understanding_pair(job, candidate)
+        bundle = build_resolved_job_evidence_bundle(job, understanding_request, understanding_result)
+        proposals = proposals_for_full_fit(bundle)
+        proposed_id = proposals["gates"][0]["job_evidence_ids"][0]
+
+        result = analyze_semantic_job_fit(
+            semantic_request(job=job, bundle=bundle, proposals=proposals)
+        )
+
+        eligibility = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "eligibility"
+        )
+        self.assertEqual(eligibility["status"], "PASS")
+        self.assertEqual(eligibility["job_evidence_ids"], [proposed_id])
+
+    def test_gate_ref_outside_configured_category_is_unverified(self):
+        req = semantic_request()
+        language_id = req["semantic_proposals"]["gates"][1]["job_evidence_ids"][0]
+        req["semantic_proposals"]["gates"][0]["job_evidence_ids"] = [language_id]
+
+        result = analyze_semantic_job_fit(req)
+
+        eligibility = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "eligibility"
+        )
+        self.assertEqual(eligibility["status"], "UNVERIFIED")
+        self.assertEqual(eligibility["job_evidence_ids"], [])
+
+    def test_gate_with_missing_job_evidence_is_unverified(self):
+        req = semantic_request()
+        req["semantic_proposals"]["gates"][0]["job_evidence_ids"] = []
+
+        result = analyze_semantic_job_fit(req)
+
+        eligibility = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "eligibility"
+        )
+        self.assertEqual(eligibility["status"], "UNVERIFIED")
+        self.assertEqual(eligibility["job_evidence_ids"], [])
 
     def test_fail_gate_requires_affirmative_profile_incompatibility_evidence(self):
         req = semantic_request()
@@ -443,8 +605,46 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertIsNone(result["overall_score"])
         self.assertIsNone(result["verdict"])
 
+    def test_behavioral_and_career_dimensions_have_no_evidence_free_defaults(self):
+        result = analyze_semantic_job_fit(semantic_request())
+
+        by_id = {item["dimension_id"]: item for item in result["dimension_assessments"]}
+        for dimension_id in ("behavioral_fit", "career_alignment"):
+            self.assertEqual(by_id[dimension_id]["status"], "NEEDS_REVIEW")
+            self.assertIsNone(by_id[dimension_id]["score"])
+            self.assertNotIn(dimension_id, result["dimension_scores"])
+        self.assertIsNone(result["overall_score"])
+        self.assertIsNone(result["verdict"])
+
+    def test_one_strong_match_cannot_hide_unresolved_material_evidence(self):
+        job = job_snapshot()
+        candidate = ready_candidate()
+        candidate["items"].append(
+            {
+                "proposal_id": "proposal-second-requirement",
+                "category": "requirements",
+                "kind": "required",
+                "quote": "You will mentor junior engineers.",
+                "certainty": "explicit",
+            }
+        )
+        understanding_request, understanding_result = understanding_pair(job, candidate)
+        bundle = build_resolved_job_evidence_bundle(job, understanding_request, understanding_result)
+
+        result = analyze_semantic_job_fit(semantic_request(job=job, bundle=bundle))
+
+        technical = next(
+            item
+            for item in result["dimension_assessments"]
+            if item["dimension_id"] == "technical_skills"
+        )
+        self.assertEqual(technical["status"], "NEEDS_REVIEW")
+        self.assertIsNone(technical["score"])
+        self.assertEqual(len(technical["job_evidence_ids"]), 2)
+        self.assertNotIn("technical_skills", result["dimension_scores"])
+
     def test_fully_resolved_case_produces_deterministic_weighted_score_and_verdict(self):
-        req = semantic_request()
+        req = semantic_request(semantic_policy=fully_scoring_policy())
 
         result = analyze_semantic_job_fit(req)
 
@@ -452,7 +652,9 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertEqual(result["status"], "READY")
         self.assertEqual(result["dimension_scores"]["technical_skills"], 90.0)
         self.assertEqual(result["dimension_scores"]["experience_match"], 82.0)
-        self.assertEqual(result["overall_score"], 81.3)
+        self.assertEqual(result["dimension_scores"]["behavioral_fit"], 80.0)
+        self.assertEqual(result["dimension_scores"]["career_alignment"], 90.0)
+        self.assertEqual(result["overall_score"], 86.5)
         self.assertEqual(result["verdict"]["id"], "strong_fit")
 
     def test_end_to_end_synthetic_fit_traces_every_positive_conclusion_to_evidence(self):
@@ -463,7 +665,11 @@ class SemanticJobFitTests(unittest.TestCase):
             understanding_request,
             understanding_result,
         )
-        req = semantic_request(job=job, bundle=bundle)
+        req = semantic_request(
+            job=job,
+            bundle=bundle,
+            semantic_policy=fully_scoring_policy(),
+        )
 
         result = analyze_semantic_job_fit(req)
 
@@ -483,7 +689,7 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertEqual(result["direct_matches"][0]["job_requirement_ids"], ["jobev_req_python"])
         self.assertTrue(result["functionally_equivalent_matches"][0]["job_requirement_ids"][0].startswith("juev_"))
         self.assertFalse(result["transferable_matches"])
-        self.assertEqual(result["overall_score"], 81.3)
+        self.assertEqual(result["overall_score"], 86.5)
         self.assertEqual(result["verdict"]["id"], "strong_fit")
 
     def test_v0_job_fit_contract_remains_untouched_for_existing_callers(self):

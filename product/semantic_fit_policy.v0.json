@@ -29,12 +29,17 @@
       "id": "technical_skills",
       "required": true,
       "job_categories": ["requirements"],
-      "scores_by_strongest_classification": {
+      "scores_by_classification": {
         "direct": 90,
         "functionally_equivalent": 80,
         "transferable": 65,
         "adjacent": null,
         "unsupported": null
+      },
+      "coverage": {
+        "material_kinds": ["required", "preferred"],
+        "minimum_ratio_for_ready": 1.0,
+        "score_aggregation": "mean"
       },
       "unresolved_when_no_positive_match": "NEEDS_REVIEW"
     },
@@ -42,12 +47,17 @@
       "id": "experience_match",
       "required": true,
       "job_categories": ["responsibilities"],
-      "scores_by_strongest_classification": {
+      "scores_by_classification": {
         "direct": 88,
         "functionally_equivalent": 82,
         "transferable": 68,
         "adjacent": null,
         "unsupported": null
+      },
+      "coverage": {
+        "material_kinds": ["required", "preferred"],
+        "minimum_ratio_for_ready": 1.0,
+        "score_aggregation": "mean"
       },
       "unresolved_when_no_positive_match": "NEEDS_REVIEW"
     },
@@ -55,14 +65,22 @@
       "id": "behavioral_fit",
       "required": true,
       "job_categories": [],
-      "default_when_evidence_ready": 75,
+      "coverage": {
+        "material_kinds": ["required", "preferred"],
+        "minimum_ratio_for_ready": 1.0,
+        "score_aggregation": "mean"
+      },
       "unresolved_when_no_positive_match": "NEEDS_REVIEW"
     },
     {
       "id": "career_alignment",
       "required": true,
       "job_categories": [],
-      "default_when_evidence_ready": 75,
+      "coverage": {
+        "material_kinds": ["required", "preferred"],
+        "minimum_ratio_for_ready": 1.0,
+        "score_aggregation": "mean"
+      },
       "unresolved_when_no_positive_match": "NEEDS_REVIEW"
     }
   ],

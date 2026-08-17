@@ -517,9 +517,12 @@ def _adjudicate_match_proposals(
     for proposal in proposals:
         checked = _adjudicate_one_match(proposal, context)
         job_id = checked.get("job_evidence_id")
-        if checked["classification"] in POSITIVE_CLASSIFICATIONS and checked["status"] == "READY":
+        if (
+            checked["classification"] in POSITIVE_CLASSIFICATIONS
+            and checked["status"] in {"READY", "NEEDS_REVIEW"}
+        ):
             current = best_by_job.get(job_id)
-            if current is None or _precedence(checked["classification"]) < _precedence(current["classification"]):
+            if current is None or _match_priority(checked) < _match_priority(current):
                 best_by_job[job_id] = checked
         elif checked["classification"] == "adjacent":
             result["gaps"].append(_gap_from_proposal(checked, "partial_match"))
@@ -579,6 +582,11 @@ def _adjudicate_one_match(
             return base
         base["functional_basis"] = copy.deepcopy(basis)
     if classification == "transferable":
+        if context["user_intent"] != "evaluate_with_transferability":
+            base["status"] = "UNSUPPORTED"
+            base["classification"] = "unsupported"
+            base["reason"] = "transferable matches are not permitted for evaluate intent"
+            return base
         extension_ref = proposal.get("extension_ref")
         mapping = _transferable_mapping(extension_ref, context)
         if mapping is None:
@@ -591,6 +599,7 @@ def _adjudicate_one_match(
         base["limitations"] = list(mapping.get("limitations", []))
         base["conditions"] = list(mapping.get("conditions", []))
         if base["conditions"]:
+            base["status"] = "NEEDS_REVIEW"
             base["question"] = _question(
                 "extension_conditions",
                 "Transferability depends on extension conditions that need human review.",
@@ -612,27 +621,32 @@ def _build_gate_assessments(
     gate_categories = request["semantic_fit_policy"]["gate_evidence_categories"]
     for gate_id in GATE_IDS:
         category = gate_categories[gate_id]
-        relevant_job_ids = sorted(
-            item["id"] for item in context["job_evidence"].values()
-            if item["category"] == category
-        )
         proposal = proposals.get(gate_id)
         status = "UNVERIFIED"
         reason = "No affirmative candidate evidence was supplied for this gate."
+        adjudicated_job_ids: list[str] = []
         profile_ids: list[str] = []
         if proposal is not None:
-            proposed_job_ids = [_canonical_job_ref(ref, context) for ref in proposal["job_evidence_ids"]]
+            adjudicated_job_ids, invalid_job_refs = _adjudicate_gate_job_refs(
+                proposal["job_evidence_ids"], category, context
+            )
             supportive, rejected = _supportive_profile_claims(proposal.get("profile_evidence_ids", []), context)
             profile_ids = [claim["id"] for claim in supportive]
-            if proposal["status"] == "FAIL":
-                if supportive and proposed_job_ids:
+            if invalid_job_refs or not adjudicated_job_ids:
+                status = "UNVERIFIED"
+                reason = (
+                    "Gate evidence is missing, unknown, or outside the configured "
+                    f"{category} category."
+                )
+            elif proposal["status"] == "FAIL":
+                if supportive:
                     status = "FAIL"
                     reason = proposal["reason"]
                 else:
                     status = "UNVERIFIED"
                     reason = "FAIL requires affirmative job and profile incompatibility evidence."
             elif proposal["status"] in {"PASS", "FLAG"}:
-                if supportive and proposed_job_ids:
+                if supportive:
                     status = proposal["status"]
                     reason = proposal["reason"]
                 else:
@@ -651,7 +665,7 @@ def _build_gate_assessments(
                 "gate_id": gate_id,
                 "status": status,
                 "reason": reason,
-                "job_evidence_ids": relevant_job_ids,
+                "job_evidence_ids": adjudicated_job_ids,
                 "profile_evidence_ids": profile_ids,
             }
         )
@@ -667,34 +681,74 @@ def _build_dimension_assessments(
     positive_by_job: dict[str, str] = {}
     for collection in ("direct_matches", "functionally_equivalent_matches", "transferable_matches"):
         for match in accepted[collection]:
+            if match["status"] != "READY":
+                continue
             for job_id in match["job_requirement_ids"]:
                 positive_by_job[job_id] = match["classification"]
     assessments: list[dict[str, Any]] = []
     scores: dict[str, float] = {}
-    gates_ready = all(assessment["status"] in {"PASS", "FLAG"} for assessment in gate_assessments)
     for rule in request["semantic_fit_policy"]["dimension_rules"]:
         dimension_id = rule["id"]
+        coverage = rule["coverage"]
+        material_kinds = set(coverage["material_kinds"])
         relevant_job_ids = [
             item["id"]
             for item in context["job_evidence"].values()
             if item["category"] in set(rule.get("job_categories", []))
+            and item["kind"] in material_kinds
         ]
-        classifications = [positive_by_job[job_id] for job_id in relevant_job_ids if job_id in positive_by_job]
-        if classifications:
-            strongest = min(classifications, key=_precedence)
-            score = rule["scores_by_strongest_classification"][strongest]
-            assessments.append(_dimension(dimension_id, "READY", rule["required"], score, [strongest], relevant_job_ids))
-            scores[dimension_id] = float(score)
+        if not relevant_job_ids:
+            assessments.append(
+                _dimension(
+                    dimension_id,
+                    rule["unresolved_when_no_positive_match"],
+                    rule["required"],
+                    None,
+                    [],
+                    [],
+                )
+            )
             continue
-        if not rule.get("job_categories"):
-            if gates_ready:
-                score = rule.get("default_when_evidence_ready")
-                assessments.append(_dimension(dimension_id, "READY", rule["required"], score, [], []))
-                scores[dimension_id] = float(score)
-            else:
-                assessments.append(_dimension(dimension_id, "NEEDS_REVIEW", rule["required"], None, [], []))
+        matched_job_ids = [job_id for job_id in relevant_job_ids if job_id in positive_by_job]
+        coverage_ratio = Decimal(len(matched_job_ids)) / Decimal(len(relevant_job_ids))
+        minimum_ratio = Decimal(str(coverage["minimum_ratio_for_ready"]))
+        classifications = [positive_by_job[job_id] for job_id in matched_job_ids]
+        classification_scores = rule.get("scores_by_classification")
+        score_values = (
+            [classification_scores[classification] for classification in classifications]
+            if isinstance(classification_scores, dict)
+            else []
+        )
+        if (
+            coverage_ratio < minimum_ratio
+            or not score_values
+            or any(score is None for score in score_values)
+        ):
+            assessments.append(
+                _dimension(
+                    dimension_id,
+                    "NEEDS_REVIEW",
+                    rule["required"],
+                    None,
+                    sorted(set(classifications), key=_precedence),
+                    relevant_job_ids,
+                )
+            )
             continue
-        assessments.append(_dimension(dimension_id, rule["unresolved_when_no_positive_match"], rule["required"], None, [], relevant_job_ids))
+        score = float(
+            sum(Decimal(str(value)) for value in score_values) / Decimal(len(score_values))
+        )
+        assessments.append(
+            _dimension(
+                dimension_id,
+                "READY",
+                rule["required"],
+                score,
+                sorted(set(classifications), key=_precedence),
+                relevant_job_ids,
+            )
+        )
+        scores[dimension_id] = score
     return assessments, scores
 
 
@@ -793,6 +847,10 @@ def _context(request: dict[str, Any]) -> dict[str, Any]:
         "job_evidence": job_evidence,
         "aliases": aliases,
         "extensions": extensions,
+        "gate_evidence_categories": copy.deepcopy(
+            request["semantic_fit_policy"]["gate_evidence_categories"]
+        ),
+        "user_intent": request["user_intent"]["intent"],
     }
 
 
@@ -818,6 +876,24 @@ def _canonical_job_ref(value: str, context: dict[str, Any]) -> str:
     if canonical not in context["job_evidence"]:
         raise SemanticJobFitValidationError(f"$.semantic_proposals: unknown job evidence id {value!r}")
     return canonical
+
+
+def _adjudicate_gate_job_refs(
+    proposed_refs: list[str],
+    expected_category: str,
+    context: dict[str, Any],
+) -> tuple[list[str], bool]:
+    adjudicated: list[str] = []
+    invalid = False
+    for proposed_ref in proposed_refs:
+        canonical = context["aliases"].get(proposed_ref, proposed_ref)
+        evidence = context["job_evidence"].get(canonical)
+        if evidence is None or evidence.get("category") != expected_category:
+            invalid = True
+            continue
+        if canonical not in adjudicated:
+            adjudicated.append(canonical)
+    return adjudicated, invalid
 
 
 def _transferable_mapping(
@@ -872,7 +948,7 @@ def _match_record(item: dict[str, Any]) -> dict[str, Any]:
         "classification": item["classification"],
         "rationale": item["rationale"],
         "confidence": item["confidence"],
-        "status": "READY",
+        "status": item["status"],
     }
     if item["classification"] == "functionally_equivalent":
         record["functional_basis"] = copy.deepcopy(item["functional_basis"])
@@ -985,6 +1061,7 @@ def _validate_result_matches(result: dict[str, Any], context: dict[str, Any], er
                 continue
             _id(match.get("match_id"), f"{path}.match_id", errors)
             _enum(match.get("classification"), {classification}, f"{path}.classification", errors)
+            _enum(match.get("status"), {"READY", "NEEDS_REVIEW"}, f"{path}.status", errors)
             job_ids = _string_list(match.get("job_requirement_ids"), f"{path}.job_requirement_ids", errors)
             profile_ids = _string_list(match.get("profile_evidence_ids"), f"{path}.profile_evidence_ids", errors)
             if not job_ids:
@@ -1003,6 +1080,8 @@ def _validate_result_matches(result: dict[str, Any], context: dict[str, Any], er
                 elif claim.get("concept_id") in context["conflicted_concepts"]:
                     errors.append(f"{path}.profile_evidence_ids: conflicted claim cannot support a match")
             if classification == "transferable":
+                if context["user_intent"] != "evaluate_with_transferability":
+                    errors.append(f"{path}: transferable match is not permitted for evaluate intent")
                 mapping = _transferable_mapping(match.get("extension_ref"), context)
                 if mapping is None:
                     errors.append(f"{path}.extension_ref: unknown active transferable mapping")
@@ -1012,6 +1091,8 @@ def _validate_result_matches(result: dict[str, Any], context: dict[str, Any], er
                         for value in mapping.get(field, []):
                             if value not in values:
                                 errors.append(f"{path}.{field}: must preserve mapping {field[:-1]} {value!r}")
+                    if match.get("conditions") and match.get("status") != "NEEDS_REVIEW":
+                        errors.append(f"{path}.status: unresolved mapping conditions require NEEDS_REVIEW")
 
 
 def _validate_gate_assessments(value: Any, context: dict[str, Any], errors: list[str]) -> None:
@@ -1031,8 +1112,11 @@ def _validate_gate_assessments(value: Any, context: dict[str, Any], errors: list
         job_ids = _string_list(assessment.get("job_evidence_ids"), f"{path}.job_evidence_ids", errors)
         profile_ids = _string_list(assessment.get("profile_evidence_ids"), f"{path}.profile_evidence_ids", errors)
         for job_id in job_ids:
-            if job_id not in context["job_evidence"]:
+            evidence = context["job_evidence"].get(job_id)
+            if evidence is None:
                 errors.append(f"{path}.job_evidence_ids: unknown job evidence id {job_id!r}")
+            elif isinstance(gate_id, str) and evidence.get("category") != context["gate_evidence_categories"].get(gate_id):
+                errors.append(f"{path}.job_evidence_ids: evidence does not belong to the gate category")
         for profile_id in profile_ids:
             claim = context["profile_by_id"].get(profile_id)
             if claim is None:
@@ -1293,8 +1377,21 @@ def _validate_dimension_rules(value: Any, errors: list[str]) -> None:
     ids: set[str] = set()
     for index, rule in enumerate(dimensions):
         path = f"$.semantic_fit_policy.dimension_rules[{index}]"
-        allowed = {"id", "required", "job_categories", "scores_by_strongest_classification", "default_when_evidence_ready", "unresolved_when_no_positive_match"}
-        required = {"id", "required", "job_categories", "unresolved_when_no_positive_match"}
+        allowed = {
+            "id",
+            "required",
+            "job_categories",
+            "scores_by_classification",
+            "coverage",
+            "unresolved_when_no_positive_match",
+        }
+        required = {
+            "id",
+            "required",
+            "job_categories",
+            "coverage",
+            "unresolved_when_no_positive_match",
+        }
         if not _object_shape(rule, required, allowed, path, errors):
             continue
         _id(rule.get("id"), f"{path}.id", errors)
@@ -1302,17 +1399,55 @@ def _validate_dimension_rules(value: Any, errors: list[str]) -> None:
             ids.add(rule["id"])
         if not isinstance(rule.get("required"), bool):
             errors.append(f"{path}.required: must be boolean")
-        for item_index, category in enumerate(_string_list(rule.get("job_categories"), f"{path}.job_categories", errors)):
+        job_categories = _string_list(
+            rule.get("job_categories"), f"{path}.job_categories", errors
+        )
+        for item_index, category in enumerate(job_categories):
             if category not in EVIDENCE_CATEGORIES:
                 errors.append(f"{path}.job_categories[{item_index}]: unknown category")
-        if "scores_by_strongest_classification" in rule:
-            scores = rule["scores_by_strongest_classification"]
-            if _object_shape(scores, set(MATCH_CLASSIFICATIONS), set(MATCH_CLASSIFICATIONS), f"{path}.scores_by_strongest_classification", errors):
+        if job_categories and "scores_by_classification" not in rule:
+            errors.append(f"{path}.scores_by_classification: required when job categories are configured")
+        if not job_categories and "scores_by_classification" in rule:
+            errors.append(f"{path}.scores_by_classification: requires configured job categories")
+        if "scores_by_classification" in rule:
+            scores = rule["scores_by_classification"]
+            if _object_shape(scores, set(MATCH_CLASSIFICATIONS), set(MATCH_CLASSIFICATIONS), f"{path}.scores_by_classification", errors):
                 for classification, score in scores.items():
                     if score is not None:
-                        _score_or_error(score, f"{path}.scores_by_strongest_classification.{classification}", errors)
-        if "default_when_evidence_ready" in rule:
-            _score_or_error(rule["default_when_evidence_ready"], f"{path}.default_when_evidence_ready", errors)
+                        _score_or_error(
+                            score,
+                            f"{path}.scores_by_classification.{classification}",
+                            errors,
+                        )
+        coverage = rule.get("coverage")
+        coverage_required = {
+            "material_kinds",
+            "minimum_ratio_for_ready",
+            "score_aggregation",
+        }
+        if _object_shape(coverage, coverage_required, coverage_required, f"{path}.coverage", errors):
+            material_kinds = _string_list(
+                coverage.get("material_kinds"),
+                f"{path}.coverage.material_kinds",
+                errors,
+            )
+            if not material_kinds:
+                errors.append(f"{path}.coverage.material_kinds: must not be empty")
+            ratio = coverage.get("minimum_ratio_for_ready")
+            if (
+                isinstance(ratio, bool)
+                or not isinstance(ratio, (int, float))
+                or not 0 < ratio <= 1
+            ):
+                errors.append(
+                    f"{path}.coverage.minimum_ratio_for_ready: must be greater than 0 and at most 1"
+                )
+            _enum(
+                coverage.get("score_aggregation"),
+                {"mean"},
+                f"{path}.coverage.score_aggregation",
+                errors,
+            )
         _enum(rule.get("unresolved_when_no_positive_match"), DIMENSION_STATUSES - {"READY"}, f"{path}.unresolved_when_no_positive_match", errors)
     expected = {"technical_skills", "experience_match", "behavioral_fit", "career_alignment"}
     if ids != expected:
@@ -1357,6 +1492,10 @@ def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _precedence(classification: str) -> int:
     return MATCH_CLASSIFICATIONS.index(classification)
+
+
+def _match_priority(match: dict[str, Any]) -> tuple[int, int]:
+    return (0 if match["status"] == "READY" else 1, _precedence(match["classification"]))
 
 
 def _stable_id(prefix: str, value: str) -> str:
