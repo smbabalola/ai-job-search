@@ -530,15 +530,23 @@ def _resolve_quote(
         raise JobUnderstandingValidationError(
             "$.candidate: proposed quote does not occur exactly in selected source"
         )
-    if occurrence is None:
-        if len(starts) != 1:
-            return None
-        occurrence = 0
-    if isinstance(occurrence, bool) or not isinstance(occurrence, int) or occurrence < 0:
+    if occurrence is not None and (
+        isinstance(occurrence, bool)
+        or not isinstance(occurrence, int)
+        or occurrence < 0
+    ):
         raise JobUnderstandingValidationError("$.candidate: occurrence must be a non-negative integer")
-    if occurrence >= len(starts):
-        raise JobUnderstandingValidationError("$.candidate: occurrence is outside exact quote matches")
-    start = starts[occurrence]
+    if len(starts) == 1:
+        canonical_occurrence = 0
+    else:
+        if occurrence is None:
+            return None
+        if occurrence >= len(starts):
+            raise JobUnderstandingValidationError(
+                "$.candidate: occurrence is outside exact quote matches"
+            )
+        canonical_occurrence = occurrence
+    start = starts[canonical_occurrence]
     end = start + len(quote)
     return {
         "source_field": source["field"],
@@ -546,7 +554,7 @@ def _resolve_quote(
         "start": start,
         "end": end,
         "quote": quote,
-        "occurrence": occurrence,
+        "occurrence": canonical_occurrence,
     }
 
 
