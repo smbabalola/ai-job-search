@@ -34,13 +34,21 @@ REQUEST_TIMEOUT_SECONDS = 60.0
 MAX_RETRY_AFTER_SECONDS = 15.0
 DEFAULT_RETRY_DELAY_SECONDS = 1.0
 OPENAI_RESPONSE_SCHEMA_NAME = "job_understanding_candidate_v0"
+OPENAI_SCHEMA_MAX_PROPERTIES = 5_000
+OPENAI_SCHEMA_MAX_DEPTH = 10
+OPENAI_SCHEMA_MAX_TOTAL_STRING_LENGTH = 120_000
+OPENAI_SCHEMA_MAX_ENUM_VALUES = 1_000
+OPENAI_SCHEMA_LARGE_ENUM_THRESHOLD = 250
+OPENAI_SCHEMA_MAX_LARGE_ENUM_STRING_LENGTH = 15_000
+OPENAI_SUPPORTED_SCHEMA_TYPES = frozenset(
+    {"string", "number", "boolean", "integer", "object", "array", "null"}
+)
 OPENAI_SUPPORTED_SCHEMA_KEYWORDS = frozenset(
     {
         "$defs",
         "$ref",
         "additionalProperties",
         "anyOf",
-        "const",
         "enum",
         "items",
         "maxItems",
@@ -273,7 +281,9 @@ def openai_candidate_schema() -> dict[str, Any]:
     }
     converted_root = _require_and_nullable(root, definition_name="candidateResponse")
     converted_root["$defs"] = converted_defs
-    return _project_openai_schema(converted_root)
+    wire_schema = _project_openai_schema(converted_root)
+    _validate_openai_schema(wire_schema)
+    return wire_schema
 
 
 def normalize_openai_candidate(value: Any) -> Any:
@@ -381,8 +391,24 @@ def _project_openai_schema(value: Any, *, path: str = "$") -> Any:
         raise JobUnderstandingProviderError(
             f"openai schema translation expected an object at {path}"
         )
+    normalized = copy.deepcopy(value)
+    if "const" in normalized:
+        if "enum" in normalized:
+            raise JobUnderstandingProviderError(
+                f"openai schema translation found const and enum together at {path}"
+            )
+        literal = normalized.pop("const")
+        primitive_type = _enum_primitive_type([literal], path=path)
+        _ensure_declared_enum_type(normalized.get("type"), primitive_type, path=path)
+        normalized["type"] = primitive_type
+        normalized["enum"] = [literal]
+    elif "enum" in normalized:
+        primitive_type = _enum_primitive_type(normalized["enum"], path=path)
+        _ensure_declared_enum_type(normalized.get("type"), primitive_type, path=path)
+        normalized["type"] = primitive_type
+
     projected: dict[str, Any] = {}
-    for keyword, child in value.items():
+    for keyword, child in normalized.items():
         if keyword in OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS:
             continue
         if keyword not in OPENAI_SUPPORTED_SCHEMA_KEYWORDS:
@@ -414,6 +440,191 @@ def _project_openai_schema(value: Any, *, path: str = "$") -> Any:
         else:
             projected[keyword] = copy.deepcopy(child)
     return projected
+
+
+def _enum_primitive_type(values: Any, *, path: str) -> str:
+    if not isinstance(values, list) or not values:
+        raise JobUnderstandingProviderError(
+            f"openai schema translation expected a non-empty enum at {path}"
+        )
+    primitive_types = {_json_primitive_type(item) for item in values}
+    if None in primitive_types:
+        raise JobUnderstandingProviderError(
+            f"openai schema translation found a non-scalar enum value at {path}"
+        )
+    if primitive_types <= {"integer", "number"}:
+        return "number" if "number" in primitive_types else "integer"
+    if len(primitive_types) != 1:
+        raise JobUnderstandingProviderError(
+            f"openai schema translation found a mixed-type enum at {path}"
+        )
+    return primitive_types.pop()  # type: ignore[return-value]
+
+
+def _json_primitive_type(value: Any) -> str | None:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return None
+
+
+def _ensure_declared_enum_type(
+    declared: Any, inferred: str, *, path: str
+) -> None:
+    if declared is None:
+        return
+    if declared == inferred or (declared == "number" and inferred == "integer"):
+        return
+    raise JobUnderstandingProviderError(
+        f"openai schema translation found an incompatible enum type at {path}"
+    )
+
+
+def _validate_openai_schema(schema: Any) -> None:
+    """Fail locally if the generated wire schema violates our reviewed subset."""
+
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight requires a root object"
+        )
+    definitions = schema.get("$defs", {})
+    if not isinstance(definitions, dict):
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight found malformed definitions"
+        )
+
+    property_count = 0
+    enum_count = 0
+    total_string_length = 0
+    max_depth = 0
+
+    def fail(message: str, path: str) -> None:
+        raise JobUnderstandingProviderError(
+            f"openai response schema preflight {message} at {path}"
+        )
+
+    def visit(node: Any, path: str, depth: int) -> None:
+        nonlocal property_count, enum_count, total_string_length, max_depth
+        if not isinstance(node, dict):
+            fail("expected an object", path)
+        max_depth = max(max_depth, depth)
+        unknown = set(node) - OPENAI_SUPPORTED_SCHEMA_KEYWORDS
+        if unknown:
+            fail(f"found unsupported keyword {sorted(unknown)[0]!r}", path)
+
+        reference = node.get("$ref")
+        if reference is not None:
+            if set(node) != {"$ref"}:
+                fail("found a reference with sibling keywords", path)
+            if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
+                fail("found an unsupported reference", path)
+            if reference.removeprefix("#/$defs/") not in definitions:
+                fail("found an unresolved local reference", path)
+            return
+
+        branches = node.get("anyOf")
+        if branches is not None:
+            if set(node) != {"anyOf"} or not isinstance(branches, list):
+                fail("found a malformed nullable union", path)
+            if len(branches) != 2:
+                fail("requires exactly two nullable-union branches", path)
+            null_branches = [
+                branch for branch in branches
+                if isinstance(branch, dict) and branch == {"type": "null"}
+            ]
+            if len(null_branches) != 1:
+                fail("requires exactly one explicit null branch", path)
+            for index, branch in enumerate(branches):
+                visit(branch, f"{path}.anyOf[{index}]", depth + 1)
+            return
+
+        declared_type = node.get("type")
+        if declared_type not in OPENAI_SUPPORTED_SCHEMA_TYPES:
+            fail("requires an explicit supported type", path)
+
+        enum_values = node.get("enum")
+        if enum_values is not None:
+            if not isinstance(enum_values, list) or not enum_values:
+                fail("requires a non-empty enum", path)
+            if any(not _value_matches_type(item, declared_type) for item in enum_values):
+                fail("found enum values incompatible with their type", path)
+            enum_count += len(enum_values)
+            enum_strings = [item for item in enum_values if isinstance(item, str)]
+            enum_string_length = sum(len(item) for item in enum_strings)
+            total_string_length += enum_string_length
+            if (
+                len(enum_values) > OPENAI_SCHEMA_LARGE_ENUM_THRESHOLD
+                and enum_string_length > OPENAI_SCHEMA_MAX_LARGE_ENUM_STRING_LENGTH
+            ):
+                fail("exceeded the large-enum string limit", path)
+
+        properties = node.get("properties")
+        if declared_type == "object":
+            if not isinstance(properties, dict):
+                fail("requires object properties", path)
+            if node.get("additionalProperties") is not False:
+                fail("requires additionalProperties=false", path)
+            required = node.get("required")
+            if not isinstance(required, list) or required != list(properties):
+                fail("requires every property in deterministic required order", path)
+            property_count += len(properties)
+            total_string_length += sum(len(name) for name in properties)
+            for name, child in properties.items():
+                visit(child, f"{path}.properties.{name}", depth + 1)
+        elif properties is not None or "required" in node or "additionalProperties" in node:
+            fail("found object keywords on a non-object", path)
+
+        if declared_type == "array":
+            if "items" not in node:
+                fail("requires array items", path)
+            visit(node["items"], f"{path}.items", depth + 1)
+        elif "items" in node or "maxItems" in node:
+            fail("found array keywords on a non-array", path)
+
+        if "pattern" in node and declared_type != "string":
+            fail("found pattern on a non-string", path)
+        if "minimum" in node and declared_type not in {"integer", "number"}:
+            fail("found minimum on a non-number", path)
+
+        nested_definitions = node.get("$defs")
+        if nested_definitions is not None:
+            if path != "$" or nested_definitions is not definitions:
+                fail("found nested or malformed definitions", path)
+            total_string_length += sum(len(name) for name in nested_definitions)
+            for name, child in nested_definitions.items():
+                visit(child, f"$.$defs.{name}", depth + 1)
+
+    visit(schema, "$", 1)
+    if property_count > OPENAI_SCHEMA_MAX_PROPERTIES:
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight exceeded the property limit"
+        )
+    if max_depth > OPENAI_SCHEMA_MAX_DEPTH:
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight exceeded the nesting-depth limit"
+        )
+    if total_string_length > OPENAI_SCHEMA_MAX_TOTAL_STRING_LENGTH:
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight exceeded the total-string limit"
+        )
+    if enum_count > OPENAI_SCHEMA_MAX_ENUM_VALUES:
+        raise JobUnderstandingProviderError(
+            "openai response schema preflight exceeded the enum-value limit"
+        )
+
+
+def _value_matches_type(value: Any, declared_type: str) -> bool:
+    actual_type = _json_primitive_type(value)
+    return actual_type == declared_type or (
+        declared_type == "number" and actual_type == "integer"
+    )
 
 
 def _decode_response(response: Any) -> Any:

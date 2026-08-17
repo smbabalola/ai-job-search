@@ -6,9 +6,11 @@ import json
 import sys
 import unittest
 from datetime import datetime, timezone
+from enum import Enum
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import patch
 
 from product.job_understanding import (
@@ -29,6 +31,7 @@ from product.openai_job_understanding_provider import (
     OPENAI_PRODUCT_ONLY_SCHEMA_KEYWORDS,
     OPENAI_SUPPORTED_SCHEMA_KEYWORDS,
     OpenAIJobUnderstandingProvider,
+    _validate_openai_schema,
     normalize_openai_candidate,
     openai_call_parameters,
     openai_candidate_schema,
@@ -37,6 +40,7 @@ from product.openai_job_understanding_provider import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_PATH = ROOT / "tests" / "fixtures" / "job_understanding" / "job-snapshot.json"
+SCHEMA_PATH = ROOT / "product" / "schemas" / "job-understanding.v0.schema.json"
 
 
 def snapshot() -> dict:
@@ -119,6 +123,82 @@ def provider(outcomes, **kwargs):
 
 
 class OpenAISchemaTranslationTests(unittest.TestCase):
+    def test_every_wire_enum_has_type_and_no_const_survives(self):
+        enum_nodes = []
+
+        def visit(node):
+            self.assertNotIn("const", node)
+            if "enum" in node:
+                enum_nodes.append(node)
+                self.assertIn("type", node)
+            for keyword in ("properties", "$defs"):
+                for child in node.get(keyword, {}).values():
+                    visit(child)
+            if "items" in node:
+                visit(node["items"])
+            for child in node.get("anyOf", []):
+                visit(child)
+
+        visit(openai_candidate_schema())
+        self.assertGreaterEqual(len(enum_nodes), 4)
+
+    def test_literal_and_enums_remain_exactly_constrained(self):
+        definitions = openai_candidate_schema()["$defs"]
+        self.assertEqual(
+            definitions["candidateVersion"],
+            {"type": "string", "enum": ["job-understanding-candidate.v0"]},
+        )
+        for name in ("category", "requirementKind", "certainty"):
+            self.assertEqual(definitions[name]["type"], "string")
+            self.assertEqual(definitions[name]["enum"], SCHEMA["$defs"][name]["enum"])
+
+    def test_nullable_enum_is_exact_ref_plus_null(self):
+        review = openai_candidate_schema()["$defs"]["reviewProposal"]
+        for field, definition in (
+            ("category", "category"),
+            ("kind", "requirementKind"),
+        ):
+            self.assertEqual(
+                review["properties"][field],
+                {
+                    "anyOf": [
+                        {"$ref": f"#/$defs/{definition}"},
+                        {"type": "null"},
+                    ]
+                },
+            )
+
+    def test_wire_scalar_shapes_match_official_sdk_strict_schema_patterns(self):
+        from openai.lib._pydantic import to_strict_json_schema
+        from pydantic import BaseModel
+
+        class SDKCategory(str, Enum):
+            REQUIREMENTS = "requirements"
+            RESPONSIBILITIES = "responsibilities"
+
+        class SDKShape(BaseModel):
+            schema_version: Literal["job-understanding-candidate.v0"]
+            category: SDKCategory
+            optional_category: SDKCategory | None
+
+        sdk_schema = to_strict_json_schema(SDKShape)
+        sdk_literal = sdk_schema["properties"]["schema_version"]
+        sdk_enum = sdk_schema["$defs"]["SDKCategory"]
+        sdk_nullable = sdk_schema["properties"]["optional_category"]
+        wire = openai_candidate_schema()
+
+        self.assertEqual(sdk_literal["type"], "string")
+        self.assertEqual(
+            sdk_literal["const"], wire["$defs"]["candidateVersion"]["enum"][0]
+        )
+        self.assertEqual(sdk_enum["type"], wire["$defs"]["category"]["type"])
+        self.assertEqual(sdk_enum["enum"], ["requirements", "responsibilities"])
+        self.assertEqual(
+            sdk_nullable["anyOf"][-1],
+            wire["$defs"]["reviewProposal"]["properties"]["category"]["anyOf"][-1],
+        )
+        self.assertIn("$ref", sdk_schema["properties"]["category"])
+
     def test_wire_schema_contains_only_reviewed_openai_dialect_keywords(self):
         discovered = set()
 
@@ -156,8 +236,10 @@ class OpenAISchemaTranslationTests(unittest.TestCase):
 
     def test_projection_does_not_mutate_authoritative_product_schema(self):
         before = copy.deepcopy(SCHEMA)
+        before_bytes = SCHEMA_PATH.read_bytes()
         openai_candidate_schema()
         self.assertEqual(SCHEMA, before)
+        self.assertEqual(SCHEMA_PATH.read_bytes(), before_bytes)
 
     def test_schema_translation_fails_closed_for_unreviewed_keyword(self):
         candidate_schema = SCHEMA["$defs"]["candidateResponse"]
@@ -166,6 +248,73 @@ class OpenAISchemaTranslationTests(unittest.TestCase):
                 openai_candidate_schema()
         self.assertIn("unreviewed keyword", str(error.exception))
         self.assertIn("title", str(error.exception))
+
+    def test_preflight_rejects_malformed_wire_contracts(self):
+        valid = openai_candidate_schema()
+        cases = []
+
+        missing_root_type = copy.deepcopy(valid)
+        missing_root_type.pop("type")
+        cases.append(missing_root_type)
+
+        missing_required = copy.deepcopy(valid)
+        missing_required["required"] = missing_required["required"][:-1]
+        cases.append(missing_required)
+
+        untyped_enum = copy.deepcopy(valid)
+        untyped_enum["$defs"]["category"].pop("type")
+        cases.append(untyped_enum)
+
+        unresolved_ref = copy.deepcopy(valid)
+        unresolved_ref["properties"]["schema_version"]["$ref"] = "#/$defs/missing"
+        cases.append(unresolved_ref)
+
+        malformed_nullable = copy.deepcopy(valid)
+        malformed_nullable["$defs"]["reviewProposal"]["properties"]["category"] = {
+            "anyOf": [{"$ref": "#/$defs/category"}, {"type": "string"}]
+        }
+        cases.append(malformed_nullable)
+
+        unsupported = copy.deepcopy(valid)
+        unsupported["title"] = "not reviewed"
+        cases.append(unsupported)
+
+        for malformed in cases:
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(JobUnderstandingProviderError):
+                    _validate_openai_schema(malformed)
+
+    def test_preflight_enforces_provider_schema_limits(self):
+        limits = (
+            "OPENAI_SCHEMA_MAX_PROPERTIES",
+            "OPENAI_SCHEMA_MAX_DEPTH",
+            "OPENAI_SCHEMA_MAX_TOTAL_STRING_LENGTH",
+            "OPENAI_SCHEMA_MAX_ENUM_VALUES",
+        )
+        for name in limits:
+            with self.subTest(limit=name):
+                with patch(
+                    f"product.openai_job_understanding_provider.{name}", 0
+                ):
+                    with self.assertRaises(JobUnderstandingProviderError):
+                        _validate_openai_schema(openai_candidate_schema())
+
+    def test_product_validator_rejects_invalid_literal_and_enum_values(self):
+        request = build_job_understanding_request(
+            snapshot(), "enum-parity", requested_categories=["requirements"]
+        )
+        wrong_version = candidate()
+        wrong_version["schema_version"] = "other"
+        wrong_category = candidate()
+        wrong_category["items"][0]["category"] = "arbitrary"
+        wrong_kind = candidate()
+        wrong_kind["items"][0]["kind"] = "arbitrary"
+        wrong_certainty = candidate()
+        wrong_certainty["items"][0]["certainty"] = "arbitrary"
+        for malformed in (wrong_version, wrong_category, wrong_kind, wrong_certainty):
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(JobUnderstandingValidationError):
+                    validate_provider_candidate(request, malformed)
 
     def test_root_and_every_object_require_all_properties(self):
         schema = openai_candidate_schema()
@@ -199,8 +348,8 @@ class OpenAISchemaTranslationTests(unittest.TestCase):
             {"candidateVersion", "category", "certainty", "id", "providerItem", "requirementKind", "reviewProposal"},
         )
         self.assertEqual(
-            schema["$defs"]["category"],
-            SCHEMA["$defs"]["category"],
+            schema["$defs"]["category"]["enum"],
+            SCHEMA["$defs"]["category"]["enum"],
         )
 
     def test_null_normalization_removes_only_known_optional_fields(self):
