@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Manage searches · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Search intent</p><h1>Manage Search Workspaces</h1><p>Keep different job-search goals separate while using the same global Evidence Profile.</p></div></section>
+<section class="panel form-panel"><form id="create-search-workspace-form">
+  <div class="panel-heading"><div><h2>Create a Search Workspace</h2><p>Start blank or copy the selected workspace’s search preferences.</p></div></div>
+  <label>Name<input name="name" required maxlength="120" placeholder="Project Manager"></label>
+  {% if selected_search_workspace %}<label><input type="checkbox" name="copy_current"> Copy preferences from {{ selected_search_workspace.name }}</label>{% endif %}
+  <button class="button" type="submit">Create workspace</button>
+</form></section>
+<section class="panel"><div class="panel-heading"><h2>Your Search Workspaces</h2></div>
+  <div class="evidence-list">{% for workspace in search_workspaces %}<article class="evidence-row" data-search-workspace-id="{{ workspace.id }}" data-revision="{{ workspace.revision }}">
+    <div><strong>{{ workspace.name }}</strong><p>{{ workspace.status | title }}{% if workspace.id == selected_search_workspace.id %} · currently selected{% endif %}</p></div>
+    <div>{% if workspace.status == 'active' %}<form class="rename-search-workspace-form"><input name="name" value="{{ workspace.name }}" required maxlength="120"><button class="button button-small secondary" type="submit">Rename</button></form><button class="button button-small secondary search-workspace-archive" type="button">Archive</button>{% else %}<button class="button button-small secondary search-workspace-restore" type="button">Restore</button>{% endif %}</div>
+  </article>{% endfor %}</div>
+</section>
+{% endblock %}

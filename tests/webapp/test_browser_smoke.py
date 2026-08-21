@@ -425,13 +425,15 @@ def test_user_profile_preferences_are_editable_in_browser(page, live_server):
     page.locator('input[name="compensation_currency"]').fill("GBP")
     page.locator('input[name="compensation_minimum"]').fill("60000")
     with page.expect_navigation(wait_until="networkidle"):
-        page.get_by_role("button", name="Save User Profile").click()
+        page.get_by_role("button", name="Save search preferences").click()
 
     assert page.locator('textarea[name="target_roles"]').input_value() == (
         "Project Manager\nProject Planner"
     )
     assert page.locator('input[name="seniority_levels"][value="senior"]').is_checked()
-    response = page.request.get(f"{live_server.base_url}/api/user-profile")
+    response = page.request.get(
+        f"{live_server.base_url}/api/search-workspaces/search_default/user-profile"
+    )
     assert response.status == 200
     payload = response.json()["user_profile"]["payload"]
     assert payload["target_roles"] == ["Project Manager", "Project Planner"]
@@ -602,7 +604,7 @@ def test_discovery_search_evaluate_and_promote_browser_lifecycle(page, live_serv
     page.locator('textarea[name="locations"]').fill("London, UK")
     page.locator('textarea[name="search_terms"]').fill("Python data pipelines")
     page.locator('textarea[name="source_preferences"]').fill("freehire-search")
-    _click_reload(page, page.get_by_role("button", name="Save User Profile"))
+    _click_reload(page, page.get_by_role("button", name="Save search preferences"))
 
     page.goto(f"{live_server.base_url}/discover", wait_until="networkidle")
     assert page.get_by_role("heading", name="Discover and rank jobs").is_visible()
@@ -629,4 +631,26 @@ def test_discovery_search_evaluate_and_promote_browser_lifecycle(page, live_serv
     assert page.locator('[data-candidate-id]').filter(has_text="Discovery Evidence Co").count() == 1
     applications = page.request.get(f"{live_server.base_url}/api/workspaces").json()["workspaces"]
     assert len([item for item in applications if item["company"] == "Discovery Evidence Co"]) == 1
+    _assert_no_private_browser_content(page, live_server)
+
+
+def test_search_workspace_switching_keeps_preferences_isolated(page, live_server):
+    page.goto(f"{live_server.base_url}/user-profile", wait_until="networkidle")
+    page.locator('textarea[name="target_roles"]').fill("Project Planner")
+    _click_reload(page, page.get_by_role("button", name="Save search preferences"))
+
+    page.goto(f"{live_server.base_url}/search-workspaces", wait_until="networkidle")
+    page.locator('#create-search-workspace-form input[name="name"]').fill("Project Manager")
+    with page.expect_navigation(wait_until="networkidle"):
+        page.get_by_role("button", name="Create workspace").click()
+    assert "/preferences" in page.url
+    assert page.get_by_text("Project Manager · Search preferences").is_visible()
+    page.locator('textarea[name="target_roles"]').fill("Project Manager")
+    _click_reload(page, page.get_by_role("button", name="Save search preferences"))
+
+    page.get_by_label("Search workspace", exact=True).select_option(label="Default search")
+    page.wait_for_url("**/search-workspaces/search_default/discover")
+    page.get_by_role("link", name="Search preferences", exact=True).click()
+    page.wait_for_url("**/search-workspaces/search_default/preferences")
+    assert page.locator('textarea[name="target_roles"]').input_value() == "Project Planner"
     _assert_no_private_browser_content(page, live_server)

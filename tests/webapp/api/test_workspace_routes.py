@@ -44,6 +44,38 @@ def test_create_list_and_get_workspace(tmp_path):
         assert client.get("/api/workspaces/missing").status_code == 404
 
 
+def test_direct_job_creation_is_globally_idempotent_for_weak_only_identity(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        first = _create(client)
+        second = _create(client)
+
+        assert second == first
+        assert len(client.get("/api/workspaces").json()["workspaces"]) == 1
+
+
+def test_direct_job_creation_blocks_strong_to_weak_identity_ambiguity(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        strong = {**_source_record(), "source_record_id": "vacancy-1"}
+        first = client.post(
+            "/api/workspaces",
+            json={"company": "Acme", "title": "Backend Engineer", "source_record": strong},
+        )
+        assert first.status_code == 201
+
+        ambiguous = client.post(
+            "/api/workspaces",
+            json={
+                "company": "Acme",
+                "title": "Backend Engineer",
+                "source_record": _source_record(),
+            },
+        )
+
+        assert ambiguous.status_code == 400
+        assert "ambiguous" in ambiguous.json()["detail"]
+        assert len(client.get("/api/workspaces").json()["workspaces"]) == 1
+
+
 def test_extensions_expose_public_metadata_without_internal_paths(tmp_path):
     with TestClient(create_app(_settings(tmp_path))) as client:
         response = client.get("/api/extensions")
