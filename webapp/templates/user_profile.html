@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}User Profile · Job Search Workspace{% endblock %}
 {% block content %}
-<section class="hero compact"><div><p class="eyebrow">Search intent</p><h1>Job search preferences</h1>
+<section class="hero compact"><div><p class="eyebrow">{{ selected_search_workspace.name if selected_search_workspace else 'Search intent' }} · Search preferences</p><h1>Job search preferences</h1>
 <p>Tell the product what work you want to find. These preferences do not become candidate evidence and do not change Job Fit scoring.</p></div></section>
+{% if selected_search_workspace.status == 'archived' %}<section class="panel review-surface"><strong>This Search Workspace is archived.</strong><p>Restore it from Manage searches before changing its preferences.</p></section>{% endif %}
 {% if user_profile %}<div class="summary-strip"><span>Current preferences</span><code>{{ user_profile.content_id }}</code><span>Saved {{ user_profile.created_at }}</span></div>{% endif %}
-<section class="panel form-panel"><form id="user-profile-form">
+<section class="panel form-panel"><form id="user-profile-form" data-api-base="/api/search-workspaces/{{ selected_search_workspace.id }}/user-profile" data-revision="{{ user_profile.profile_revision if user_profile else 0 }}" data-read-only="{{ 'true' if selected_search_workspace.status == 'archived' else 'false' }}">
   <div class="panel-heading"><div><h2>Discovery preferences</h2><p>Put the most important values first. Enter one value per line.</p></div></div>
   <div class="form-grid">
     <label>Target roles<textarea name="target_roles" rows="5" placeholder="Project Manager&#10;Project Planner">{{ preferences.target_roles | join('\n') }}</textarea></label>
@@ -38,6 +39,6 @@
       {% for value, label in [("year", "Per year"), ("month", "Per month"), ("day", "Per day"), ("hour", "Per hour")] %}<option value="{{ value }}" {% if compensation.get('period', 'year') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
     </select></label>
   </div><p class="form-note">Leave currency and minimum empty when compensation should not filter discovery.</p></fieldset>
-  <button class="button" type="submit">Save User Profile</button>
+  <button class="button" type="submit" {% if selected_search_workspace.status == 'archived' %}disabled{% endif %}>Save search preferences</button>
 </form></section>
 {% endblock %}

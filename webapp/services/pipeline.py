@@ -32,8 +32,19 @@ from product.semantic_job_fit import (
 )
 
 from webapp.persistence.artifacts import get_current_artifact, save_artifact
+from webapp.persistence.application_identity import (
+    ApplicationIdentityAmbiguityError,
+    ApplicationIdentityConflictError,
+    resolve_application_workspace,
+    save_application_identity,
+)
 from webapp.persistence.provider_audits import save_provider_audit
-from webapp.persistence.workspaces import PROFILE_WORKSPACE_ID, create_workspace, ensure_profile_workspace
+from webapp.persistence.workspaces import (
+    PROFILE_WORKSPACE_ID,
+    create_workspace,
+    ensure_profile_workspace,
+    get_workspace,
+)
 from webapp.services.semantic_proposal_adapter import (
     SemanticProposalAdapter,
     select_semantic_profile_evidence,
@@ -86,15 +97,56 @@ def create_job_from_source_record(
         job_snapshot = normalize_job_source_record(source_record)
     except Exception as exc:
         raise PipelineError(f"job ingestion failed: {exc}") from exc
-    workspace = create_workspace(
-        conn, company=company, title=title, workspace_id=workspace_id, commit=commit
-    )
-    content_id = job_snapshot_content_id(job_snapshot)
-    artifact = save_artifact(
-        conn, workspace_id=workspace["id"], artifact_type="job_posting_snapshot",
-        payload=job_snapshot, content_id=content_id, commit=commit,
-    )
-    return {"workspace": workspace, "artifact": artifact}
+    try:
+        if commit:
+            conn.execute("BEGIN IMMEDIATE")
+        existing = resolve_application_workspace(conn, source_record)
+        if existing.application_workspace_id is not None:
+            workspace = get_workspace(conn, existing.application_workspace_id)
+            artifact = get_current_artifact(
+                conn, existing.application_workspace_id, "job_posting_snapshot"
+            )
+            if workspace is None or artifact is None:
+                raise PipelineError(
+                    "application identity references an incomplete job workspace"
+                )
+            save_application_identity(
+                conn,
+                application_workspace_id=workspace["id"],
+                source_record=source_record,
+            )
+            if commit:
+                conn.commit()
+            return {"workspace": workspace, "artifact": artifact, "created": False}
+
+        workspace = create_workspace(
+            conn, company=company, title=title, workspace_id=workspace_id, commit=False
+        )
+        content_id = job_snapshot_content_id(job_snapshot)
+        artifact = save_artifact(
+            conn,
+            workspace_id=workspace["id"],
+            artifact_type="job_posting_snapshot",
+            payload=job_snapshot,
+            content_id=content_id,
+            commit=False,
+        )
+        save_application_identity(
+            conn,
+            application_workspace_id=workspace["id"],
+            source_record=source_record,
+        )
+        if commit:
+            conn.commit()
+        return {"workspace": workspace, "artifact": artifact, "created": True}
+    except (ApplicationIdentityAmbiguityError, ApplicationIdentityConflictError) as exc:
+        if commit:
+            conn.rollback()
+        raise PipelineError(str(exc)) from exc
+    except Exception:
+        if commit:
+            conn.rollback()
+        raise
 
 
 def run_job_understanding(

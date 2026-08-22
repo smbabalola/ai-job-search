@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from product.user_profile import UserProfileValidationError, normalize_user_profile
 from webapp.api.dependencies import get_conn
 from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
+from webapp.persistence.search_workspaces import (
+    SearchWorkspaceConflictError,
+    SearchWorkspaceError,
+    get_search_workspace,
+)
 
 
-router = APIRouter(prefix="/api/user-profile", tags=["user-profile"])
+router = APIRouter(
+    prefix="/api/search-workspaces/{search_workspace_id}/user-profile",
+    tags=["user-profile"],
+)
 
 
 class StrictBody(BaseModel):
@@ -38,19 +45,47 @@ class UserProfileBody(StrictBody):
 
 
 @router.get("")
-def get_user_profile(conn: sqlite3.Connection = Depends(get_conn)):
+def get_scoped_user_profile(
+    search_workspace_id: str, conn: sqlite3.Connection = Depends(get_conn)
+):
+    if get_search_workspace(conn, search_workspace_id) is None:
+        raise HTTPException(status_code=404, detail="search workspace not found")
     return {
-        "user_profile": get_current_user_profile(conn),
+        "user_profile": get_current_user_profile(conn, search_workspace_id),
         "defaults": normalize_user_profile({}),
     }
 
 
+def _expected_revision(if_match: str | None) -> int:
+    if if_match is None:
+        raise HTTPException(
+            status_code=428, detail="If-Match preference revision is required"
+        )
+    try:
+        return int(if_match.strip().strip('"'))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="If-Match must be an integer revision"
+        ) from exc
+
+
 @router.put("")
-def put_user_profile(
-    body: UserProfileBody, conn: sqlite3.Connection = Depends(get_conn)
+def put_scoped_user_profile(
+    search_workspace_id: str,
+    body: UserProfileBody,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    conn: sqlite3.Connection = Depends(get_conn),
 ):
     try:
-        payload: dict[str, Any] = body.model_dump()
-        return {"user_profile": save_user_profile(conn, payload)}
-    except UserProfileValidationError as exc:
+        return {
+            "user_profile": save_user_profile(
+                conn,
+                body.model_dump(),
+                search_workspace_id=search_workspace_id,
+                expected_revision=_expected_revision(if_match),
+            )
+        }
+    except SearchWorkspaceConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (SearchWorkspaceError, UserProfileValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

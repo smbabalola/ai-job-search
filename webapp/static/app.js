@@ -78,20 +78,20 @@ document.addEventListener("click", async (event) => {
       });
     } else if (button.classList.contains("discovery-status")) {
       const card = button.closest("[data-candidate-id]");
-      await api(`/api/discovery/candidates/${card.dataset.candidateId}`, {
+      await api(`${discoveryApiBase()}/candidates/${card.dataset.candidateId}`, {
         method: "PATCH", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({status: button.dataset.status})
       });
     } else if (button.classList.contains("discovery-promote")) {
       const card = button.closest("[data-candidate-id]");
-      const result = await api(`/api/discovery/candidates/${card.dataset.candidateId}/promote`, {method: "POST"});
+      const result = await api(`${discoveryApiBase()}/candidates/${card.dataset.candidateId}/promote`, {method: "POST"});
       window.location.assign(`/workspaces/${result.workspace.id}`);
       return;
     } else if (button.classList.contains("discovery-evaluate-selected")) {
       const group = button.closest("[data-discovery-group]");
       const ids = [...group.querySelectorAll(".candidate-select:checked")].map(input => input.closest("[data-candidate-id]").dataset.candidateId);
       if (!ids.length) throw new Error("Select at least one job to evaluate.");
-      const evaluation = await api("/api/discovery/evaluate", {method: "POST", headers: {"Content-Type": "application/json"},
+      const evaluation = await api(`${discoveryApiBase()}/evaluate`, {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({candidate_ids: ids, extension_ids: [], request_id: `discovery_${Date.now()}`})});
       const failed = evaluation.results.filter(result => result.status === "failed");
       if (failed.length) throw new Error(`${failed.length} evaluation(s) failed: ${failed[0].error}`);
@@ -103,6 +103,10 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+function discoveryApiBase() {
+  return document.querySelector("[data-discovery-api-base]")?.dataset.discoveryApiBase;
+}
+
 const discoverySearchForm = document.getElementById("discovery-search-form");
 if (discoverySearchForm) discoverySearchForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -110,7 +114,7 @@ if (discoverySearchForm) discoverySearchForm.addEventListener("submit", async ev
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await api("/api/discovery/search", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+    await api(`${discoveryApiBase()}/search`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
       sources: checkedValues(form, "sources"), queries: profileLines(form, "queries"),
       locations: profileLines(form, "locations"), limit_per_source: Number(new FormData(form).get("limit_per_source"))
     })});
@@ -164,6 +168,9 @@ function checkedValues(form, name) {
 }
 
 const userProfileForm = document.getElementById("user-profile-form");
+if (userProfileForm?.dataset.readOnly === "true") {
+  userProfileForm.querySelectorAll("input, textarea, select, button").forEach(control => { control.disabled = true; });
+}
 if (userProfileForm) userProfileForm.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -176,8 +183,11 @@ if (userProfileForm) userProfileForm.addEventListener("submit", async event => {
     if ((currency && !minimum) || (!currency && minimum)) {
       throw new Error("Enter both compensation currency and minimum, or leave both empty.");
     }
-    await api("/api/user-profile", {
-      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+    await api(form.dataset.apiBase, {
+      method: "PUT", headers: {
+        "Content-Type": "application/json",
+        "If-Match": form.dataset.revision || "0"
+      }, body: JSON.stringify({
         target_roles: profileLines(form, "target_roles"),
         locations: profileLines(form, "locations"),
         remote_preference: data.get("remote_preference"),
@@ -196,6 +206,53 @@ if (userProfileForm) userProfileForm.addEventListener("submit", async event => {
     window.location.reload();
   } catch (error) { showMessage(error.message, true); button.disabled = false; }
 });
+
+const searchWorkspaceSwitcher = document.querySelector("[data-search-workspace-switcher]");
+if (searchWorkspaceSwitcher) searchWorkspaceSwitcher.addEventListener("change", event => {
+  window.location.assign(event.currentTarget.value);
+});
+
+if (document.querySelector("[data-discovery-api-base]")?.dataset.readOnly === "true") {
+  document.querySelectorAll("#discovery-search-form input, #discovery-search-form textarea, #discovery-search-form select, #discovery-search-form button, .discovery-status, .discovery-promote, .discovery-evaluate-selected").forEach(control => { control.disabled = true; });
+}
+
+const createSearchWorkspaceForm = document.getElementById("create-search-workspace-form");
+if (createSearchWorkspaceForm) createSearchWorkspaceForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const selected = document.querySelector("[data-search-workspace-switcher]")?.value.match(/search-workspaces\/([^/]+)/)?.[1];
+  try {
+    const result = await api("/api/search-workspaces", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: data.get("name"), copy_profile_from: data.get("copy_current") ? selected : null})
+    });
+    window.location.assign(`/search-workspaces/${result.search_workspace.id}/preferences`);
+  } catch (error) { showMessage(error.message, true); }
+});
+
+document.querySelectorAll(".rename-search-workspace-form").forEach(form => form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const row = event.currentTarget.closest("[data-search-workspace-id]");
+  try {
+    await api(`/api/search-workspaces/${row.dataset.searchWorkspaceId}`, {
+      method: "PATCH", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: new FormData(event.currentTarget).get("name"), expected_revision: Number(row.dataset.revision)})
+    });
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); }
+}));
+
+document.querySelectorAll(".search-workspace-archive, .search-workspace-restore").forEach(button => button.addEventListener("click", async event => {
+  const row = event.currentTarget.closest("[data-search-workspace-id]");
+  const operation = event.currentTarget.classList.contains("search-workspace-archive") ? "archive" : "restore";
+  try {
+    await api(`/api/search-workspaces/${row.dataset.searchWorkspaceId}/${operation}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({expected_revision: Number(row.dataset.revision)})
+    });
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); }
+}));
 
 function finishProfileSetup(form) {
   const returnTo = form.dataset.returnTo;

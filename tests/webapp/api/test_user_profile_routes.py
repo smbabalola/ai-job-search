@@ -29,12 +29,13 @@ def _payload(**overrides):
 
 def test_get_then_put_round_trip_and_idempotent_update(tmp_path):
     with _client(tmp_path) as client:
-        empty = client.get("/api/user-profile")
+        endpoint = "/api/search-workspaces/search_default/user-profile"
+        empty = client.get(endpoint)
         assert empty.status_code == 200
         assert empty.json()["user_profile"] is None
         assert empty.json()["defaults"]["schema_version"] == "user-profile.v1"
 
-        created = client.put("/api/user-profile", json=_payload())
+        created = client.put(endpoint, headers={"If-Match": "0"}, json=_payload())
         assert created.status_code == 200, created.text
         record = created.json()["user_profile"]
         assert record["payload"]["target_roles"] == ["Project Manager", "Planner"]
@@ -42,18 +43,27 @@ def test_get_then_put_round_trip_and_idempotent_update(tmp_path):
         assert client.get("/api/profile").json()["profile"] is None
         assert client.get("/api/workspaces").json()["workspaces"] == []
 
-        repeated = client.put("/api/user-profile", json=_payload())
+        repeated = client.put(
+            endpoint,
+            headers={"If-Match": str(record["profile_revision"])},
+            json=_payload(),
+        )
         assert repeated.json()["user_profile"]["id"] == record["id"]
-        assert client.get("/api/user-profile").json()["user_profile"]["id"] == record["id"]
+        assert client.get(endpoint).json()["user_profile"]["id"] == record["id"]
 
 
 def test_request_shape_and_preference_values_are_strict(tmp_path):
     with _client(tmp_path) as client:
+        endpoint = "/api/search-workspaces/search_default/user-profile"
         assert client.put(
-            "/api/user-profile", json={**_payload(), "skills": ["unsupported evidence field"]},
+            endpoint,
+            headers={"If-Match": "0"},
+            json={**_payload(), "skills": ["unsupported evidence field"]},
         ).status_code == 422
         invalid = client.put(
-            "/api/user-profile", json=_payload(remote_preference="sometimes"),
+            endpoint,
+            headers={"If-Match": "0"},
+            json=_payload(remote_preference="sometimes"),
         )
         assert invalid.status_code == 400
         assert "remote_preference" in invalid.json()["detail"]
@@ -61,7 +71,11 @@ def test_request_shape_and_preference_values_are_strict(tmp_path):
 
 def test_user_profile_page_is_distinct_from_evidence_profile_and_editable(tmp_path):
     with _client(tmp_path) as client:
-        client.put("/api/user-profile", json=_payload())
+        client.put(
+            "/api/search-workspaces/search_default/user-profile",
+            headers={"If-Match": "0"},
+            json=_payload(),
+        )
         page = client.get("/user-profile")
 
         assert page.status_code == 200
@@ -70,4 +84,4 @@ def test_user_profile_page_is_distinct_from_evidence_profile_and_editable(tmp_pa
         assert "These preferences do not become candidate evidence" in page.text
         assert 'id="user-profile-form"' in page.text
         assert 'href="/profile">Evidence Profile</a>' in page.text
-        assert 'href="/user-profile">User Profile</a>' in page.text
+        assert 'href="/search-workspaces/search_default/preferences">Search preferences</a>' in page.text

@@ -19,6 +19,8 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        conn.commit()
+        from webapp.persistence.migrations import apply_migrations
+
+        apply_migrations(conn)
     finally:
         conn.close()

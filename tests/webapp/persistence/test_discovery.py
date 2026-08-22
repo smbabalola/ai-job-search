@@ -8,6 +8,7 @@ from webapp.persistence.discovery import (
     list_discovery_candidates,
     set_discovery_candidate_status,
 )
+from webapp.persistence.search_workspaces import create_search_workspace
 
 
 def _record(**overrides):
@@ -125,3 +126,28 @@ def test_list_filters_lifecycle_and_returns_occurrence_count(tmp_path):
     assert [item["id"] for item in saved] == [saved_id]
     assert saved[0]["occurrence_count"] == 1
     assert get_discovery_candidate(conn, saved_id)["canonical_source_record"]["title"] == "Project Planner"
+
+
+def test_same_job_has_independent_candidates_in_separate_search_workspaces(tmp_path):
+    conn = _connection(tmp_path)
+    other = create_search_workspace(conn, name="Project Manager")
+
+    default_candidate = ingest_discovery_record(conn, _record())["candidate"]
+    other_candidate = ingest_discovery_record(
+        conn,
+        _record(captured_at="2026-08-21T10:00:00+00:00"),
+        search_workspace_id=other["id"],
+    )["candidate"]
+
+    assert default_candidate["id"] != other_candidate["id"]
+    assert default_candidate["search_workspace_id"] == "search_default"
+    assert other_candidate["search_workspace_id"] == other["id"]
+    assert [item["id"] for item in list_discovery_candidates(conn)] == [
+        default_candidate["id"]
+    ]
+    assert [
+        item["id"]
+        for item in list_discovery_candidates(
+            conn, search_workspace_id=other["id"]
+        )
+    ] == [other_candidate["id"]]

@@ -9,6 +9,10 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from product.job_ingestion import validate_job_source_record
+from webapp.persistence.search_workspaces import (
+    DEFAULT_SEARCH_WORKSPACE_ID,
+    get_search_workspace,
+)
 
 
 USER_STATUSES = {"new", "saved", "dismissed", "expired"}
@@ -21,6 +25,18 @@ class DiscoveryLifecycleError(ValueError):
 
 class DiscoveryIdentityConflictError(RuntimeError):
     pass
+
+
+def _require_writable_search_workspace(
+    conn: sqlite3.Connection, search_workspace_id: str
+) -> None:
+    workspace = get_search_workspace(conn, search_workspace_id)
+    if workspace is None:
+        raise DiscoveryLifecycleError(
+            f"unknown search workspace {search_workspace_id!r}"
+        )
+    if workspace["status"] != "active":
+        raise DiscoveryLifecycleError("archived search workspaces are read-only")
 
 
 def _now() -> str:
@@ -62,12 +78,15 @@ def discovery_identity_keys(record: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def _candidate_id_for_keys(
-    conn: sqlite3.Connection, keys: list[tuple[str, str]]
+    conn: sqlite3.Connection,
+    search_workspace_id: str,
+    keys: list[tuple[str, str]],
 ) -> str | None:
     placeholders = ",".join("?" for _ in keys)
     rows = conn.execute(
-        f"SELECT DISTINCT candidate_id FROM discovery_candidate_keys WHERE identity_key IN ({placeholders})",
-        tuple(value for _, value in keys),
+        f"SELECT DISTINCT candidate_id FROM discovery_candidate_keys "
+        f"WHERE search_workspace_id = ? AND identity_key IN ({placeholders})",
+        (search_workspace_id, *(value for _, value in keys)),
     ).fetchall()
     ids = {row["candidate_id"] for row in rows}
     if len(ids) > 1:
@@ -82,20 +101,31 @@ def ingest_discovery_record(
     source_record: dict[str, Any],
     *,
     run_id: str | None = None,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
 ) -> dict[str, Any]:
     validate_job_source_record(source_record)
+    _require_writable_search_workspace(conn, search_workspace_id)
+    if run_id is not None:
+        run = conn.execute(
+            "SELECT search_workspace_id FROM discovery_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if run is None or run["search_workspace_id"] != search_workspace_id:
+            raise DiscoveryIdentityConflictError(
+                "discovery run does not belong to the selected search workspace"
+            )
     keys = discovery_identity_keys(source_record)
-    candidate_id = _candidate_id_for_keys(conn, keys)
+    candidate_id = _candidate_id_for_keys(conn, search_workspace_id, keys)
     now = _now()
     if candidate_id is None:
         candidate_id = f"disc_{uuid.uuid4().hex[:20]}"
         conn.execute(
             "INSERT INTO discovery_candidates "
-            "(id, company, title, location, lifecycle_status, canonical_occurrence_id, "
+            "(id, search_workspace_id, company, title, location, lifecycle_status, canonical_occurrence_id, "
             "promoted_workspace_id, first_seen_at, last_seen_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'new', NULL, NULL, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, 'new', NULL, NULL, ?, ?, ?)",
             (
                 candidate_id,
+                search_workspace_id,
                 source_record["company"],
                 source_record["title"],
                 source_record.get("location"),
@@ -107,10 +137,11 @@ def ingest_discovery_record(
     occurrence_id = f"occ_{uuid.uuid4().hex[:20]}"
     conn.execute(
         "INSERT INTO discovery_occurrences "
-        "(id, candidate_id, run_id, source, source_record_id, source_url, source_record_json, "
-        "captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, search_workspace_id, candidate_id, run_id, source, source_record_id, source_url, source_record_json, "
+        "captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             occurrence_id,
+            search_workspace_id,
             candidate_id,
             run_id,
             source_record["source"],
@@ -124,13 +155,15 @@ def ingest_discovery_record(
     for key_type, identity_key in keys:
         try:
             conn.execute(
-                "INSERT INTO discovery_candidate_keys (identity_key, candidate_id, key_type) VALUES (?, ?, ?)",
-                (identity_key, candidate_id, key_type),
+                "INSERT INTO discovery_candidate_keys "
+                "(search_workspace_id, identity_key, candidate_id, key_type) VALUES (?, ?, ?, ?)",
+                (search_workspace_id, identity_key, candidate_id, key_type),
             )
         except sqlite3.IntegrityError:
             owner = conn.execute(
-                "SELECT candidate_id FROM discovery_candidate_keys WHERE identity_key = ?",
-                (identity_key,),
+                "SELECT candidate_id FROM discovery_candidate_keys "
+                "WHERE search_workspace_id = ? AND identity_key = ?",
+                (search_workspace_id, identity_key),
             ).fetchone()
             if owner is None or owner["candidate_id"] != candidate_id:
                 conn.rollback()
@@ -149,7 +182,12 @@ def ingest_discovery_record(
         (source_record["captured_at"], now, canonical_occurrence_id, candidate_id),
     )
     conn.commit()
-    return {"candidate": get_discovery_candidate(conn, candidate_id), "occurrence_id": occurrence_id}
+    return {
+        "candidate": get_discovery_candidate(
+            conn, candidate_id, search_workspace_id=search_workspace_id
+        ),
+        "occurrence_id": occurrence_id,
+    }
 
 
 def _occurrence_quality(record: dict[str, Any]) -> tuple[int, int]:
@@ -169,13 +207,16 @@ def _canonical_quality(conn: sqlite3.Connection, occurrence_id: str) -> tuple[in
 
 
 def get_discovery_candidate(
-    conn: sqlite3.Connection, candidate_id: str
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT c.*, COUNT(o.id) AS occurrence_count "
         "FROM discovery_candidates c LEFT JOIN discovery_occurrences o ON o.candidate_id = c.id "
-        "WHERE c.id = ? GROUP BY c.id",
-        (candidate_id,),
+        "WHERE c.id = ? AND c.search_workspace_id = ? GROUP BY c.id",
+        (candidate_id, search_workspace_id),
     ).fetchone()
     if row is None:
         return None
@@ -189,30 +230,49 @@ def get_discovery_candidate(
 
 
 def list_discovery_candidates(
-    conn: sqlite3.Connection, *, lifecycle_status: str | None = None
+    conn: sqlite3.Connection,
+    *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    lifecycle_status: str | None = None,
 ) -> list[dict[str, Any]]:
     if lifecycle_status is not None and lifecycle_status not in ALL_STATUSES:
         raise DiscoveryLifecycleError(f"unsupported lifecycle status {lifecycle_status!r}")
     if lifecycle_status is None:
         rows = conn.execute(
-            "SELECT id FROM discovery_candidates ORDER BY updated_at DESC, id DESC"
+            "SELECT id FROM discovery_candidates WHERE search_workspace_id = ? "
+            "ORDER BY updated_at DESC, id DESC",
+            (search_workspace_id,),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id FROM discovery_candidates WHERE lifecycle_status = ? ORDER BY updated_at DESC, id DESC",
-            (lifecycle_status,),
+            "SELECT id FROM discovery_candidates "
+            "WHERE search_workspace_id = ? AND lifecycle_status = ? "
+            "ORDER BY updated_at DESC, id DESC",
+            (search_workspace_id, lifecycle_status),
         ).fetchall()
-    return [get_discovery_candidate(conn, row["id"]) for row in rows]
+    return [
+        get_discovery_candidate(
+            conn, row["id"], search_workspace_id=search_workspace_id
+        )
+        for row in rows
+    ]
 
 
 def set_discovery_candidate_status(
-    conn: sqlite3.Connection, candidate_id: str, status: str
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    status: str,
+    *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
 ) -> dict[str, Any]:
+    _require_writable_search_workspace(conn, search_workspace_id)
     if status == "promoted":
         raise DiscoveryLifecycleError("promoted status is assigned only by the promotion service")
     if status not in USER_STATUSES:
         raise DiscoveryLifecycleError(f"unsupported lifecycle status {status!r}")
-    candidate = get_discovery_candidate(conn, candidate_id)
+    candidate = get_discovery_candidate(
+        conn, candidate_id, search_workspace_id=search_workspace_id
+    )
     if candidate is None:
         raise DiscoveryLifecycleError(f"unknown discovery candidate {candidate_id!r}")
     if candidate["lifecycle_status"] == "promoted":
@@ -220,28 +280,34 @@ def set_discovery_candidate_status(
     if status == "new" and candidate["lifecycle_status"] not in {"dismissed", "expired", "new"}:
         raise DiscoveryLifecycleError("only dismissed or expired candidates may be resurfaced")
     conn.execute(
-        "UPDATE discovery_candidates SET lifecycle_status = ?, updated_at = ? WHERE id = ?",
-        (status, _now(), candidate_id),
+        "UPDATE discovery_candidates SET lifecycle_status = ?, updated_at = ? "
+        "WHERE id = ? AND search_workspace_id = ?",
+        (status, _now(), candidate_id, search_workspace_id),
     )
     conn.commit()
-    return get_discovery_candidate(conn, candidate_id)
+    return get_discovery_candidate(
+        conn, candidate_id, search_workspace_id=search_workspace_id
+    )
 
 
 def create_discovery_run(
     conn: sqlite3.Connection,
     *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     user_profile_version_id: str,
     user_profile_content_id: str,
     request: dict[str, Any],
 ) -> dict[str, Any]:
+    _require_writable_search_workspace(conn, search_workspace_id)
     run_id = f"dsrun_{uuid.uuid4().hex[:20]}"
     now = _now()
     conn.execute(
         "INSERT INTO discovery_runs "
-        "(id, user_profile_version_id, user_profile_content_id, request_json, source_status_json, "
-        "status, created_at, completed_at) VALUES (?, ?, ?, ?, '{}', 'running', ?, NULL)",
+        "(id, search_workspace_id, user_profile_version_id, user_profile_content_id, request_json, source_status_json, "
+        "status, created_at, completed_at) VALUES (?, ?, ?, ?, ?, '{}', 'running', ?, NULL)",
         (
             run_id,
+            search_workspace_id,
             user_profile_version_id,
             user_profile_content_id,
             json.dumps(request, ensure_ascii=False, sort_keys=True),
@@ -271,8 +337,19 @@ def complete_discovery_run(
     return get_discovery_run(conn, run_id)
 
 
-def get_discovery_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM discovery_runs WHERE id = ?", (run_id,)).fetchone()
+def get_discovery_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    search_workspace_id: str | None = None,
+) -> dict[str, Any] | None:
+    if search_workspace_id is None:
+        row = conn.execute("SELECT * FROM discovery_runs WHERE id = ?", (run_id,)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM discovery_runs WHERE id = ? AND search_workspace_id = ?",
+            (run_id, search_workspace_id),
+        ).fetchone()
     if row is None:
         return None
     output = dict(row)
@@ -281,9 +358,14 @@ def get_discovery_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] |
     return output
 
 
-def get_latest_discovery_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
+def get_latest_discovery_run(
+    conn: sqlite3.Connection,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT id FROM discovery_runs ORDER BY created_at DESC, id DESC LIMIT 1"
+        "SELECT id FROM discovery_runs WHERE search_workspace_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (search_workspace_id,),
     ).fetchone()
     return get_discovery_run(conn, row["id"]) if row else None
 
@@ -291,6 +373,7 @@ def get_latest_discovery_run(conn: sqlite3.Connection) -> dict[str, Any] | None:
 def save_discovery_fit(
     conn: sqlite3.Connection,
     *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     candidate_id: str,
     occurrence_id: str,
     request: dict[str, Any],
@@ -300,10 +383,11 @@ def save_discovery_fit(
     fit_id = f"dsfit_{uuid.uuid4().hex[:20]}"
     conn.execute(
         "INSERT INTO discovery_fit_results "
-        "(id, candidate_id, occurrence_id, request_json, result_json, fingerprints_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(id, search_workspace_id, candidate_id, occurrence_id, request_json, result_json, fingerprints_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             fit_id,
+            search_workspace_id,
             candidate_id,
             occurrence_id,
             json.dumps(request, ensure_ascii=False, sort_keys=True),
@@ -313,21 +397,24 @@ def save_discovery_fit(
         ),
     )
     conn.execute(
-        "INSERT INTO current_discovery_fits (candidate_id, fit_id) VALUES (?, ?) "
+        "INSERT INTO current_discovery_fits (search_workspace_id, candidate_id, fit_id) VALUES (?, ?, ?) "
         "ON CONFLICT(candidate_id) DO UPDATE SET fit_id=excluded.fit_id",
-        (candidate_id, fit_id),
+        (search_workspace_id, candidate_id, fit_id),
     )
     conn.commit()
     return get_current_discovery_fit(conn, candidate_id)
 
 
 def get_current_discovery_fit(
-    conn: sqlite3.Connection, candidate_id: str
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT f.* FROM current_discovery_fits c JOIN discovery_fit_results f ON f.id = c.fit_id "
-        "WHERE c.candidate_id = ?",
-        (candidate_id,),
+        "WHERE c.candidate_id = ? AND c.search_workspace_id = ?",
+        (candidate_id, search_workspace_id),
     ).fetchone()
     if row is None:
         return None

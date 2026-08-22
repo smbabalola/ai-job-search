@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from webapp.persistence.db import connect, init_db
-from webapp.persistence.user_profile import save_user_profile
+from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
+from webapp.persistence.search_workspaces import create_search_workspace
 from webapp.services.discovery import DiscoveryServiceError, discovery_run_is_stale, run_discovery_search
 
 
@@ -55,3 +56,42 @@ def test_search_fingerprints_preferences_and_isolates_source_failure(tmp_path):
     assert discovery_run_is_stale(conn, result["run"]) is False
     save_user_profile(conn, {"target_roles": ["Changed role"]})
     assert discovery_run_is_stale(conn, result["run"]) is True
+
+
+def test_preference_staleness_is_derived_and_isolated_by_search_workspace(tmp_path):
+    conn = _connection(tmp_path)
+    other = create_search_workspace(conn, name="Project Manager")
+    save_user_profile(conn, {"target_roles": ["Planner"]})
+    save_user_profile(
+        conn,
+        {"target_roles": ["Project Manager"]},
+        search_workspace_id=other["id"],
+    )
+    default_run = run_discovery_search(
+        conn, FakeRunner(), sources=["freehire-search"]
+    )["run"]
+    other_run = run_discovery_search(
+        conn,
+        FakeRunner(),
+        sources=["freehire-search"],
+        search_workspace_id=other["id"],
+    )["run"]
+
+    other_current = get_current_user_profile(conn, other["id"])
+    save_user_profile(
+        conn,
+        {"target_roles": ["Programme Manager"]},
+        search_workspace_id=other["id"],
+        expected_revision=other_current["profile_revision"],
+    )
+
+    assert discovery_run_is_stale(
+        conn, default_run, search_workspace_id="search_default"
+    ) is False
+    assert discovery_run_is_stale(
+        conn, other_run, search_workspace_id=other["id"]
+    ) is True
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(discovery_runs)")
+    }
+    assert "stale" not in columns
