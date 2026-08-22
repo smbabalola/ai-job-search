@@ -30,7 +30,7 @@ from product.profile_snapshot import SnapshotValidationError, validate_snapshot
 
 
 MODULE_DIR = Path(__file__).parent
-SCHEMA_PATH = MODULE_DIR / "schemas" / "application-intelligence-contract.v0.schema.json"
+SCHEMA_PATH = MODULE_DIR / "schemas" / "application-intelligence-contract.v1.schema.json"
 POLICY_PATH = MODULE_DIR / "application_intelligence_policy.v0.json"
 SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 DEFAULT_POLICY = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
@@ -429,6 +429,20 @@ TEMPLATE_TABLE: dict[tuple[str, str], dict[str, Any]] = {
         "eligible": lambda claims, all_claims: list(claims),
         "format": "{value}",
     },
+    ("employment", "AS_CAPABILITY_STATEMENT"): {
+        "eligible": lambda claims, all_claims: [
+            claim for claim in claims if _has_linked_responsibility(claim, all_claims)
+        ],
+        "format": "Experience as {value}",
+    },
+    ("employment", "AS_STRENGTH"): {
+        "eligible": lambda claims, all_claims: [
+            claim for claim in claims
+            if _has_linked_responsibility(claim, all_claims)
+            and any(_is_explicit_duration(other) for other in _linked_claims(claim, all_claims))
+        ],
+        "format": "Sustained, hands-on experience as {value}",
+    },
     ("responsibility", "PLAIN"): {
         "eligible": lambda claims, all_claims: list(claims),
         "format": "{value}",
@@ -446,6 +460,18 @@ TEMPLATE_TABLE: dict[tuple[str, str], dict[str, Any]] = {
         "eligible": lambda claims, all_claims: list(claims),
         "format": "{value}",
     },
+    ("education", "PLAIN"): {
+        "eligible": lambda claims, all_claims: list(claims),
+        "format": "{value}",
+    },
+    ("publication", "PLAIN"): {
+        "eligible": lambda claims, all_claims: list(claims),
+        "format": "{value}",
+    },
+    ("award", "PLAIN"): {
+        "eligible": lambda claims, all_claims: list(claims),
+        "format": "{value}",
+    },
     ("language", "AS_CAPABILITY_STATEMENT"): {
         "eligible": lambda claims, all_claims: [
             claim for claim in claims if _is_explicit_proficiency(claim)
@@ -460,8 +486,14 @@ CONNECTIVE_ALLOWLIST = frozenset(
     {
         "additionally", "in this role", "as a result", "furthermore",
         "and", "with", "while", "in addition", "notably", ",", ".", ";",
+        "which included", "specifically",
     }
 )
+
+PLAN_RATIONALE_KINDS = frozenset({
+    "covers_uncovered_requirement", "reinforces_required_dimension",
+    "strengthens_direct_match", "addresses_gap_context",
+})
 
 
 def _linked_claims(claim: dict[str, Any], all_claims: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -469,6 +501,13 @@ def _linked_claims(claim: dict[str, Any], all_claims: dict[str, dict[str, Any]])
     if not record_id:
         return []
     return [other for other in all_claims.values() if other.get("record_id") == record_id]
+
+
+def _has_linked_responsibility(claim: dict[str, Any], all_claims: dict[str, dict[str, Any]]) -> bool:
+    """True if this claim shares a record_id with a responsibility_or_achievement claim."""
+
+    linked = _linked_claims(claim, all_claims)
+    return any(item["category"] == "employment" and item["field"] == "responsibility_or_achievement" for item in linked)
 
 
 def _select_template(
@@ -656,6 +695,43 @@ def _build_positioning(job_fit_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_requirement_coverage(
+    job_fit_result: dict[str, Any], accepted_units: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """required: union of job_requirement_ids across direct/functionally_equivalent/
+    transferable matches. covered: the subset backed by at least one accepted
+    unit (status READY, non-empty text) citing a profile_evidence_id that
+    belongs to a match carrying that requirement id. Computed strictly from
+    accepted_units -- never from a raw provider proposal or plan entry."""
+
+    required: set[str] = set()
+    requirement_to_evidence: dict[str, set[str]] = {}
+    for match_list_key in ("direct_matches", "functionally_equivalent_matches", "transferable_matches"):
+        for match in job_fit_result.get(match_list_key, []):
+            evidence_ids = set(match.get("profile_evidence_ids", []))
+            for requirement_id in match.get("job_requirement_ids", []):
+                required.add(requirement_id)
+                requirement_to_evidence.setdefault(requirement_id, set()).update(evidence_ids)
+
+    cited_evidence_ids: set[str] = set()
+    for unit in accepted_units:
+        if unit.get("status") != "READY" or not isinstance(unit.get("text"), str) or not unit["text"].strip():
+            continue
+        cited_evidence_ids.update(unit.get("profile_evidence_ids", []))
+
+    covered = {
+        requirement_id
+        for requirement_id, evidence_ids in requirement_to_evidence.items()
+        if evidence_ids & cited_evidence_ids
+    }
+    uncovered = required - covered
+    return {
+        "required": sorted(required),
+        "covered": sorted(covered),
+        "uncovered": sorted(uncovered),
+    }
+
+
 def _job_fit_result_content_id(job_fit_result: dict[str, Any]) -> str:
     """Content-derived identifier for the exact consumed Job Fit Result.
 
@@ -682,7 +758,7 @@ def validate_application_intelligence_result(request: dict[str, Any], result: An
         "schema_version", "request_id", "job_fit_result_ref", "profile_snapshot",
         "recommendation", "recommendation_reason", "positioning", "cv_emphasis_plan",
         "cv_content", "cover_letter_plan", "cover_letter_content", "unsupported_claims",
-        "status", "notes",
+        "plan_issues", "requirement_coverage", "status", "notes",
     }
     if not _object_shape(result, required, required, "$.result", errors):
         raise ApplicationIntelligenceValidationError(errors)
@@ -728,6 +804,17 @@ def validate_application_intelligence_result(request: dict[str, Any], result: An
         path = f"$.result.unsupported_claims[{index}]"
         claim_required = {"claim_id", "reason", "rejected_atom_ids"}
         _object_shape(claim, claim_required, claim_required, path, errors)
+    for index, issue in enumerate(_list(result.get("plan_issues"), "$.result.plan_issues", errors)):
+        path = f"$.result.plan_issues[{index}]"
+        issue_required = {"field", "index", "reason"}
+        _object_shape(issue, issue_required, issue_required, path, errors)
+
+    coverage = result.get("requirement_coverage")
+    if not isinstance(coverage, dict) or set(coverage.keys()) != {"required", "covered", "uncovered"}:
+        errors.append("$.result.requirement_coverage: must be an object with exactly required/covered/uncovered")
+    else:
+        for key in ("required", "covered", "uncovered"):
+            _string_list(coverage.get(key), f"$.result.requirement_coverage.{key}", errors)
 
     if errors:
         raise ApplicationIntelligenceValidationError(errors)
@@ -803,6 +890,10 @@ def analyze_application_intelligence(request: dict[str, Any], proposal: dict[str
     if not usable_units:
         notes.append("No usable application material was generated.")
 
+    cv_emphasis_plan, cv_plan_issues = _validate_plan((proposal or {}).get("cv_emphasis_plan"), "cv_emphasis_plan")
+    cover_letter_plan, cover_letter_plan_issues = _validate_plan((proposal or {}).get("cover_letter_plan"), "cover_letter_plan")
+    plan_issues = cv_plan_issues + cover_letter_plan_issues
+    requirement_coverage = _compute_requirement_coverage(job_fit_result, all_units)
     result = {
         "schema_version": RESULT_VERSION,
         "request_id": request["request_id"],
@@ -818,11 +909,13 @@ def analyze_application_intelligence(request: dict[str, Any], proposal: dict[str
         "recommendation": recommendation,
         "recommendation_reason": recommendation_reason,
         "positioning": positioning,
-        "cv_emphasis_plan": (proposal or {}).get("cv_emphasis_plan", []),
+        "cv_emphasis_plan": cv_emphasis_plan,
         "cv_content": cv_content,
-        "cover_letter_plan": (proposal or {}).get("cover_letter_plan", []),
+        "cover_letter_plan": cover_letter_plan,
         "cover_letter_content": cover_letter_content,
         "unsupported_claims": unsupported_claims,
+        "plan_issues": plan_issues,
+        "requirement_coverage": requirement_coverage,
         "status": result_status,
         "notes": notes,
     }
@@ -905,6 +998,44 @@ def _validate_unit_proposal_shape(unit_proposal: Any) -> str | None:
     if not isinstance(unit_proposal.get("connectives", []), list):
         return "connectives must be an array"
     return None
+
+
+def _validate_plan_entry_shape(entry: Any) -> str | None:
+    """Return an error reason if this cv_emphasis_plan/cover_letter_plan entry
+    is malformed, or None if it is well-formed. Mirrors _validate_atom_shape's
+    return convention exactly."""
+
+    if not isinstance(entry, dict):
+        return "plan entry must be an object"
+    if not isinstance(entry.get("plan_id"), str) or not entry["plan_id"].strip():
+        return "plan_id must be a non-empty string"
+    if entry.get("target_unit_type") not in UNIT_TYPES:
+        return f"target_unit_type must be one of {sorted(UNIT_TYPES)}"
+    ids = entry.get("target_job_requirement_ids")
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        return "target_job_requirement_ids must be a list of strings"
+    if entry.get("rationale_kind") not in PLAN_RATIONALE_KINDS:
+        return f"rationale_kind must be one of {sorted(PLAN_RATIONALE_KINDS)}"
+    return None
+
+
+def _validate_plan(raw_plan: Any, field_name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate a cv_emphasis_plan or cover_letter_plan list. Malformed entries
+    are dropped fail-closed and reported as plan_issues -- never raised, never
+    routed into unsupported_claims, which is reserved for candidate-content
+    rejection (a distinct concept from malformed planning metadata)."""
+
+    if not isinstance(raw_plan, list):
+        return [], []
+    valid: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw_plan):
+        error = _validate_plan_entry_shape(entry)
+        if error is not None:
+            issues.append({"field": field_name, "index": index, "reason": error})
+            continue
+        valid.append(entry)
+    return valid, issues
 
 
 def _adjudicate_content_unit(unit_proposal: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

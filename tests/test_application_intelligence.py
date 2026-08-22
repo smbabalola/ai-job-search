@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 
-SCHEMA_PATH = Path(__file__).parent.parent / "product" / "schemas" / "application-intelligence-contract.v0.schema.json"
+SCHEMA_PATH = Path(__file__).parent.parent / "product" / "schemas" / "application-intelligence-contract.v1.schema.json"
 
 
 class TestSchemaLoads(unittest.TestCase):
     def test_schema_file_is_valid_json_with_expected_defs(self):
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         self.assertEqual(schema["$defs"]["requestVersion"]["const"], "application-intelligence-request.v0")
-        self.assertEqual(schema["$defs"]["resultVersion"]["const"], "application-intelligence-result.v0")
+        self.assertEqual(schema["$defs"]["resultVersion"]["const"], "application-intelligence-result.v1")
         self.assertEqual(schema["$defs"]["policyVersion"]["const"], "application-intelligence-policy.v0")
         self.assertEqual(
             set(schema["$defs"]["strengthLevel"]["enum"]),
@@ -659,7 +659,7 @@ class TestFullResultContract(unittest.TestCase):
         for field in (
             "job_fit_result_ref", "profile_snapshot", "recommendation", "positioning",
             "cv_emphasis_plan", "cv_content", "cover_letter_plan", "cover_letter_content",
-            "unsupported_claims", "status", "notes",
+            "unsupported_claims", "plan_issues", "requirement_coverage", "status", "notes",
         ):
             self.assertIn(field, result, f"missing {field}")
 
@@ -688,6 +688,34 @@ class TestFullResultContract(unittest.TestCase):
         request = application_intelligence_request("job-fit-result-ready.json")
         result = analyze_application_intelligence(request, None)
         validate_application_intelligence_result(request, result)  # must not raise
+
+
+    def test_result_now_includes_plan_issues_field(self):
+        request = application_intelligence_request("job-fit-result-ready.json")
+        result = analyze_application_intelligence(request, None)
+        self.assertIn("plan_issues", result)
+        self.assertEqual(result["plan_issues"], [])
+
+    def test_malformed_plan_entry_is_dropped_and_reported_not_treated_as_unsupported_claim(self):
+        request = application_intelligence_request("job-fit-result-ready.json")
+        proposal = {
+            "content_units": [],
+            "cv_emphasis_plan": [{"plan_id": "p1", "target_unit_type": "not_real", "target_job_requirement_ids": [], "rationale_kind": "covers_uncovered_requirement"}],
+            "cover_letter_plan": [],
+        }
+        result = analyze_application_intelligence(request, proposal)
+        self.assertEqual(len(result["plan_issues"]), 1)
+        self.assertEqual(result["plan_issues"][0]["field"], "cv_emphasis_plan")
+        self.assertEqual(result["cv_emphasis_plan"], [])
+        self.assertEqual(result["unsupported_claims"], [])
+
+    def test_well_formed_plan_entries_survive_into_result(self):
+        request = application_intelligence_request("job-fit-result-ready.json")
+        entry = {"plan_id": "p1", "target_unit_type": "cv_bullet", "target_job_requirement_ids": ["jobev_req_python"], "rationale_kind": "covers_uncovered_requirement"}
+        proposal = {"content_units": [], "cv_emphasis_plan": [entry], "cover_letter_plan": []}
+        result = analyze_application_intelligence(request, proposal)
+        self.assertEqual(result["cv_emphasis_plan"], [entry])
+        self.assertEqual(result["plan_issues"], [])
 
 
 class TestNoStrengthCrossLeakage(unittest.TestCase):
@@ -965,13 +993,13 @@ class TestParkedFindingsFixed(unittest.TestCase):
         request = application_intelligence_request("job-fit-result-ready.json")
 
         # Case A: no template exists at all for this (assertion_type, variant).
-        # Uses clm_2222222222222222 (employment/job_title), which passes the
-        # category/field match for assertion_type "employment" -- so the
-        # rejection is reached via the template-table lookup, not an earlier
-        # category/field mismatch. (The brief's original choice of "award" +
-        # clm_1111111111111111, a skills/technical_skill claim, fails the
-        # category/field check before ever reaching the template lookup,
-        # since this fixture has no awards-category claim at all.)
+        # Uses clm_4444444444444444 (employment/responsibility_or_achievement),
+        # which passes the category/field match for assertion_type
+        # "responsibility" -- so the rejection is reached via the
+        # template-table lookup, not an earlier category/field mismatch.
+        # (("employment", "AS_STRENGTH") no longer demonstrates the "no
+        # template" branch now that Task 5 registered it; ("responsibility",
+        # "AS_CAPABILITY_STATEMENT") remains unregistered.)
         proposal_no_template = {
             "content_units": [
                 {
@@ -981,9 +1009,9 @@ class TestParkedFindingsFixed(unittest.TestCase):
                         {
                             "atom_id": "atom-1",
                             "atom_kind": "candidate_fact",
-                            "assertion_type": "employment",
-                            "profile_evidence_ids": ["clm_2222222222222222"],
-                            "rendering_variant": "AS_STRENGTH",  # no ("employment", "AS_STRENGTH") entry exists
+                            "assertion_type": "responsibility",
+                            "profile_evidence_ids": ["clm_4444444444444444"],
+                            "rendering_variant": "AS_CAPABILITY_STATEMENT",  # no ("responsibility", "AS_CAPABILITY_STATEMENT") entry exists
                         }
                     ],
                     "connectives": [],
@@ -1072,6 +1100,249 @@ class TestConnectiveIndexBoundsChecking(unittest.TestCase):
 
         self.assertEqual(result["cv_content"][0]["status"], "NEEDS_REVIEW")
         self.assertTrue(any("out of range" in claim["reason"] for claim in result["unsupported_claims"]))
+
+
+from product.application_intelligence import (
+    PLAN_RATIONALE_KINDS,
+    _validate_plan,
+    _validate_plan_entry_shape,
+)
+
+
+class TestPlanEntryValidation(unittest.TestCase):
+    def test_well_formed_entry_returns_none(self):
+        entry = {
+            "plan_id": "plan-1",
+            "target_unit_type": "cv_bullet",
+            "target_job_requirement_ids": ["jobev_req_python"],
+            "rationale_kind": "covers_uncovered_requirement",
+        }
+        self.assertIsNone(_validate_plan_entry_shape(entry))
+
+    def test_non_object_entry_is_rejected(self):
+        self.assertIsNotNone(_validate_plan_entry_shape("not-a-dict"))
+
+    def test_unknown_rationale_kind_is_rejected(self):
+        entry = {
+            "plan_id": "plan-1",
+            "target_unit_type": "cv_bullet",
+            "target_job_requirement_ids": [],
+            "rationale_kind": "made_up_reason",
+        }
+        self.assertIsNotNone(_validate_plan_entry_shape(entry))
+
+    def test_unknown_unit_type_is_rejected(self):
+        entry = {
+            "plan_id": "plan-1",
+            "target_unit_type": "not_a_real_unit_type",
+            "target_job_requirement_ids": [],
+            "rationale_kind": "covers_uncovered_requirement",
+        }
+        self.assertIsNotNone(_validate_plan_entry_shape(entry))
+
+    def test_non_list_target_job_requirement_ids_is_rejected(self):
+        entry = {
+            "plan_id": "plan-1",
+            "target_unit_type": "cv_bullet",
+            "target_job_requirement_ids": "not-a-list",
+            "rationale_kind": "covers_uncovered_requirement",
+        }
+        self.assertIsNotNone(_validate_plan_entry_shape(entry))
+
+    def test_all_four_rationale_kinds_are_recognized(self):
+        for kind in (
+            "covers_uncovered_requirement", "reinforces_required_dimension",
+            "strengthens_direct_match", "addresses_gap_context",
+        ):
+            entry = {
+                "plan_id": "plan-1",
+                "target_unit_type": "cv_bullet",
+                "target_job_requirement_ids": [],
+                "rationale_kind": kind,
+            }
+            self.assertIsNone(_validate_plan_entry_shape(entry), f"{kind} should be valid")
+        self.assertEqual(
+            PLAN_RATIONALE_KINDS,
+            frozenset({
+                "covers_uncovered_requirement", "reinforces_required_dimension",
+                "strengthens_direct_match", "addresses_gap_context",
+            }),
+        )
+
+
+class TestValidatePlan(unittest.TestCase):
+    def test_valid_entries_pass_through_no_issues(self):
+        raw = [{
+            "plan_id": "plan-1", "target_unit_type": "cv_bullet",
+            "target_job_requirement_ids": ["jobev_req_python"],
+            "rationale_kind": "covers_uncovered_requirement",
+        }]
+        valid, issues = _validate_plan(raw, "cv_emphasis_plan")
+        self.assertEqual(valid, raw)
+        self.assertEqual(issues, [])
+
+    def test_malformed_entry_is_dropped_and_recorded_as_plan_issue_not_unsupported_claim(self):
+        raw = [{"plan_id": "plan-1", "target_unit_type": "bogus", "target_job_requirement_ids": [], "rationale_kind": "covers_uncovered_requirement"}]
+        valid, issues = _validate_plan(raw, "cv_emphasis_plan")
+        self.assertEqual(valid, [])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["field"], "cv_emphasis_plan")
+        self.assertEqual(issues[0]["index"], 0)
+        self.assertIn("reason", issues[0])
+
+    def test_non_list_plan_produces_no_valid_entries_and_no_crash(self):
+        valid, issues = _validate_plan("not-a-list", "cover_letter_plan")
+        self.assertEqual(valid, [])
+        self.assertEqual(issues, [])
+
+
+from product.application_intelligence import _compute_requirement_coverage
+
+
+class TestComputeRequirementCoverage(unittest.TestCase):
+    def _job_fit_result(self):
+        return {
+            "direct_matches": [
+                {"match_id": "m1", "job_requirement_ids": ["req_python"], "profile_evidence_ids": ["clm_1"]},
+            ],
+            "functionally_equivalent_matches": [
+                {"match_id": "m2", "job_requirement_ids": ["req_sql"], "profile_evidence_ids": ["clm_2"]},
+            ],
+            "transferable_matches": [
+                {"match_id": "m3", "job_requirement_ids": ["req_etl"], "profile_evidence_ids": ["clm_3"]},
+            ],
+        }
+
+    def test_required_is_union_of_all_three_match_lists(self):
+        coverage = _compute_requirement_coverage(self._job_fit_result(), [])
+        self.assertEqual(coverage["required"], ["req_etl", "req_python", "req_sql"])
+        self.assertEqual(coverage["covered"], [])
+        self.assertEqual(coverage["uncovered"], ["req_etl", "req_python", "req_sql"])
+
+    def test_accepted_unit_citing_matched_evidence_covers_its_requirement(self):
+        accepted = [{"status": "READY", "text": "Python expert", "profile_evidence_ids": ["clm_1"]}]
+        coverage = _compute_requirement_coverage(self._job_fit_result(), accepted)
+        self.assertEqual(coverage["covered"], ["req_python"])
+        self.assertEqual(coverage["uncovered"], ["req_etl", "req_sql"])
+
+    def test_non_ready_unit_does_not_count_as_coverage(self):
+        accepted = [{"status": "NEEDS_REVIEW", "text": "Python expert", "profile_evidence_ids": ["clm_1"]}]
+        coverage = _compute_requirement_coverage(self._job_fit_result(), accepted)
+        self.assertEqual(coverage["covered"], [])
+
+    def test_empty_text_unit_does_not_count_as_coverage(self):
+        accepted = [{"status": "READY", "text": "", "profile_evidence_ids": ["clm_1"]}]
+        coverage = _compute_requirement_coverage(self._job_fit_result(), accepted)
+        self.assertEqual(coverage["covered"], [])
+
+    def test_unit_citing_unmatched_evidence_covers_nothing(self):
+        accepted = [{"status": "READY", "text": "Something else", "profile_evidence_ids": ["clm_999"]}]
+        coverage = _compute_requirement_coverage(self._job_fit_result(), accepted)
+        self.assertEqual(coverage["covered"], [])
+
+    def test_transferable_match_evidence_covers_its_requirement_same_as_direct(self):
+        accepted = [{"status": "READY", "text": "ETL work", "profile_evidence_ids": ["clm_3"]}]
+        coverage = _compute_requirement_coverage(self._job_fit_result(), accepted)
+        self.assertEqual(coverage["covered"], ["req_etl"])
+
+
+class TestResultContractV1(unittest.TestCase):
+    def test_result_version_is_v1(self):
+        from product.application_intelligence import RESULT_VERSION
+        self.assertEqual(RESULT_VERSION, "application-intelligence-result.v1")
+
+    def test_result_includes_requirement_coverage(self):
+        request = application_intelligence_request("job-fit-result-ready.json")
+        result = analyze_application_intelligence(request, None)
+        self.assertIn("requirement_coverage", result)
+        for key in ("required", "covered", "uncovered"):
+            self.assertIn(key, result["requirement_coverage"])
+
+    def test_v0_schema_file_is_retained_unmodified(self):
+        v0_path = Path(__file__).parent.parent / "product" / "schemas" / "application-intelligence-contract.v0.schema.json"
+        v0_schema = json.loads(v0_path.read_text(encoding="utf-8"))
+        self.assertEqual(v0_schema["$defs"]["resultVersion"]["const"], "application-intelligence-result.v0")
+
+
+class TestNewTemplateEntries(unittest.TestCase):
+    def _claim(self, category, field, value, record_id="rec_x", concept_id="cpt_x"):
+        return {
+            "id": f"clm_{field}_{value}".replace(" ", "_"), "record_id": record_id, "concept_id": concept_id,
+            "category": category, "field": field, "value": value, "placeholder": False,
+        }
+
+    def test_education_plain_renders(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        claim = self._claim("education", "qualification", "MSc Computer Science")
+        eligible = TEMPLATE_TABLE[("education", "PLAIN")]["eligible"]([claim], {claim["id"]: claim})
+        self.assertEqual(eligible, [claim])
+        self.assertEqual(TEMPLATE_TABLE[("education", "PLAIN")]["format"].format(value=claim["value"]), "MSc Computer Science")
+
+    def test_publication_plain_renders(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        claim = self._claim("publications", "publication", "A Paper (2024). Journal.")
+        eligible = TEMPLATE_TABLE[("publication", "PLAIN")]["eligible"]([claim], {claim["id"]: claim})
+        self.assertEqual(eligible, [claim])
+
+    def test_award_plain_renders(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        claim = self._claim("awards", "award", "Best Paper Award")
+        eligible = TEMPLATE_TABLE[("award", "PLAIN")]["eligible"]([claim], {claim["id"]: claim})
+        self.assertEqual(eligible, [claim])
+
+    def test_certification_has_no_new_variant_beyond_plain(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        keys = {key for key in TEMPLATE_TABLE if key[0] == "certification"}
+        self.assertEqual(keys, {("certification", "PLAIN")})
+
+    def test_employment_as_capability_statement_requires_linked_responsibility(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        job_title = self._claim("employment", "job_title", "Data Engineer", record_id="rec_1")
+        responsibility = self._claim("employment", "responsibility_or_achievement", "Built pipelines", record_id="rec_1")
+        all_claims = {job_title["id"]: job_title, responsibility["id"]: responsibility}
+        eligible = TEMPLATE_TABLE[("employment", "AS_CAPABILITY_STATEMENT")]["eligible"]([job_title], all_claims)
+        self.assertEqual(eligible, [job_title])
+        self.assertEqual(TEMPLATE_TABLE[("employment", "AS_CAPABILITY_STATEMENT")]["format"].format(value=job_title["value"]), "Experience as Data Engineer")
+
+    def test_employment_as_capability_statement_rejects_unlinked_job_title(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        job_title = self._claim("employment", "job_title", "Data Engineer", record_id="rec_1")
+        all_claims = {job_title["id"]: job_title}
+        eligible = TEMPLATE_TABLE[("employment", "AS_CAPABILITY_STATEMENT")]["eligible"]([job_title], all_claims)
+        self.assertEqual(eligible, [])
+
+    def test_employment_as_strength_requires_duration_and_responsibility(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        job_title = self._claim("employment", "job_title", "Data Engineer", record_id="rec_1")
+        date_range = self._claim("employment", "date_range", "2020-2023", record_id="rec_1")
+        responsibility = self._claim("employment", "responsibility_or_achievement", "Built pipelines", record_id="rec_1")
+        all_claims = {c["id"]: c for c in (job_title, date_range, responsibility)}
+        eligible = TEMPLATE_TABLE[("employment", "AS_STRENGTH")]["eligible"]([job_title], all_claims)
+        self.assertEqual(eligible, [job_title])
+
+    def test_employment_as_strength_rejects_missing_duration(self):
+        from product.application_intelligence import TEMPLATE_TABLE
+        job_title = self._claim("employment", "job_title", "Data Engineer", record_id="rec_1")
+        responsibility = self._claim("employment", "responsibility_or_achievement", "Built pipelines", record_id="rec_1")
+        all_claims = {c["id"]: c for c in (job_title, responsibility)}
+        eligible = TEMPLATE_TABLE[("employment", "AS_STRENGTH")]["eligible"]([job_title], all_claims)
+        self.assertEqual(eligible, [])
+
+
+
+
+class TestExpandedConnectiveAllowlist(unittest.TestCase):
+    def test_which_included_is_allowed(self):
+        from product.application_intelligence import _validate_connective
+        self.assertTrue(_validate_connective("which included"))
+
+    def test_specifically_is_allowed(self):
+        from product.application_intelligence import _validate_connective
+        self.assertTrue(_validate_connective("specifically"))
+
+    def test_building_on_is_not_allowed(self):
+        from product.application_intelligence import _validate_connective
+        self.assertFalse(_validate_connective("building on"))
 
 
 if __name__ == "__main__":
