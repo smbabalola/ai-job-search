@@ -890,7 +890,6 @@ def analyze_application_intelligence(request: dict[str, Any], proposal: dict[str
     if not usable_units:
         notes.append("No usable application material was generated.")
 
-
     cv_emphasis_plan, cv_plan_issues = _validate_plan((proposal or {}).get("cv_emphasis_plan"), "cv_emphasis_plan")
     cover_letter_plan, cover_letter_plan_issues = _validate_plan((proposal or {}).get("cover_letter_plan"), "cover_letter_plan")
     plan_issues = cv_plan_issues + cover_letter_plan_issues

@@ -20,4 +20,4 @@ def test_generation_contract_identity_pinned_golden_value():
     prompt_version/schema versions were bumped to match."""
     from webapp.services.input_identity import application_intelligence_generation_contract_identity
     identity = application_intelligence_generation_contract_identity()
-    assert identity == "aiintelgencontract_2eed18634efe98f5c51b"
+    assert identity == "aiintelgencontract_0a9da810885d04aee65c"

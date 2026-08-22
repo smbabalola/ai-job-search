@@ -1274,7 +1274,6 @@ class TestNewTemplateEntries(unittest.TestCase):
     def test_education_plain_renders(self):
         from product.application_intelligence import TEMPLATE_TABLE
         claim = self._claim("education", "qualification", "MSc Computer Science")
-        template, qualifying = TEMPLATE_TABLE[("education", "PLAIN")]["eligible"], None
         eligible = TEMPLATE_TABLE[("education", "PLAIN")]["eligible"]([claim], {claim["id"]: claim})
         self.assertEqual(eligible, [claim])
         self.assertEqual(TEMPLATE_TABLE[("education", "PLAIN")]["format"].format(value=claim["value"]), "MSc Computer Science")

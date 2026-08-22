@@ -43,7 +43,7 @@ def application_intelligence_generation_contract_identity() -> str:
     from product.application_intelligence import CONNECTIVE_ALLOWLIST, RESULT_VERSION, TEMPLATE_TABLE
 
     return content_identity("aiintelgencontract_", {
-        "prompt_version": "application-intelligence.v0",
+        "prompt_version": "application-intelligence.v1",
         "proposal_schema_version": "application_intelligence_atom_proposal_v1",
         "result_schema_version": RESULT_VERSION,
         "template_table_keys": sorted(f"{key[0]}:{key[1]}" for key in TEMPLATE_TABLE),
