@@ -97,4 +97,3 @@ def test_source_is_part_of_the_strong_source_record_identity():
     incoming = job_identity(_record(source="portal-b", source_record_id="job-1"))
 
     assert compare_job_identities(existing, incoming) is ApplicationIdentityResolution.DISTINCT
-

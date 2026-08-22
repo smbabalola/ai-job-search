@@ -115,4 +115,3 @@ def test_stale_preference_edit_is_rejected(tmp_path):
             search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID,
             expected_revision=first["profile_revision"],
         )
-
