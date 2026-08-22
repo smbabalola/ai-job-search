@@ -1,7 +1,8 @@
 # Ticket 12B — Evidence Profile Manager: Design
 
-Status: **Approved for implementation planning.** Not yet implemented. This document
-reflects the design after two review rounds; see "Design history" at the end.
+Status: **Under revision — amendments pending PM re-review.** Not yet implemented.
+This document reflects the design after three review rounds; see "Design history" at
+the end.
 
 ## Baseline
 
@@ -126,6 +127,38 @@ undocumented parser contract. Instead:
   versa — a parser change that doesn't correspond to an editing-schema field simply
   isn't editable yet, which is safe (fails closed, not silently).
 
+**`start_edit` reads current field values from the canonical Markdown directly, never
+from aggregated snapshot claims** (added during second PM review round). The current
+snapshot's `claims` list is an aggregate over all three `SOURCE_PATHS` — it includes
+`CLAUDE.md` (legacy, read-only) and `cv/main_example.tex` (imported/corroborating,
+read-only) alongside the one editable canonical source. Sourcing editable field values
+from that aggregate would let a read-only source's value — including one on the losing
+side of a recorded conflict — surface as if it were an editable canonical value,
+directly contradicting "the other two sources are read-only." `start_edit` therefore
+parses `.claude/skills/job-application-assistant/01-candidate-profile.md` directly,
+using the same canonical-shape recognition Decision area 1 already defines for
+rewriting, to produce the current editable values. The current snapshot is still
+consulted, but only for two purposes: (a) `conflicts` annotations shown alongside a
+field, and (b) `precondition_snapshot_content_id`, neither of which requires reading
+any claim's *value* out of the aggregate.
+
+**Record addressing for repeatable fields** (added during second PM review round): an
+`EditableFieldSpec` for a repeatable concept (employment, education) must identify a
+*specific record*, not merely a `(category, field)` pair with no record identity — a
+profile with two employment records has two distinct `job_title` values, and an edit
+must target one of them, not "some claim with field=job_title." **v1 uses
+canonical-order record addressing**: within a section, records are addressed by their
+zero-based position in canonical-Markdown order (e.g. `employment[0].job_title`,
+`employment[0].date_range`, `employment[1].job_title`, ...). This is sound specifically
+*because* of the whole-file precondition hash: `start_edit`'s precondition guarantees
+the canonical file's byte content — and therefore record ordering — has not changed
+between `start_edit` and `preview_edit`/`confirm_edit`, so positional addressing cannot
+silently drift onto the wrong record between those calls. The rewriter and the
+schema/parser reconciliation check (below) must both operate on the *specific
+positional record* an edit targets, never on "does some record somewhere in the
+rebuilt snapshot have the expected value" — the latter would pass even if an edit
+landed on the wrong record, or if two records happened to share a duplicate value.
+
 **Unmanaged content preservation**: edits rewrite only the Markdown regions the editing
 schema recognizes (a known section heading + a known field's list-item pattern within
 it). Content outside those regions — custom sections, comments, formatting the schema
@@ -172,11 +205,20 @@ actually reviewed B.
 
 ### Table: `profile_edit_changesets`
 
+**Corrected during a second PM review round (see Design history):** the status
+enum below includes `commit_started`, a durable pre-write state, closing a real gap
+in the first-round design — a crash between the file write (step 6, below) and the
+status update that used to follow it (`file_written`, old step 7) left the row at
+`previewed` with the file already changed, invisible to recovery (which only ever
+scanned `file_written`). `commit_started` is claimed atomically, *before* the file
+write, closing that gap.
+
 ```sql
 CREATE TABLE profile_edit_changesets (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
-        -- 'previewed' | 'file_written' | 'committed' | 'rolled_back' | 'recovery_conflict'
+        -- 'previewed' | 'commit_started' | 'file_written' | 'committed'
+        -- | 'rolled_back' | 'recovery_conflict' | 'expired'
     editing_schema_version TEXT NOT NULL,
     precondition_source_hashes TEXT NOT NULL,       -- JSON: {source_path: sha256}
     precondition_snapshot_content_id TEXT NOT NULL,
@@ -193,19 +235,41 @@ CREATE TABLE profile_edit_changesets (
 operational recovery data, not historical evidence truth — the immutable Evidence
 Snapshot system remains the sole authority for historical profile content. These two
 columns are cleared to `NULL` **only when a row reaches a resolved terminal state**:
-`committed` or `rolled_back`. **They are explicitly NOT cleared on transition into
-`recovery_conflict`** — that state means the recovery decision is still ambiguous and
-requires operator attention, and clearing the bytes would destroy the exact material
-needed to understand and resolve the ambiguity. A `recovery_conflict` row keeps its
-source bytes until it is manually walked to a resolved terminal state (see Recovery
-UX). Rows that never reach `file_written` (abandoned at `previewed`) may be expired
-automatically — no file write occurred, so there is no recovery material tied to them,
-only an unused prospective render.
+`committed`, `rolled_back`, or `expired`. **They are explicitly NOT cleared on
+transition into `recovery_conflict`** — that state means the recovery decision is
+still ambiguous and requires operator attention, and clearing the bytes would destroy
+the exact material needed to understand and resolve the ambiguity. A
+`recovery_conflict` row keeps its source bytes until it is manually walked to a
+resolved terminal state (see Recovery UX).
+
+**Expiry (added during second PM review round):** the spec always intended
+`new_markdown`/`previous_markdown` to be transient, but the first-round design left
+"may be expired automatically" underspecified — no mechanism, no trigger. This is
+corrected to two explicit, bounded cleanup rules:
+
+- **Abandoned `previewed` rows** (never reached `commit_started`) are eligible for
+  expiry after a bounded age (implementation-plan detail: a fixed duration, e.g. 24
+  hours, is sufficient — no file write occurred, so there is no recovery material tied
+  to them, only an unused prospective render). Expiry transitions `status='expired'`
+  and clears both transient columns, exactly like `committed`/`rolled_back`.
+- **Sibling previews invalidated by a successful commit** (per the Lifecycle rule
+  below: once any one changeset commits, every other `previewed` row sharing the same
+  `precondition_source_hashes`/`precondition_snapshot_content_id` is now structurally
+  unconfirmable) are likewise eligible for the same bounded expiry — they do not need
+  to wait out the full abandonment window once a sibling has already committed, but
+  immediate proactive scrubbing at commit time is an implementation-plan optimization,
+  not a design-level requirement; the bounded-age expiry sweep alone is sufficient to
+  guarantee these never accumulate as permanent shadow history.
 
 Everything else in the row — hashes, ids, `diff_summary`, `editing_schema_version`,
 timestamps, final status — is retained permanently as an audit trail.
 
 ### Confirm sequence
+
+**Corrected during second PM review round:** the sequence now claims a durable
+`commit_started` state *before* the file write, closing the crash-window gap
+described above, and step 6 is explicitly framed as the one place two concurrent
+confirms against sibling previews must be serialized (see the note after step 6).
 
 1. Re-read the three source files; recompute hashes; compare against
    `precondition_source_hashes`. Mismatch → `409` (`source_changed`).
@@ -217,10 +281,17 @@ timestamps, final status — is retained permanently as an audit trail.
 4. Check `editing_schema_version` compatibility (exact match, or an explicitly
    documented compatible range — compatibility policy is an implementation-plan
    detail, not a design-level decision needed now).
-5. All preconditions hold: the row (already persisted at `status='previewed'` since
-   `preview_edit`) is now committed-to — no further precondition re-checks after this
-   point in the sequence.
-6. Atomic file write (`_atomic_write_bytes`, existing precedent).
+5. **Atomically claim the row**: `UPDATE profile_edit_changesets SET status =
+   'commit_started' WHERE id = ? AND status = 'previewed'`, checking the update
+   affected exactly one row. This single conditional UPDATE is the serialization
+   point: if two sibling previews (same precondition, different edits) both pass
+   steps 1-4 and race to confirm, only one's UPDATE can match `status = 'previewed'`
+   — the loser's UPDATE affects zero rows and is treated as a `409` (`conflict`,
+   "a sibling changeset already committed"), never proceeding to step 6. This closes
+   the race the first-round design left open: without this atomic claim, both could
+   pass their hash checks and both attempt the file write.
+6. Atomic file write (`_atomic_write_bytes`, existing precedent). Only the caller
+   that won step 5's claim ever reaches this step for a given precondition.
 7. Mark `status='file_written'`.
 8. `refresh_profile` — rebuild + persist the new snapshot, advance the current
    pointer. (Existing, already-atomic-at-the-DB-layer operation, reused unmodified.)
@@ -230,35 +301,58 @@ timestamps, final status — is retained permanently as an audit trail.
 
 Return: new snapshot identity, resulting conflict/warning summary.
 
-### Three-way crash recovery (corrected during PM review)
+### Three-way crash recovery (corrected during second PM review round)
 
-On restart, for every row at `status='file_written'` (the only status where a
-crash mid-commit is possible — a crash before step 6 leaves the row at `previewed`,
-which is safe/inert since no file write occurred; a crash after step 9 is already
-terminal):
+On restart, for **every row at `status='commit_started'` OR `status='file_written'`**
+— both are pre-terminal states a crash can leave behind mid-commit. (A crash before
+step 5's atomic claim succeeds leaves the row at `previewed`, genuinely safe/inert
+since no file write occurred and the row never left the state a fresh confirm attempt
+can safely retry from scratch. A crash after step 9 is already terminal.)
+
+**This is the fix for the gap the first-round design had**: previously only
+`file_written` was scanned, so a crash between step 6 (file write) and step 7 (mark
+`file_written`) left a row at `previewed` — indistinguishable from "confirm never
+started" — while the canonical file had already changed. Scanning `commit_started`
+too closes this: that status is claimed *before* step 6's write, so a crash anywhere
+from immediately after the claim through the write itself is now visible to recovery.
+
+For each such row:
 
 1. Read the canonical file's actual current content.
-2. **Equal to `new_markdown`** → the write (step 6) completed but the snapshot rebuild
-   (steps 8-9) did not. Resume from step 8: `refresh_profile` is idempotent (it rebuilds
-   from whatever the file currently contains), so retrying it is safe. On success,
-   proceed through steps 9-10 normally.
+2. **Equal to `new_markdown`** → the write (step 6) completed (whether the crash
+   happened at `commit_started` right after a fast write, or at `file_written`
+   afterward, the file content is what tells recovery the write finished) but the
+   snapshot rebuild (steps 8-9) did not. Resume from step 8: `refresh_profile` is
+   idempotent (it rebuilds from whatever the file currently contains), so retrying it
+   is safe. On success, proceed through steps 9-10 normally.
 3. **Equal to `previous_markdown`** → the write (step 6) never took effect (crash
-   before `os.replace` completed, or before it was attempted). Mark `status='rolled_back'`,
-   clear the transient bytes. Nothing to undo — the file was never changed.
+   before `os.replace` completed, or before it was attempted — this is the only
+   possibility for a row found at `commit_started` whose file still matches the old
+   content). Mark `status='rolled_back'`, clear the transient bytes. Nothing to undo —
+   the file was never changed.
 4. **Equal to neither** → **do not overwrite anything, do not guess, do not attempt
    automatic resolution.** Mark `status='recovery_conflict'`. This means the canonical
    file was changed by something external between this changeset's file write and the
    completion of its snapshot rebuild — a state that should never occur in normal
    operation, and treating either stored copy as authoritative would silently discard
-   whatever that external change was. This is the corrected rule from PM review:
-   recovery must never interpret an external edit as permission to restore either
-   stored copy.
+   whatever that external change was. Recovery must never interpret an external edit
+   as permission to restore either stored copy.
 
 Recovery runs automatically at process startup (before the profile page or edit API
 becomes available) for cases 2 and 3, which are both safely resolvable without human
 judgment. Case 4 always halts and requires the operator-facing recovery UX below —
 never resolved automatically, regardless of how "obviously right" one of the two
 stored copies might look.
+
+**Unresolved pre-terminal/ambiguous states block new edits.** Any row currently at
+`commit_started`, `file_written`, or `recovery_conflict` — i.e. anything recovery
+has not yet resolved to `committed`/`rolled_back`, or has explicitly halted on — means
+new `start_edit`/`preview_edit`/`confirm_edit` calls must be rejected until resolved.
+In normal operation this window is momentary (recovery runs before the API becomes
+available at all); it only persists visibly when a `recovery_conflict` is genuinely
+unresolved, in which case this is the same "profile edits are disabled" rule the
+Recovery UX section already specifies for that case, now stated as a hard API-layer
+invariant, not only a UI-layer one.
 
 ### Lifecycle rule (falls out of the model, stated explicitly)
 
@@ -278,15 +372,45 @@ Deliberately small and action-oriented. No generic PATCH/PUT for profile source 
 — every write goes through preview → confirm, with no bypass, including for
 power-user/automation use.
 
+**Recovery-blocked state is enforced at this layer, not only the UI** (added during
+second PM review round). Every one of the four routes below first checks whether any
+`profile_edit_changesets` row is currently at `commit_started`, `file_written`, or
+`recovery_conflict` — i.e. anything crash recovery has not yet resolved. If so, the
+route rejects with `409` (reason `recovery_pending`) rather than proceeding, regardless
+of whether the caller is the UI or a direct API client. In normal operation this check
+never blocks anything, since recovery runs at startup before the API accepts traffic;
+it only actually blocks when a `recovery_conflict` is genuinely unresolved, which is
+also when the UI's blocking banner (Recovery UX, below) is showing. A dedicated
+recovery-status signal, `GET /api/profile/recovery-status` (added alongside the four
+core routes for this reason), returns `{"blocked": bool, "reason": "recovery_conflict"
+| null}` so the UI has one explicit endpoint to poll/check rather than inferring
+recovery state from a `409` on some other call.
+
 ### `POST /api/profile/edit-sessions`
 
 Starts an edit against current profile state. No write. Returns:
 - `editing_schema_version`
-- structured editable fields (current values, grouped by category)
+- structured editable fields (current values, grouped by category, parsed from the
+  canonical Markdown directly per the corrected Decision area 1 — never from
+  aggregated snapshot claims)
 - current conflict annotations (from the current snapshot's `conflicts`)
-- opaque edit session token
+- opaque edit session token (`session_id` — see below)
 - current snapshot identity (`content_id`)
 - source precondition identity (the three file hashes)
+
+**`session_id` is locked as a stateless, deterministic token** (added during second PM
+review round, resolving what the design originally left open): computed as a hash over
+`editing_schema_version` + the precondition tuple
+(`precondition_source_hashes`, `precondition_snapshot_content_id`) — no server-side
+session table, no session-specific state beyond what the precondition tuple already
+captures. Any client holding the same precondition tuple (e.g. two browser tabs that
+both called `start_edit` against the same unchanged state) computes the same
+`session_id`; this is harmless, since `preview_edit` always re-validates the
+precondition against *current* state regardless of what `session_id` the caller
+supplies, and always creates a new, independently-identified changeset row. The token
+exists to make the URL path self-describing and to let a client detect, client-side,
+that it's still operating against the state it started from — not to carry any
+authority the precondition-tuple recheck doesn't already provide.
 
 ### `POST /api/profile/edit-sessions/{session_id}/preview`
 
@@ -398,7 +522,11 @@ If a `recovery_conflict` row exists, the Profile page shows a blocking operation
 banner: "An Evidence Profile update was interrupted and the source changed
 unexpectedly. No automatic recovery was attempted." **Profile edits are disabled while
 any `recovery_conflict` row is unresolved** — no stacking a new edit attempt on top of
-an unresolved recovery ambiguity. Resolving a `recovery_conflict` row (walking it to
+an unresolved recovery ambiguity. The UI determines whether to show this banner via
+`GET /api/profile/recovery-status` (added during second PM review round, see "API
+surface"), rather than inferring it from a failed edit attempt — this same status also
+covers the momentary, normally-invisible window where a `commit_started`/`file_written`
+row is still being resolved by startup recovery. Resolving a `recovery_conflict` row (walking it to
 `committed` or `rolled_back`) is an operator action outside this design's UI scope —
 the mechanism for that resolution (a CLI tool, a manual DB fix, an admin UI) is an
 implementation-plan detail, not decided here; what's locked at the design level is only
@@ -426,6 +554,25 @@ that it must be an explicit, human-directed action, never automatic.
   stored copies remain retrievable (not cleared) until explicit resolution.
 - No claim/gap/verdict/match/conflict data owned by Ticket 7, Lane B, Gate 4, or Search
   Workspaces changes as a result of any Ticket 12B operation.
+- **(Added, second PM review round)** Simulated crash immediately after the
+  `commit_started` claim succeeds but before the file write completes: restart finds
+  the row at `commit_started` with the file still matching `previous_markdown`, and
+  marks it `rolled_back` — the gap the first-round design left open (a crash in this
+  exact window used to leave the row invisibly at `previewed`).
+- **(Added)** `start_edit` never surfaces a value from `CLAUDE.md` or
+  `cv/main_example.tex` as an editable field value, including when that value is on
+  the losing/non-canonical side of a recorded conflict with the canonical Markdown's
+  value.
+- **(Added)** A profile with two employment records and a shared/duplicate value
+  between them (e.g. both list the same `date_range`) can have one record's field
+  edited without affecting the other — proving record addressing targets the specific
+  positional record, not merely "any record with a matching value."
+- **(Added)** No `profile_edit_changesets` row accumulates `new_markdown`/
+  `previous_markdown` indefinitely: an abandoned `previewed` row past its bounded
+  expiry window transitions to `expired` with both columns cleared.
+- **(Added)** Two confirms issued concurrently against sibling previews (same
+  precondition) never both succeed in writing the file — exactly one wins the
+  `commit_started` atomic claim; the other receives `409`.
 
 ## Self-review
 
@@ -450,21 +597,30 @@ either leave the file as-is (case 3) or continue an in-progress `refresh_profile
 whatever the file *already* contains (case 2) — recovery never writes profile source
 content itself, only advances the DB-side snapshot/status bookkeeping.
 
-**4. Any accidental second source of profile-history truth?** Closed by the corrected
-storage rule: `new_markdown`/`previous_markdown` are cleared on every resolved terminal
-state (`committed`, `rolled_back`), and even the still-open `recovery_conflict` state
-is explicitly operational-recovery-pending, not a claimed historical record — the
-design states plainly that the immutable Evidence Snapshot system remains sole
-authority for historical content, and this table's job is to go empty of source text
-as soon as its recovery purpose is served (or halt with an explicit banner rather than
-quietly accumulate as a shadow history).
+**4. Any accidental second source of profile-history truth?** Closed by the storage
+rule (`new_markdown`/`previous_markdown` cleared on every resolved terminal state —
+`committed`, `rolled_back`, `expired` — and `recovery_conflict` explicitly
+operational-recovery-pending, not a historical record) **plus, as of the third PM
+review round, an actual expiry mechanism** — the round-2 design correctly stated the
+storage rule but had no way to make an *abandoned* `previewed` row (one that never
+proceeded to `commit_started`, and therefore never reached any of the clearing
+triggers above) ever reach a terminal state at all, which would have let such rows
+accumulate full source-text pairs indefinitely — exactly the shadow-history the design
+set out to avoid, just via a different unhandled path than the terminal-state one this
+answer originally addressed. The bounded-age expiry sweep (see "Storage rule") closes
+this.
 
 **5. Any ambiguity between editor-schema authority and snapshot-parser authority?**
 Closed by design (not merely stated): the two schemas are independently versioned and
 reconciled by an explicit runtime check at preview time (step 4 of `preview_edit`) —
 any disagreement is a hard preview failure, never assumed-consistent, never silently
 accepted. Neither authority can silently drift from the other without the reconciliation
-check catching it on the very next preview.
+check catching it on the very next preview. As of the third PM review round, this
+reconciliation is explicitly required to check the *specific positional record* a
+repeatable-field edit targets, not merely "does some record in the rebuilt snapshot
+have the expected value" — closing a variant of this same ambiguity that the
+round-2 design's `EditableFieldSpec` (lacking any record-addressing concept) would
+not have caught.
 
 **6. Any scope leak into Ticket 7, Lane B, Gate 4, Search Workspaces, or historical
 artifacts?** None found. Every touchpoint with those systems is read-only and
@@ -496,3 +652,32 @@ surface contains nothing that could reach those systems.
   and the "one session, many previews, one confirmable changeset" lifecycle rule as a
   structural consequence of the precondition-recheck design, not a separately
   implemented invalidation mechanism.
+- Round 3 (PM review against the executed implementation plan) corrected six further
+  gaps: (1) **the crash-window gap** — the round-2 confirm sequence wrote the file at
+  step 6 but only marked `file_written` at step 7, so a crash in that exact window left
+  the row at `previewed` (indistinguishable from "never started") with the file already
+  changed, invisible to recovery, which only ever scanned `file_written`; fixed by
+  adding a durable `commit_started` state claimed atomically *before* the file write,
+  with recovery now scanning both `commit_started` and `file_written`; (2) the same
+  atomic claim (`UPDATE ... WHERE status = 'previewed'`) doubles as the serialization
+  point preventing two sibling previews from both passing precondition checks and
+  racing to write the file concurrently; (3) `start_edit` was specified to source
+  editable field values from aggregated snapshot claims, which would let a read-only
+  source's value (`CLAUDE.md`, `cv/main_example.tex`) — including a conflict's
+  losing-side value — surface as if editable; corrected to parse the canonical
+  Markdown directly, using the snapshot only for conflict annotations and content-id;
+  (4) repeatable fields (employment, education) had no record-addressing model,
+  meaning "does some claim have the expected value" would pass even for the wrong
+  record or a duplicate value on a different record; corrected to canonical-order
+  positional addressing (`employment[0].job_title`, ...), sound specifically because
+  the whole-file precondition hash guarantees ordering hasn't shifted between calls;
+  (5) `new_markdown`/`previous_markdown` were declared transient but had no actual
+  expiry mechanism for abandoned `previewed` rows or commit-invalidated siblings,
+  which would have silently accumulated as the exact shadow-history the design set out
+  to avoid; corrected with a bounded-age expiry sweep and a new `expired` terminal
+  state; (6) the API surface left `{session_id}` as an open implementation choice and
+  didn't state the recovery-blocking rule as an API-layer invariant; both locked:
+  `session_id` is a stateless hash of schema version + precondition tuple (no session
+  table), and every route now explicitly rejects with `409` while any
+  `commit_started`/`file_written`/`recovery_conflict` row is unresolved, backed by a
+  new `GET /api/profile/recovery-status` signal for the UI.
