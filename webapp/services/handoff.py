@@ -237,6 +237,31 @@ def resolve_session_scope(conn: sqlite3.Connection, *, raw_token: str) -> Sessio
     )
 
 
+def resume_handoff_session(
+    conn: sqlite3.Connection, scope: AccountScope, *, handoff_session_id: str,
+) -> str:
+    # Ownership failure and not-found are deliberately indistinguishable
+    # here (both raise HandoffSessionNotFound), matching
+    # _require_owned_session's existing convention below — this avoids an
+    # account-enumeration side channel a distinct "not owned" error would
+    # create.
+    session = get_handoff_session(conn, handoff_session_id)
+    if session is None or session["account_id"] != scope.account_id:
+        raise HandoffSessionNotFound(f"handoff session {handoff_session_id!r} not found")
+    if session["status"] != "in_progress":
+        # A terminal session is not resumable; surfaced identically to
+        # "not found" rather than as a distinct state, since there is
+        # nothing a caller can act on differently for either case.
+        raise HandoffSessionNotFound(f"handoff session {handoff_session_id!r} not found")
+    last_activity = datetime.fromisoformat(session["last_activity_at"])
+    if datetime.now(timezone.utc) - last_activity > HANDOFF_SESSION_INACTIVITY_TIMEOUT:
+        raise HandoffSessionExpired(f"handoff session {handoff_session_id!r} has expired")
+
+    token = rotate_session_token(conn, handoff_session_id=handoff_session_id)
+    refresh_session_activity(conn, handoff_session_id=handoff_session_id)
+    return token
+
+
 class HandoffEventRejected(HandoffError):
     pass
 
@@ -245,8 +270,15 @@ _PRESENCE_ONLY_EVENT_TYPES = frozenset({"user_value_present_observed"})
 
 
 def _require_owned_session(
-    conn: sqlite3.Connection, scope: AccountScope, handoff_session_id: str,
+    conn: sqlite3.Connection, scope: SessionScope, handoff_session_id: str,
 ) -> dict[str, Any]:
+    # A session token is bound to exactly one handoff_session_id — a
+    # token minted for session A must never be usable against session
+    # B's path, even for the same account, so this checks scope's own
+    # bound session id, not merely account ownership (design spec
+    # Section 7.1).
+    if scope.handoff_session_id != handoff_session_id:
+        raise HandoffSessionNotFound(f"handoff session {handoff_session_id!r} not found")
     session = get_handoff_session(conn, handoff_session_id)
     if session is None or session["account_id"] != scope.account_id:
         raise HandoffSessionNotFound(f"handoff session {handoff_session_id!r} not found")
@@ -255,7 +287,7 @@ def _require_owned_session(
 
 def record_handoff_event(
     conn: sqlite3.Connection,
-    scope: AccountScope,
+    scope: SessionScope,
     *,
     handoff_session_id: str,
     event_id: str,
@@ -289,7 +321,7 @@ def record_handoff_event(
 
 
 def replay_handoff_session(
-    conn: sqlite3.Connection, scope: AccountScope, handoff_session_id: str,
+    conn: sqlite3.Connection, scope: SessionScope, handoff_session_id: str,
 ) -> dict[str, Any]:
     session = _require_owned_session(conn, scope, handoff_session_id)
     return {"session": session, "events": list_handoff_events(conn, handoff_session_id)}
@@ -297,7 +329,7 @@ def replay_handoff_session(
 
 def confirm_handoff_submission(
     conn: sqlite3.Connection,
-    scope: AccountScope,
+    scope: SessionScope,
     *,
     handoff_session_id: str,
     mark_workflow_applied: bool = False,

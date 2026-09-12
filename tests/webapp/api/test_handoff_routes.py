@@ -65,10 +65,9 @@ def test_full_session_lifecycle_over_http(tmp_path):
     app, workspace_id, artifact_id = _app(tmp_path)
     with TestClient(app) as client:
         credential = _paired_credential(client)
-        headers = {"X-Handoff-Credential": credential}
 
         started = client.post(
-            "/api/handoff/sessions", headers=headers,
+            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
             json={
                 "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
                 "target_url": "https://x.test/apply", "target_domain": "x.test",
@@ -77,6 +76,8 @@ def test_full_session_lifecycle_over_http(tmp_path):
         )
         assert started.status_code == 201, started.text
         session_id = started.json()["id"]
+        assert "session_token" in started.json()
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
 
         event_response = client.post(
             f"/api/handoff/sessions/{session_id}/events", headers=headers,
@@ -119,9 +120,8 @@ def test_sensitive_event_with_value_is_rejected_over_http(tmp_path):
     app, workspace_id, artifact_id = _app(tmp_path)
     with TestClient(app) as client:
         credential = _paired_credential(client)
-        headers = {"X-Handoff-Credential": credential}
         started = client.post(
-            "/api/handoff/sessions", headers=headers,
+            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
             json={
                 "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
                 "target_url": "https://x.test/apply", "target_domain": "x.test",
@@ -129,6 +129,7 @@ def test_sensitive_event_with_value_is_rejected_over_http(tmp_path):
             },
         )
         session_id = started.json()["id"]
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
 
         rejected = client.post(
             f"/api/handoff/sessions/{session_id}/events", headers=headers,
@@ -140,6 +141,269 @@ def test_sensitive_event_with_value_is_rejected_over_http(tmp_path):
             },
         )
         assert rejected.status_code == 400
+
+
+def _start_session(client, credential, workspace_id, artifact_id, **overrides):
+    body = {
+        "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
+        "target_url": "https://x.test/apply", "target_domain": "x.test",
+        "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
+    }
+    body.update(overrides)
+    response = client.post(
+        "/api/handoff/sessions", headers={"X-Handoff-Credential": credential}, json=body,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_start_session_returns_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        assert "session_token" in started
+        assert isinstance(started["session_token"], str)
+        assert len(started["session_token"]) >= 32
+
+
+def test_discover_sessions_returns_metadata_without_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        _start_session(client, credential, workspace_id, artifact_id)
+
+        discovered = client.get(
+            "/api/handoff/sessions/discover",
+            headers={"X-Handoff-Credential": credential},
+            params={"workspace_id": workspace_id, "target_domain": "x.test"},
+        )
+        assert discovered.status_code == 200, discovered.text
+        sessions = discovered.json()["sessions"]
+        assert len(sessions) == 1
+        assert "session_token" not in sessions[0]
+
+
+def test_discover_does_not_refresh_last_activity_at(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        original_activity = started["last_activity_at"]
+
+        client.get(
+            "/api/handoff/sessions/discover",
+            headers={"X-Handoff-Credential": credential},
+            params={"workspace_id": workspace_id, "target_domain": "x.test"},
+        )
+
+        discovered = client.get(
+            "/api/handoff/sessions/discover",
+            headers={"X-Handoff-Credential": credential},
+            params={"workspace_id": workspace_id, "target_domain": "x.test"},
+        )
+        assert discovered.json()["sessions"][0]["last_activity_at"] == original_activity
+
+
+def test_resume_session_rotates_token_and_invalidates_prior_one(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        original_token = started["session_token"]
+
+        resumed = client.post(
+            f"/api/handoff/sessions/{session_id}/resume",
+            headers={"X-Handoff-Credential": credential},
+        )
+        assert resumed.status_code == 201, resumed.text
+        new_token = resumed.json()["session_token"]
+        assert new_token != original_token
+
+        # the original token no longer works
+        stale_response = client.get(
+            f"/api/handoff/sessions/{session_id}/events",
+            headers={"X-Handoff-Session-Token": original_token},
+        )
+        assert stale_response.status_code == 401
+
+        # the rotated token works
+        fresh_response = client.get(
+            f"/api/handoff/sessions/{session_id}/events",
+            headers={"X-Handoff-Session-Token": new_token},
+        )
+        assert fresh_response.status_code == 200
+
+
+def test_resume_session_rejects_wrong_account(tmp_path):
+    from webapp.persistence.accounts import create_account
+
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        conn = connect(app.state.settings.db_path)
+        create_account(conn, account_id="account_other", display_name="Other")
+        conn.close()
+
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        other_settings = Settings(
+            db_path=app.state.settings.db_path,
+            documents_root=app.state.settings.documents_root,
+            account_id="account_other",
+        )
+    with TestClient(create_app(other_settings)) as other_client:
+        other_credential = _paired_credential(other_client)
+        resumed = other_client.post(
+            f"/api/handoff/sessions/{session_id}/resume",
+            headers={"X-Handoff-Credential": other_credential},
+        )
+        assert resumed.status_code == 404
+
+
+def test_resume_session_rejects_expired_session(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        conn = connect(app.state.settings.db_path)
+        stale = "2020-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        resumed = client.post(
+            f"/api/handoff/sessions/{session_id}/resume",
+            headers={"X-Handoff-Credential": credential},
+        )
+        assert resumed.status_code == 401
+
+
+def test_resume_session_rejects_terminal_status_session(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        confirmed = client.post(
+            f"/api/handoff/sessions/{session_id}/confirm-submission",
+            headers=headers, json={"mark_workflow_applied": False},
+        )
+        assert confirmed.status_code == 201, confirmed.text
+
+        resumed = client.post(
+            f"/api/handoff/sessions/{session_id}/resume",
+            headers={"X-Handoff-Credential": credential},
+        )
+        assert resumed.status_code == 404
+
+
+def test_send_event_rejects_durable_credential_header(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/events",
+            headers={"X-Handoff-Credential": credential},
+            json={
+                "event_id": "evt_1", "event_type": "value_inserted",
+                "event_payload": {"value": "x"},
+                "normalized_field_type": "email", "page_field_key": "generic:email",
+            },
+        )
+        assert response.status_code == 422  # missing required X-Handoff-Session-Token header
+
+
+def test_session_token_for_one_session_rejected_against_another_sessions_path(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        session_a = _start_session(client, credential, workspace_id, artifact_id)
+        session_b = _start_session(
+            client, credential, workspace_id, artifact_id, target_domain="y.test",
+        )
+
+        cross_response = client.get(
+            f"/api/handoff/sessions/{session_b['id']}/events",
+            headers={"X-Handoff-Session-Token": session_a["session_token"]},
+        )
+        assert cross_response.status_code == 404
+
+
+def test_send_event_refreshes_last_activity_at(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        # Stale but still within the 2-hour inactivity window, so the
+        # refresh itself (not the expiry rejection) is what's observed.
+        stale_but_not_expired = (
+            datetime.now(timezone.utc) - timedelta(minutes=30)
+        ).isoformat()
+        conn = connect(app.state.settings.db_path)
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale_but_not_expired, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/events", headers=headers,
+            json={
+                "event_id": "evt_1", "event_type": "value_inserted",
+                "event_payload": {"value": "x"},
+                "normalized_field_type": "email", "page_field_key": "generic:email",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+        conn = connect(app.state.settings.db_path)
+        refreshed = conn.execute(
+            "SELECT last_activity_at FROM handoff_sessions WHERE id = ?", (session_id,),
+        ).fetchone()["last_activity_at"]
+        conn.close()
+        assert refreshed != stale_but_not_expired
+
+
+def test_expired_session_token_rejected(tmp_path):
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        conn = connect(app.state.settings.db_path)
+        stale = "2020-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/events", headers=headers,
+        )
+        assert response.status_code == 401
 
 
 def test_cross_account_denial_over_http(tmp_path):
