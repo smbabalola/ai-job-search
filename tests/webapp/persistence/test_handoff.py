@@ -6,6 +6,8 @@ from webapp.persistence.db import connect, init_db
 import webapp.persistence.migrations as migrations
 from webapp.persistence.migrations import (
     APPLICATION_DOCUMENTS_MIGRATION_ID,
+    HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,
+    HANDOFF_SESSION_TOKENS_MIGRATION_ID,
     HANDOFF_SESSIONS_MIGRATION_ID,
     ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
     PAIRING_SECRETS_MIGRATION_ID,
@@ -50,6 +52,76 @@ def test_migration_005_is_idempotent(tmp_path):
     conn.close()
 
 
+def test_migration_008_creates_handoff_session_tokens_table(tmp_path):
+    db_path = tmp_path / "jobsearch.sqlite3"
+    init_db(db_path)
+    conn = connect(db_path)
+    applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_TOKENS_MIGRATION_ID,),
+    ).fetchone()
+    assert applied is not None
+
+    tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    assert "handoff_session_tokens" in tables
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(handoff_session_tokens)").fetchall()
+    }
+    assert columns == {"id", "handoff_session_id", "token_hash", "created_at", "revoked_at"}
+    conn.close()
+
+
+def test_migration_008_is_idempotent(tmp_path):
+    db_path = tmp_path / "jobsearch.sqlite3"
+    init_db(db_path)
+    conn = connect(db_path)
+    migrations.apply_migrations(conn)  # second call must not raise or duplicate
+    count = conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_TOKENS_MIGRATION_ID,),
+    ).fetchone()[0]
+    assert count == 1
+    conn.close()
+
+
+def test_migration_009_adds_last_activity_at_column(tmp_path):
+    db_path = tmp_path / "jobsearch.sqlite3"
+    init_db(db_path)
+    conn = connect(db_path)
+    applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
+    ).fetchone()
+    assert applied is not None
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(handoff_sessions)").fetchall()
+    }
+    assert "last_activity_at" in columns
+    conn.close()
+
+
+def test_migration_009_is_idempotent(tmp_path):
+    db_path = tmp_path / "jobsearch.sqlite3"
+    init_db(db_path)
+    conn = connect(db_path)
+    migrations.apply_migrations(conn)  # second call must not raise or duplicate
+    count = conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
+    ).fetchone()[0]
+    assert count == 1
+    conn.close()
+
+
 def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     db_path = tmp_path / "upgrade-from-004.sqlite3"
     init_db(db_path)
@@ -67,16 +139,19 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     )
     conn.execute("DROP TABLE onboarding_progress")
     conn.execute("DROP TABLE submission_confirmations")
+    conn.execute("DROP TABLE handoff_session_tokens")
     conn.execute("DROP TABLE handoff_events")
     conn.execute("DROP TABLE handoff_sessions")
     conn.execute("DROP TABLE extension_credentials")
     conn.execute("DROP TABLE pairing_secrets")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
             PAIRING_SECRETS_MIGRATION_ID,
+            HANDOFF_SESSION_TOKENS_MIGRATION_ID,
+            HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,
         ),
     )
     conn.commit()
@@ -104,6 +179,19 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
         "SELECT 1 FROM schema_migrations WHERE id = ?",
         (ONBOARDING_WALKTHROUGHS_MIGRATION_ID,),
     ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_TOKENS_MIGRATION_ID,),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
+    ).fetchone() is not None
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(handoff_sessions)").fetchall()
+    }
+    assert "last_activity_at" in columns
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     conn.close()
 
@@ -201,6 +289,80 @@ def test_create_and_get_handoff_session(tmp_path):
 
     fetched = get_handoff_session(conn, session["id"])
     assert fetched == session
+    conn.close()
+
+
+def test_migration_008_token_row_can_reference_a_real_handoff_session(tmp_path):
+    conn = _conn(tmp_path)
+    pack_artifact_id = _setup_handoff_session_test(conn, "account_local", "ws_1")
+    session = create_handoff_session(
+        conn, account_id="account_local", workspace_id="ws_1",
+        pack_artifact_id=pack_artifact_id, target_url="https://boards.greenhouse.io/acme/jobs/1",
+        target_domain="boards.greenhouse.io", ats_adapter_id="greenhouse",
+        ats_adapter_version="greenhouse@1",
+    )
+    conn.execute(
+        "INSERT INTO handoff_session_tokens (id, handoff_session_id, token_hash, created_at, revoked_at) "
+        "VALUES ('hst_1', ?, 'sha256:deadbeef', ?, NULL)",
+        (session["id"], "2026-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM handoff_session_tokens WHERE id = 'hst_1'"
+    ).fetchone()
+    assert row["handoff_session_id"] == session["id"]
+    assert row["token_hash"] == "sha256:deadbeef"
+    assert row["revoked_at"] is None
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+
+
+def test_migration_009_backfills_last_activity_at_from_started_at_for_existing_sessions(tmp_path):
+    """Regression test for the backfill rule itself: a session that
+    already existed (inserted before migration 009 ever ran, matching
+    what a real upgrade from a pre-009 database looks like) must show
+    last_activity_at == started_at after the migration runs, never "now"
+    — an old, untouched session must not look freshly active just
+    because a migration happened to run.
+
+    A session created via create_handoff_session AFTER migration 009 has
+    already applied is a different scenario (last_activity_at starts
+    NULL there, since that function's own INSERT doesn't set it yet —
+    Task 2's service layer is what sets it going forward); this test
+    specifically covers the migration's own backfill of pre-existing
+    rows, so it builds the pre-migration row directly rather than via
+    that helper."""
+    db_path = tmp_path / "jobsearch.sqlite3"
+    init_db(db_path)
+    conn = connect(db_path)
+    pack_artifact_id = _setup_handoff_session_test(conn, "account_local", "ws_1")
+
+    # Simulate a session that already existed on a pre-009 database: undo
+    # 009 (drop the column it added, delete its schema_migrations row),
+    # insert a session the old way, then re-run apply_migrations so 009
+    # runs its backfill against this now-existing row.
+    conn.execute("ALTER TABLE handoff_sessions DROP COLUMN last_activity_at")
+    conn.execute(
+        "DELETE FROM schema_migrations WHERE id = ?",
+        (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
+    )
+    conn.commit()
+    session = create_handoff_session(
+        conn, account_id="account_local", workspace_id="ws_1",
+        pack_artifact_id=pack_artifact_id, target_url="https://boards.greenhouse.io/acme/jobs/1",
+        target_domain="boards.greenhouse.io", ats_adapter_id="greenhouse",
+        ats_adapter_version="greenhouse@1",
+    )
+    started_at = session["started_at"]
+
+    migrations.apply_migrations(conn)
+
+    row = conn.execute(
+        "SELECT started_at, last_activity_at FROM handoff_sessions WHERE id = ?",
+        (session["id"],),
+    ).fetchone()
+    assert row["started_at"] == started_at
+    assert row["last_activity_at"] == started_at
     conn.close()
 
 

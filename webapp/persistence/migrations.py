@@ -23,6 +23,8 @@ APPLICATION_DOCUMENTS_MIGRATION_ID = "004_application_documents"
 HANDOFF_SESSIONS_MIGRATION_ID = "005_handoff_sessions"
 ONBOARDING_WALKTHROUGHS_MIGRATION_ID = "006_onboarding_walkthroughs"
 PAIRING_SECRETS_MIGRATION_ID = "007_pairing_secrets"
+HANDOFF_SESSION_TOKENS_MIGRATION_ID = "008_handoff_session_tokens"
+HANDOFF_SESSION_ACTIVITY_MIGRATION_ID = "009_handoff_session_activity"
 
 
 def _now() -> str:
@@ -51,6 +53,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (HANDOFF_SESSIONS_MIGRATION_ID, _migrate_handoff_sessions, False),
         (ONBOARDING_WALKTHROUGHS_MIGRATION_ID, _migrate_onboarding_walkthroughs, False),
         (PAIRING_SECRETS_MIGRATION_ID, _migrate_pairing_secrets, False),
+        (HANDOFF_SESSION_TOKENS_MIGRATION_ID, _migrate_handoff_session_tokens, False),
+        (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID, _migrate_handoff_session_activity, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -317,6 +321,29 @@ def _migrate_pairing_secrets(conn: sqlite3.Connection) -> None:
         CREATE INDEX idx_pairing_secrets_hash ON pairing_secrets(secret_hash);
         """,
     )
+
+
+def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE handoff_session_tokens (
+            id TEXT PRIMARY KEY,
+            handoff_session_id TEXT NOT NULL REFERENCES handoff_sessions(id),
+            token_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+
+        CREATE INDEX idx_handoff_session_tokens_hash ON handoff_session_tokens(token_hash);
+        CREATE INDEX idx_handoff_session_tokens_session ON handoff_session_tokens(handoff_session_id);
+        """,
+    )
+
+
+def _migrate_handoff_session_activity(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE handoff_sessions ADD COLUMN last_activity_at TEXT")
+    conn.execute("UPDATE handoff_sessions SET last_activity_at = started_at")
 
 
 def _migrate_evidence_profile_manager(conn: sqlite3.Connection) -> None:
