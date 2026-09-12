@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,12 +12,16 @@ from webapp.persistence.handoff import (
     append_handoff_event,
     create_extension_credential,
     create_handoff_session,
+    create_session_token,
     create_submission_confirmation,
     find_in_progress_handoff_sessions,
     get_extension_credential_by_hash,
     get_handoff_session,
+    get_session_token_row,
     hash_pairing_secret,
     list_handoff_events,
+    refresh_session_activity,
+    revoke_session_tokens,
     set_handoff_session_status,
 )
 from webapp.persistence.workflow import record_status_change
@@ -158,6 +163,61 @@ class HandoffSessionNotFound(HandoffError):
 
 class HandoffSessionNotActive(HandoffError):
     pass
+
+
+class HandoffSessionTokenInvalid(HandoffError):
+    pass
+
+
+class HandoffSessionExpired(HandoffError):
+    pass
+
+
+# Not user-configurable, not a settings-table row — one internal constant.
+# Long enough for a real application with interruptions, short enough
+# that an abandoned handoff is not resumable indefinitely (design spec
+# Section 4).
+HANDOFF_SESSION_INACTIVITY_TIMEOUT = timedelta(hours=2)
+
+
+@dataclass(frozen=True)
+class SessionScope:
+    account_id: str
+    handoff_session_id: str
+    workspace_id: str
+    pack_artifact_id: str
+
+
+def mint_session_token(conn: sqlite3.Connection, *, handoff_session_id: str) -> str:
+    return create_session_token(conn, handoff_session_id=handoff_session_id)
+
+
+def rotate_session_token(conn: sqlite3.Connection, *, handoff_session_id: str) -> str:
+    # Revoking every prior live token before minting the new one keeps
+    # exactly one live token per session at a time — an old, possibly
+    # leaked token stops working the moment the session is re-authorized
+    # (design spec Section 3.2).
+    revoke_session_tokens(conn, handoff_session_id=handoff_session_id, commit=False)
+    return create_session_token(conn, handoff_session_id=handoff_session_id)
+
+
+def resolve_session_scope(conn: sqlite3.Connection, *, raw_token: str) -> SessionScope:
+    token_hash = hash_pairing_secret(raw_token)
+    row = get_session_token_row(conn, token_hash=token_hash)
+    if row is None:
+        raise HandoffSessionTokenInvalid("session token not recognized")
+    if row["status"] != "in_progress":
+        raise HandoffSessionTokenInvalid("session is not active")
+    last_activity = datetime.fromisoformat(row["last_activity_at"])
+    if datetime.now(timezone.utc) - last_activity > HANDOFF_SESSION_INACTIVITY_TIMEOUT:
+        raise HandoffSessionExpired("session has expired")
+    refresh_session_activity(conn, handoff_session_id=row["handoff_session_id"])
+    return SessionScope(
+        account_id=row["account_id"],
+        handoff_session_id=row["handoff_session_id"],
+        workspace_id=row["workspace_id"],
+        pack_artifact_id=row["pack_artifact_id"],
+    )
 
 
 class HandoffEventRejected(HandoffError):

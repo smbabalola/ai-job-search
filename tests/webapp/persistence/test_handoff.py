@@ -325,13 +325,10 @@ def test_migration_009_backfills_last_activity_at_from_started_at_for_existing_s
     — an old, untouched session must not look freshly active just
     because a migration happened to run.
 
-    A session created via create_handoff_session AFTER migration 009 has
-    already applied is a different scenario (last_activity_at starts
-    NULL there, since that function's own INSERT doesn't set it yet —
-    Task 2's service layer is what sets it going forward); this test
-    specifically covers the migration's own backfill of pre-existing
-    rows, so it builds the pre-migration row directly rather than via
-    that helper."""
+    create_handoff_session (Task 2 onward) always sets last_activity_at
+    itself on insert, so it can no longer be used to build the
+    pre-migration row this test needs — the row is inserted directly via
+    raw SQL matching the actual pre-009 column set instead."""
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
@@ -339,27 +336,32 @@ def test_migration_009_backfills_last_activity_at_from_started_at_for_existing_s
 
     # Simulate a session that already existed on a pre-009 database: undo
     # 009 (drop the column it added, delete its schema_migrations row),
-    # insert a session the old way, then re-run apply_migrations so 009
-    # runs its backfill against this now-existing row.
+    # insert a session the old (pre-009) way, then re-run apply_migrations
+    # so 009 runs its backfill against this now-existing row.
     conn.execute("ALTER TABLE handoff_sessions DROP COLUMN last_activity_at")
     conn.execute(
         "DELETE FROM schema_migrations WHERE id = ?",
         (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
     )
     conn.commit()
-    session = create_handoff_session(
-        conn, account_id="account_local", workspace_id="ws_1",
-        pack_artifact_id=pack_artifact_id, target_url="https://boards.greenhouse.io/acme/jobs/1",
-        target_domain="boards.greenhouse.io", ats_adapter_id="greenhouse",
-        ats_adapter_version="greenhouse@1",
+    started_at = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO handoff_sessions "
+        "(id, account_id, workspace_id, pack_artifact_id, target_url, "
+        "target_domain, ats_adapter_id, ats_adapter_version, started_at, "
+        "status, user_confirmed_submitted_at) "
+        "VALUES ('hs_pre009', 'account_local', 'ws_1', ?, "
+        "'https://boards.greenhouse.io/acme/jobs/1', 'boards.greenhouse.io', "
+        "'greenhouse', 'greenhouse@1', ?, 'in_progress', NULL)",
+        (pack_artifact_id, started_at),
     )
-    started_at = session["started_at"]
+    conn.commit()
 
     migrations.apply_migrations(conn)
 
     row = conn.execute(
         "SELECT started_at, last_activity_at FROM handoff_sessions WHERE id = ?",
-        (session["id"],),
+        ("hs_pre009",),
     ).fetchone()
     assert row["started_at"] == started_at
     assert row["last_activity_at"] == started_at

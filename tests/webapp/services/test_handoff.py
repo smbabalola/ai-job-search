@@ -476,3 +476,171 @@ def test_confirming_twice_is_rejected_not_double_recorded(tmp_path):
     except HandoffSessionNotActive:
         pass
     conn.close()
+
+
+from datetime import datetime, timedelta, timezone
+
+from webapp.persistence.handoff import hash_pairing_secret
+from webapp.services.handoff import (
+    HandoffSessionExpired,
+    HandoffSessionTokenInvalid,
+    SessionScope,
+    mint_session_token,
+    resolve_session_scope,
+    rotate_session_token,
+)
+
+
+def test_mint_session_token_persists_hash_not_raw_value(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+
+    row = conn.execute(
+        "SELECT token_hash FROM handoff_session_tokens WHERE handoff_session_id = ?",
+        (session["id"],),
+    ).fetchone()
+    assert row["token_hash"] != token
+    assert row["token_hash"] == hash_pairing_secret(token)
+    conn.close()
+
+
+def test_resolve_session_scope_succeeds_for_valid_token(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+
+    resolved = resolve_session_scope(conn, raw_token=token)
+
+    assert resolved == SessionScope(
+        account_id="account_local",
+        handoff_session_id=session["id"],
+        workspace_id=workspace["id"],
+        pack_artifact_id=artifact["id"],
+    )
+    conn.close()
+
+
+def test_resolve_session_scope_refreshes_last_activity_at(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+    original_activity = conn.execute(
+        "SELECT last_activity_at FROM handoff_sessions WHERE id = ?", (session["id"],),
+    ).fetchone()["last_activity_at"]
+
+    # Force the stored activity timestamp into the past (but still within
+    # the inactivity timeout) so a refresh is observably different, rather
+    # than racing the clock within the same test process tick.
+    stale_but_not_expired = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (stale_but_not_expired, session["id"]),
+    )
+    conn.commit()
+
+    resolve_session_scope(conn, raw_token=token)
+
+    refreshed_activity = conn.execute(
+        "SELECT last_activity_at FROM handoff_sessions WHERE id = ?", (session["id"],),
+    ).fetchone()["last_activity_at"]
+    assert refreshed_activity != stale_but_not_expired
+    assert refreshed_activity != original_activity
+    conn.close()
+
+
+def test_resolve_session_scope_rejects_unrecognized_token(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        resolve_session_scope(conn, raw_token="not-a-real-token")
+        assert False, "expected HandoffSessionTokenInvalid"
+    except HandoffSessionTokenInvalid:
+        pass
+    conn.close()
+
+
+def test_resolve_session_scope_rejects_expired_session(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+
+    stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (stale, session["id"]),
+    )
+    conn.commit()
+
+    try:
+        resolve_session_scope(conn, raw_token=token)
+        assert False, "expected HandoffSessionExpired"
+    except HandoffSessionExpired:
+        pass
+    conn.close()
+
+
+def test_resolve_session_scope_rejects_non_in_progress_session(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+    confirm_handoff_submission(conn, scope, handoff_session_id=session["id"])
+
+    try:
+        resolve_session_scope(conn, raw_token=token)
+        assert False, "expected HandoffSessionTokenInvalid"
+    except HandoffSessionTokenInvalid:
+        pass
+    conn.close()
+
+
+def test_rotate_session_token_revokes_prior_tokens(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    token_1 = mint_session_token(conn, handoff_session_id=session["id"])
+    token_2 = rotate_session_token(conn, handoff_session_id=session["id"])
+
+    assert token_1 != token_2
+    try:
+        resolve_session_scope(conn, raw_token=token_1)
+        assert False, "expected HandoffSessionTokenInvalid for the revoked token"
+    except HandoffSessionTokenInvalid:
+        pass
+    resolve_session_scope(conn, raw_token=token_2)  # succeeds
+    conn.close()
