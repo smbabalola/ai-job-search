@@ -10,16 +10,22 @@ from webapp.services.handoff import (
     HandoffError,
     HandoffEventRejected,
     HandoffPackNotFound,
+    HandoffSessionExpired,
     HandoffSessionNotActive,
     HandoffSessionNotFound,
+    HandoffSessionTokenInvalid,
     PairingSecretInvalid,
+    SessionScope,
     confirm_handoff_submission,
     discover_resumable_handoff_sessions,
     exchange_pairing_secret_for_credential,
     generate_pairing_secret,
+    mint_session_token,
     record_handoff_event,
     replay_handoff_session,
     resolve_account_scope_from_extension_credential,
+    resolve_session_scope,
+    resume_handoff_session,
     start_handoff_session,
 )
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
@@ -72,9 +78,21 @@ def get_extension_scope(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
+def get_session_scope(
+    x_handoff_session_token: str = Header(...),
+    conn: sqlite3.Connection = Depends(get_conn),
+) -> SessionScope:
+    try:
+        return resolve_session_scope(conn, raw_token=x_handoff_session_token)
+    except (HandoffSessionTokenInvalid, HandoffSessionExpired) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
 def _translate(exc: Exception) -> HTTPException:
     if isinstance(exc, (HandoffSessionNotFound, OwnedResourceNotFound)):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, HandoffSessionExpired):
+        return HTTPException(status_code=401, detail=str(exc))
     if isinstance(exc, (HandoffPackNotFound, HandoffSessionNotActive, HandoffEventRejected)):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
@@ -111,9 +129,11 @@ def post_start_session(
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     try:
-        return start_handoff_session(conn, scope, **body.model_dump())
+        session = start_handoff_session(conn, scope, **body.model_dump())
     except (HandoffError, OwnedResourceNotFound) as exc:
         raise _translate(exc) from exc
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+    return {**session, "session_token": token}
 
 
 @router.get("/sessions/discover")
@@ -122,6 +142,11 @@ def get_discover_sessions(
     scope: AccountScope = Depends(get_extension_scope),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
+    # Metadata-only: never mints or rotates a token, and never refreshes
+    # last_activity_at for any session it lists — merely listing resumable
+    # candidates is not activity. Minting/rotation happens only in
+    # post_resume_session, for the one session the caller actually chose
+    # (design spec Section 3.2).
     try:
         sessions = discover_resumable_handoff_sessions(
             conn, scope, workspace_id=workspace_id, target_domain=target_domain,
@@ -131,10 +156,23 @@ def get_discover_sessions(
         raise _translate(exc) from exc
 
 
+@router.post("/sessions/{session_id}/resume", status_code=201)
+def post_resume_session(
+    session_id: str,
+    scope: AccountScope = Depends(get_extension_scope),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    try:
+        token = resume_handoff_session(conn, scope, handoff_session_id=session_id)
+    except HandoffError as exc:
+        raise _translate(exc) from exc
+    return {"session_token": token}
+
+
 @router.post("/sessions/{session_id}/events", status_code=201)
 def post_record_event(
     session_id: str, body: RecordEventBody,
-    scope: AccountScope = Depends(get_extension_scope),
+    scope: SessionScope = Depends(get_session_scope),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     try:
@@ -148,7 +186,7 @@ def post_record_event(
 @router.get("/sessions/{session_id}/events")
 def get_replay_events(
     session_id: str,
-    scope: AccountScope = Depends(get_extension_scope),
+    scope: SessionScope = Depends(get_session_scope),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     try:
@@ -160,7 +198,7 @@ def get_replay_events(
 @router.post("/sessions/{session_id}/confirm-submission", status_code=201)
 def post_confirm_submission(
     session_id: str, body: ConfirmSubmissionBody,
-    scope: AccountScope = Depends(get_extension_scope),
+    scope: SessionScope = Depends(get_session_scope),
     conn: sqlite3.Connection = Depends(get_conn),
 ):
     try:

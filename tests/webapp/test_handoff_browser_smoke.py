@@ -104,10 +104,9 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
             "/api/handoff/pairing/exchange", json={"one_time_secret": one_time_secret},
         )
         credential = exchanged.json()["durable_secret"]
-        headers = {"X-Handoff-Credential": credential}
 
         started = client.post(
-            "/api/handoff/sessions", headers=headers,
+            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
             json={
                 "workspace_id": workspace["id"], "pack_artifact_id": artifact["id"],
                 "target_url": "http://testserver/test-fixtures/handoff/generic_fixture.html",
@@ -117,6 +116,7 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
         )
         assert started.status_code == 201
         session_id = started.json()["id"]
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
 
         # Simulates what the extension's content script + background
         # worker would report after scanning the real fixture page: only
