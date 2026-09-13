@@ -73,6 +73,9 @@ def _build_adapter_bundle():
     subprocess.run(
         [npm, "run", "build:test-bundle"], cwd="extension", check=True,
     )
+    subprocess.run(
+        [npm, "run", "build:probe-test-bundle"], cwd="extension", check=True,
+    )
 
 
 def test_generic_fixture_page_is_served(tmp_path):
@@ -233,6 +236,40 @@ def test_real_submit_button_never_clicked_by_classification_pass(page, live_serv
     )
     clicks = page.evaluate("() => window.__submitClicks")
     assert clicks == 0
+
+
+def test_probe_page_detects_real_greenhouse_adapter_with_zero_dom_mutation(page, live_server):
+    """Proves Task 8's probePage() against a real browser DOM (not JSDOM):
+    the correct adapter identity comes from the adapter's own detect()
+    logic against the live page, never from the hostname/URL, and probing
+    performs zero DOM writes — every input's value is unchanged
+    afterward, exactly as it must be for a step that runs before any
+    handoff session or candidate data exists."""
+    page.goto(f"{live_server.base_url}/test-fixtures/handoff/greenhouse_fixture.html")
+    page.add_script_tag(path="extension/dist/probe-bundle.js")
+    page.add_script_tag(path="extension/dist/adapters-bundle.js")
+
+    result = page.evaluate(
+        """() => {
+            const adapters = [HandoffAdapters.greenhouseAdapter, HandoffAdapters.genericAdapter];
+            return HandoffProbe.probePage(document, adapters);
+        }"""
+    )
+
+    assert result["atsAdapterId"] == "greenhouse"
+    assert result["atsAdapterVersion"] == "greenhouse@1"
+    assert "employment[0].employer" in result["normalizedFieldTypes"]
+    assert "name" in result["normalizedFieldTypes"]
+    # years_of_experience is "suggest" (candidate-data-eligible), so it IS
+    # requestable — but the disability field is "ask" and must be excluded.
+    assert "years_of_experience" in result["normalizedFieldTypes"]
+
+    for input_id in [
+        "job_application_first_name", "job_application_email",
+        "job_application_most_recent_employer", "job_application_years_experience",
+    ]:
+        value = page.locator(f"#{input_id}").input_value()
+        assert value == "", f"probePage must never write to #{input_id}, found {value!r}"
 
 
 def test_no_sensitive_value_or_secret_leakage_in_fixture_page(page, live_server):

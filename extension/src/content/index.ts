@@ -1,6 +1,8 @@
 import { genericAdapter, greenhouseAdapter, leverAdapter } from "../adapters";
 import { runContentScript } from "./content-script";
 import { readInjectedSnapshot } from "./snapshot-source";
+import { probePage } from "./probe";
+import { INJECTED_PROBE_RESULT_KEY } from "./probe-source";
 import type { ContentScriptMessage } from "./messages";
 
 // Greenhouse/Lever tried first (each has a specific, narrow detect()),
@@ -24,10 +26,14 @@ if (snapshot) {
     },
   );
 } else {
-  // No snapshot was injected — background worker failed to attach one
-  // before injecting this script. Nothing to scan against; fail silently
-  // rather than throw into the page's own console. Session-start UI
-  // (a separate ticket) is responsible for ensuring a snapshot always
-  // exists before this script is ever injected.
-  console.warn("[JobSearch Handoff] no candidate snapshot available; skipping scan");
+  // No snapshot was injected yet — this is the probe-only injection
+  // (background/index.ts's runAutofillOnTab injects this same bundle a
+  // first time, before any session/snapshot exists, specifically to run
+  // detect/scan/classify without candidate data). Store the result on
+  // globalThis for the background worker to read back via a second
+  // chrome.scripting.executeScript call, mirroring how the snapshot
+  // itself is handed over (snapshot-source.ts) — no DOM write, no
+  // handoff event, no server call happens in this branch.
+  const probeResult = probePage(document, [greenhouseAdapter, leverAdapter, genericAdapter]);
+  (globalThis as unknown as Record<string, unknown>)[INJECTED_PROBE_RESULT_KEY] = probeResult;
 }

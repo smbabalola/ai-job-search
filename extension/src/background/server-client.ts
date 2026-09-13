@@ -115,6 +115,27 @@ export class ServerClient {
     return response.ok;
   }
 
+  // Session-scoped, exact-pack-pinned candidate projection (design spec
+  // Section 7). Requests ONLY the given normalized field types — never a
+  // bulk "current profile" fetch — so the employer page only ever
+  // receives the minimum candidate data it actually needs. The server's
+  // own closed mapping (project_session_snapshot) additionally guarantees
+  // an unsupported/unmapped type releases no value even if requested.
+  async fetchSessionSnapshot(
+    handoffSessionId: string, normalizedFieldTypes: string[], sessionToken: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(
+      `${BASE_URL}/api/handoff/sessions/${handoffSessionId}/snapshot`,
+      {
+        method: "POST", headers: this.sessionHeaders(sessionToken),
+        body: JSON.stringify({ normalized_field_types: normalizedFieldTypes }),
+      },
+    );
+    if (!response.ok) throw new Error(`failed to fetch session snapshot: ${response.status}`);
+    const result = await response.json();
+    return result.snapshot;
+  }
+
   async confirmSubmission(
     handoffSessionId: string, markWorkflowApplied: boolean, sessionToken: string,
   ): Promise<unknown> {
