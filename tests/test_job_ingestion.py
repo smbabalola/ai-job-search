@@ -217,10 +217,43 @@ class JobIngestionTests(unittest.TestCase):
         snapshot = normalize_job_source_record(minimal_record())
         self.assertNotIn("source_url_provenance", snapshot["metadata"]["ingestion"])
 
-    def test_freehire_source_url_gets_discovery_verified_provenance(self):
+    def test_freehire_normalization_never_produces_discovery_verified_provenance(self):
+        # normalize_job_source_record (which normalize_freehire_detail calls
+        # into) can never itself produce discovery_verified for ANY caller —
+        # that trust is asserted only by the genuine discovery pipeline
+        # (webapp.services.discovery.promote_discovery_candidate writing a
+        # real application_workspace_origins row), never by anything this
+        # module stores on the snapshot. A source_url with no explicit
+        # source_record_origin defaults to the weakest provenance.
         snapshot = normalize_freehire_detail(freehire_detail(), "2026-08-16T14:30:00Z")
         self.assertEqual(
-            snapshot["metadata"]["ingestion"]["source_url_provenance"], "discovery_verified"
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
+        )
+
+    def test_imported_json_claiming_freehire_source_cannot_obtain_discovery_verified(self):
+        record = minimal_record()
+        record["source"] = "freehire-search"
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="imported_json")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
+        )
+
+    def test_manual_entry_claiming_freehire_source_cannot_obtain_discovery_verified(self):
+        record = minimal_record()
+        record["source"] = "freehire-search"
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="manual_entry")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "user_supplied"
+        )
+
+    def test_unsupported_origin_value_falls_back_to_weakest_provenance(self):
+        record = minimal_record()
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="not_a_real_origin")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
         )
 
     def test_evidence_ids_are_deterministic(self):
