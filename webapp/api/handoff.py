@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_dir
+from webapp.api.dependencies import (
+    get_account_scope,
+    get_conn,
+    get_documents_root,
+    get_extensions_dir,
+)
 from webapp.services.handoff import (
+    HandoffDocumentKindUnsupported,
     HandoffError,
     HandoffEventRejected,
     HandoffPackArtifactInvalid,
@@ -22,6 +30,7 @@ from webapp.services.handoff import (
     confirm_handoff_submission,
     discover_resumable_handoff_sessions,
     exchange_pairing_secret_for_credential,
+    fetch_session_document,
     generate_pairing_secret,
     mint_session_token,
     project_session_snapshot,
@@ -114,6 +123,7 @@ def _translate(exc: Exception) -> HTTPException:
             HandoffEventRejected,
             HandoffPackStale,
             HandoffPackArtifactInvalid,
+            HandoffDocumentKindUnsupported,
         ),
     ):
         return HTTPException(status_code=400, detail=str(exc))
@@ -211,6 +221,43 @@ def post_session_snapshot(
     except HandoffError as exc:
         raise _translate(exc) from exc
     return {"snapshot": snapshot}
+
+
+@router.get("/sessions/{session_id}/documents/{kind}")
+def get_session_document(
+    session_id: str, kind: str,
+    scope: SessionScope = Depends(get_session_scope),
+    conn: sqlite3.Connection = Depends(get_conn),
+    documents_root: Path = Depends(get_documents_root),
+):
+    # No workspace_id/pack_artifact_id request parameter exists on this
+    # route at all — both are derived entirely from the resolved
+    # SessionScope (itself resolved entirely from the presented session
+    # token), exactly like post_session_snapshot above. A token for
+    # session A can never be used to fetch session B's document, and the
+    # session's pinned pack_artifact_id is always used explicitly, so a
+    # newer Application Pack confirmed for the same workspace after this
+    # session started is never silently substituted in (design spec
+    # Section 7).
+    if scope.handoff_session_id != session_id:
+        raise _translate(HandoffSessionNotFound(f"handoff session {session_id!r} not found"))
+    try:
+        rendered_file = fetch_session_document(
+            conn, scope, kind=kind, documents_root=documents_root,
+        )
+    except HandoffError as exc:
+        raise _translate(exc) from exc
+    return Response(
+        content=rendered_file.content,
+        media_type=rendered_file.mime_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(rendered_file.filename)}; "
+                f'filename="{kind}.docx"'
+            ),
+            "X-Content-Hash": rendered_file.content_hash,
+        },
+    )
 
 
 @router.post("/sessions/{session_id}/events", status_code=201)
