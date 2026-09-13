@@ -9,6 +9,7 @@ from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workflow import record_status_change
 from webapp.persistence.workspaces import PROFILE_WORKSPACE_ID, create_workspace, ensure_profile_workspace
+from webapp.services.pipeline import create_job_from_source_record
 from tests.webapp.services.test_workspace_view import _seed_evidence
 
 
@@ -415,6 +416,47 @@ def test_workspace_detail_apply_button_enabled_for_discovery_origin_confirmed_pa
         assert f'data-workspace-id="{workspace["id"]}"' in text
         assert f'data-pack-artifact-id="{artifact["id"]}"' in text
         assert 'data-target-url="https://freehire.me/jobs/planner-77"' in text
+        assert "disabled" not in text.split('apply-with-extension"')[1].split(">")[0]
+
+
+def test_workspace_detail_apply_button_enabled_for_manual_job_with_user_supplied_url(tmp_path):
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        created = create_job_from_source_record(
+            conn, company="Acme", title="Backend Engineer",
+            source_record={
+                "schema_version": "job-source-record.v0", "source": "manual",
+                "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
+                "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42",
+            },
+            source_record_origin="manual_entry",
+        )
+        workspace = created["workspace"]
+        real_snapshot = created["artifact"]
+        _seed_evidence(conn, workspace["id"])
+        # _seed_evidence unconditionally overwrites job_posting_snapshot with
+        # its own minimal synthetic payload (it exists to seed the
+        # understanding/fit/intelligence dependency chain, not to preserve
+        # real ingestion output) — restore the actual manually-ingested
+        # snapshot (with its source_url + provenance) as current afterward,
+        # matching the real product invariant that a job's own snapshot is
+        # never rewritten once created.
+        save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="job_posting_snapshot",
+            payload=real_snapshot["payload"], content_id=real_snapshot["content_id"],
+        )
+        save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("manual-apply-cta"),
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert 'class="button apply-with-extension"' in text
+        assert 'data-target-url="https://boards.example.com/acme/42"' in text
         assert "disabled" not in text.split('apply-with-extension"')[1].split(">")[0]
 
 

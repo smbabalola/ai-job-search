@@ -167,7 +167,7 @@ if (jobForm) {
   jobForm.addEventListener("change", (event) => {
     if (event.target.name !== "mode") return;
     document.querySelectorAll("[data-mode-panel]").forEach(panel => {
-      panel.hidden = panel.dataset.modePanel !== event.target.value;
+      panel.hidden = !panel.dataset.modePanel.split(" ").includes(event.target.value);
     });
   });
   jobForm.addEventListener("submit", async (event) => {
@@ -178,16 +178,23 @@ if (jobForm) {
     const mode = data.get("mode");
     try {
       let sourceRecord;
+      let sourceRecordOrigin;
       if (mode === "import") {
         sourceRecord = JSON.parse(data.get("source_json"));
+        sourceRecordOrigin = "imported_json";
       } else {
         sourceRecord = {schema_version: "job-source-record.v0", source: mode === "paste" ? "manual-paste" : "manual",
           captured_at: new Date().toISOString(), company, title};
+        const sourceUrl = data.get("source_url");
+        if (sourceUrl && sourceUrl.trim()) sourceRecord.source_url = sourceUrl.trim();
         if (mode === "paste") sourceRecord.raw_text = data.get("posting_text");
         else sourceRecord.description = data.get("description");
+        sourceRecordOrigin = mode === "paste" ? "manual_paste" : "manual_entry";
       }
       const result = await api("/api/workspaces", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({company, title, source_record: sourceRecord})});
+        body: JSON.stringify({
+          company, title, source_record: sourceRecord, source_record_origin: sourceRecordOrigin,
+        })});
       window.location.assign(`/workspaces/${result.workspace.id}`);
     } catch (error) { showMessage(error.message, true); }
   });
