@@ -35,6 +35,8 @@ export interface CandidateSnapshot {
   }>;
 }
 
+export type AttachmentDocumentKind = "cv" | "cover_letter";
+
 export interface Adapter {
   id: string;
   version: string;
@@ -43,4 +45,12 @@ export interface Adapter {
   classify(field: DetectedField): FieldDecision;
   map(field: DetectedField, snapshot: CandidateSnapshot): string | null;
   detectLikelySuccess?(document: Document): boolean;
+  // Positively identifies a real, adapter-known file-upload target for
+  // the given document kind on this specific ATS's form — returns null
+  // when the adapter has no verified upload-field convention for this
+  // kind, rather than guessing at a generic file input. An adapter that
+  // does not implement this method at all is treated identically to one
+  // that always returns null (design spec: never attempt attachment
+  // without a positively-identified compatible target).
+  findAttachmentTarget?(document: Document, kind: AttachmentDocumentKind): HTMLInputElement | null;
 }

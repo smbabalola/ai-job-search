@@ -3,7 +3,6 @@ import { ChromeEventStore } from "./chrome-event-store";
 import { CredentialStore } from "./credential-store";
 import { ServerClient } from "./server-client";
 import { DurableEventQueue } from "./event-queue";
-import { MessageRouter } from "./message-router";
 import { PendingContextStore } from "./pending-context-store";
 import { extractValidPendingContext } from "./pending-context-validation";
 import {
@@ -12,12 +11,20 @@ import {
   type BoundSession,
 } from "./session-orchestration";
 import { SessionSequenceStore } from "./session-sequence-store";
+import { SessionRegistry } from "./session-registry";
 import { buildCandidateSnapshotFromProjection } from "./snapshot-projection";
+import { fetchExactPackDocument, buildAttachmentEventPayload } from "./attachment";
 import { INJECTED_SNAPSHOT_KEY } from "../content/snapshot-source";
 import { INJECTED_PROBE_RESULT_KEY, readInjectedProbeResult } from "../content/probe-source";
+import {
+  ATTACHMENT_REQUEST_KEY, ATTACHMENT_RESULT_KEY, readInjectedAttachmentResult,
+  type AttachmentRequest,
+} from "../content/attachment-source";
 import type { ProbeResult } from "../content/probe";
 import type { ContentScriptMessage } from "../content/messages";
 import type { CandidateSnapshot } from "../adapters/types";
+
+const BASE_URL = "http://127.0.0.1:8420";
 
 // The one loopback origin the webapp bridge content script is allowed
 // to message from — matches manifest.json's host_permissions and the
@@ -32,51 +39,22 @@ const serverClient = new ServerClient(() => credentialStore.get());
 const pendingContextStore = new PendingContextStore();
 const sequenceStore = new SessionSequenceStore();
 
-// The currently bound handoff session, established by
-// associateHandoffSession() in runAutofillOnTab below. Deliberately a
-// module-level variable (not chrome.storage) — it holds only the
-// short-lived session token for as long as this worker instance lives;
-// a service-worker restart re-derives it from a fresh
-// associateHandoffSession() call rather than resurrecting stale token
-// state, since the pending context that produced it has already been
-// cleared by then in the success case.
-let boundSession: BoundSession | null = null;
+// Per-tab and per-session runtime state (Task 12): replaces the
+// Task-9-era single module-level `boundSession`/`router` slots, which
+// would silently corrupt one tab's session the moment a second tab
+// associated a different one. See session-registry.ts for the full
+// isolation contract this is required to uphold.
+const sessionRegistry = new SessionRegistry(
+  new DurableEventQueue(eventStore, (event) => {
+    const token = sessionRegistry.tokenForSession(event.handoffSessionId);
+    if (!token) return Promise.resolve(false);
+    return serverClient.sendEvent(event, token);
+  }),
+  (handoffSessionId) => sequenceStore.get(handoffSessionId),
+);
 
-// sendEvent needs the session token that was live at flush time. A
-// closure (rather than reading the module-level `boundSession` directly
-// inside ServerClient) keeps ServerClient's own dependency surface
-// unaware of orchestration state — it only knows "give me a token when
-// asked."
-const eventQueue = new DurableEventQueue(eventStore, (event) => {
-  if (!boundSession) return Promise.resolve(false);
-  return serverClient.sendEvent(event, boundSession.sessionToken);
-});
-
-let router: MessageRouter | null = null;
-
-// Lazily (re)constructs the module-level `router` so a service-worker
-// restart (MV3 workers are killed after ~30s idle) never leaves `router`
-// null while the content script is still emitting messages — that would
-// silently drop events instead of queuing them. Resumes clientSequence
-// numbering from the per-session sequence store (session-sequence-store.ts)
-// when the restart is mid-session, and starts fresh at 0 when the bound
-// session id has actually changed, so a stale sequence from a prior
-// session is never reused (see event-queue.ts:32's sort-by-clientSequence
-// ordering, which a duplicate/rollback would corrupt).
-async function ensureRouter(): Promise<MessageRouter | null> {
-  if (!boundSession) return null;
-
-  if (router && router.handoffSessionId === boundSession.sessionId) {
-    return router;
-  }
-
-  const startingClientSequence = await sequenceStore.get(boundSession.sessionId);
-  router = new MessageRouter(eventQueue, boundSession.sessionId, startingClientSequence);
-  return router;
-}
-
-async function persistClientSequence(current: MessageRouter): Promise<void> {
-  await sequenceStore.set(current.handoffSessionId, current.clientSequence);
+async function persistSequenceForSession(handoffSessionId: string, sequence: number): Promise<void> {
+  await sequenceStore.set(handoffSessionId, sequence);
 }
 
 // Runs the content bundle once with no snapshot present — content/index.ts's
@@ -97,6 +75,100 @@ async function probeTab(tabId: number): Promise<ProbeResult | null> {
     args: [INJECTED_PROBE_RESULT_KEY],
   });
   return readInjectedProbeResult({ [INJECTED_PROBE_RESULT_KEY]: result });
+}
+
+// Injects attachment-runner.js — a separate MAIN-world bundle (needed
+// because a real File write to <input type="file"> via DataTransfer is
+// only observed by the page's own scripts when it happens in that same
+// world, unlike every other content script in this extension, which
+// runs ISOLATED) — with the request payload pre-written to globalThis,
+// then reads the result back the same globalThis-bridge way probeTab
+// does.
+async function attachInTab(
+  tabId: number, request: AttachmentRequest,
+): Promise<import("../content/attachment-dom").AttachmentAttemptResult> {
+  await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: (key: string, value: unknown) => {
+      (globalThis as unknown as Record<string, unknown>)[key] = value;
+    },
+    args: [ATTACHMENT_REQUEST_KEY, request],
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    files: ["attachment-runner/index.js"],
+  });
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: (key: string) => (globalThis as unknown as Record<string, unknown>)[key],
+    args: [ATTACHMENT_RESULT_KEY],
+  });
+  return readInjectedAttachmentResult({ [ATTACHMENT_RESULT_KEY]: result }) ?? {
+    outcome: "write_failed", pageFieldKey: null,
+  };
+}
+
+// Fetches both documents and attempts to attach each one against a
+// file-upload target the probed adapter has POSITIVELY identified for
+// that kind — never a guessed/generic file input, and never a widened
+// ATS host permission to search more broadly for one. A missing
+// compatible target is an honest, expected non-success outcome, not a
+// failure to search harder. Documents are re-fetched fresh right before
+// this call (never cached/reused bytes from earlier in the session).
+// Every outcome (success, no-target, write failure, fetch failure) is
+// reported via the existing session-token event path — never silently
+// dropped, and never reported as success when it was not. This never
+// submits the application: only file-input population + outcome
+// events, no form submission of any kind.
+async function attachDocuments(
+  tabId: number, session: BoundSession, adapterId: string,
+): Promise<void> {
+  const router = await sessionRegistry.ensureRouterForSession(session.sessionId);
+
+  for (const kind of ["cv", "cover_letter"] as const) {
+    let outcome: "selected" | "no_compatible_target" | "write_failed" | "fetch_failed";
+    let pageFieldKey: string | null = null;
+    let sha256 = "";
+    let filename = "";
+    let mimeType = "";
+    let byteLength = 0;
+
+    try {
+      const doc = await fetchExactPackDocument(BASE_URL, session.sessionId, session.sessionToken, kind);
+      sha256 = doc.sha256;
+      filename = doc.filename;
+      mimeType = doc.mimeType;
+      byteLength = doc.byteLength;
+
+      const attemptResult = await attachInTab(tabId, {
+        adapterId, kind, filename: doc.filename, mimeType: doc.mimeType,
+        fileBytes: Array.from(new Uint8Array(doc.bytes)),
+      });
+      outcome = attemptResult.outcome;
+      pageFieldKey = attemptResult.pageFieldKey;
+    } catch (err) {
+      console.warn(`[JobSearch Handoff] failed to fetch/attach ${kind}`, err);
+      outcome = "fetch_failed";
+    }
+
+    const payload = {
+      ...buildAttachmentEventPayload(
+        { kind, filename, mimeType, sha256, byteLength, bytes: new ArrayBuffer(0) },
+        session.packArtifactId, "application-pack-renderer.v0",
+        // buildAttachmentEventPayload's own outcome vocabulary
+        // ("selected" | "upload_confirmed_by_adapter" | "rejected" |
+        // "unknown") is preserved unchanged; this event's OWN eventType
+        // (attachment_<outcome> below) and attempt_outcome field carry
+        // the more granular real result honestly, never upgrading a
+        // non-success to "selected".
+        outcome === "selected" ? "selected" : "unknown",
+      ),
+      attempt_outcome: outcome,
+    };
+    await router.routeEvent(`attachment_${outcome}`, payload, pageFieldKey);
+  }
+
+  await persistSequenceForSession(session.sessionId, router.clientSequence);
 }
 
 export async function runAutofillOnTab(tabId: number): Promise<void> {
@@ -160,8 +232,8 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
   // Only clear the pending context once a session has been successfully
   // bound to the intended workspace/pack/domain — never before.
   await pendingContextStore.clear();
-  boundSession = session;
-  await ensureRouter();
+  sessionRegistry.bindTab(tabId, session);
+  await sessionRegistry.ensureRouterForSession(session.sessionId);
 
   let snapshot: CandidateSnapshot;
   try {
@@ -204,7 +276,16 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
     });
   } catch (err) {
     console.warn("[JobSearch Handoff] injection failed", err);
+    return;
   }
+
+  // Attachment happens only after autofill injection has been attempted
+  // — never before, and never as a precondition for autofill. A failed
+  // or missing attachment target never blocks or reverses the autofill
+  // that already happened. This never submits the application: only
+  // file-input population + outcome events, no form submission of any
+  // kind (design spec / Task 11 — "Do not auto-submit the application").
+  await attachDocuments(tabId, session, probeResult.atsAdapterId);
 }
 
 // Cheap defensive guard: chrome.runtime.onMessage fires for messages from
@@ -256,19 +337,26 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
   if (!isValidContentScriptMessage(message, sender)) return;
 
+  // Resolved strictly by THIS tab's own bound session — never a shared
+  // "current" session across tabs, so two tabs each running their own
+  // handoff session never interleave into the wrong router/sequence
+  // (Task 12).
+  const tabId = sender.tab!.id!;
+  const boundSession = sessionRegistry.sessionForTab(tabId);
+  if (!boundSession) return;
+
   // Fire-and-forget: chrome.runtime.onMessage listeners that return
   // synchronously (no sendResponse used) don't block the content script's
   // sendMessage call on this promise. Enqueue-then-flush ordering is
   // handled inside DurableEventQueue/the router; a failed flush leaves the
   // event durably queued for the next flush trigger, per event-queue.ts's
   // existing retry contract.
-  void ensureRouter()
-    .then((current) => {
-      if (!current) return;
-      return current.route(message).then(() =>
-        Promise.all([eventQueue.flush(), persistClientSequence(current)]),
-      );
-    })
+  void sessionRegistry.ensureRouterForSession(boundSession.sessionId)
+    .then((router) =>
+      router.route(message).then(() =>
+        persistSequenceForSession(boundSession.sessionId, router.clientSequence),
+      ),
+    )
     .catch((err) => {
       console.warn("[JobSearch Handoff] relay failed", err);
     });

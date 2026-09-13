@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:test-bundle": "esbuild src/adapters/index.ts --bundle --format=iife --global-name=HandoffAdapters --outfile=dist/adapters-bundle.js",
-    "build:probe-test-bundle": "esbuild src/content/probe.ts --bundle --format=iife --global-name=HandoffProbe --outfile=dist/probe-bundle.js"
+    "build:probe-test-bundle": "esbuild src/content/probe.ts --bundle --format=iife --global-name=HandoffProbe --outfile=dist/probe-bundle.js",
+    "build:attachment-test-bundle": "esbuild src/content/attachment-dom.ts --bundle --format=iife --global-name=HandoffAttachment --outfile=dist/attachment-bundle.js"
   },
   "devDependencies": {
     "@types/chrome": "^0.2.9",
