@@ -32,12 +32,34 @@ export class SessionRegistry {
   ) {}
 
   bindTab(tabId: number, session: BoundSession): void {
+    const previous = this.sessionByTab.get(tabId);
     this.sessionByTab.set(tabId, session);
     this.tokenBySessionId.set(session.sessionId, session.sessionToken);
+    if (previous && previous.sessionId !== session.sessionId) {
+      this.releaseSessionIfUnreferenced(previous.sessionId);
+    }
   }
 
   sessionForTab(tabId: number): BoundSession | undefined {
     return this.sessionByTab.get(tabId);
+  }
+
+  // True if some tab other than (optionally) `exceptTabId` still holds
+  // this handoffSessionId as its current binding — e.g. the user resumed
+  // the same in-progress session in a second tab. A session referenced by
+  // more than one tab must never have its router/token torn down just
+  // because ONE of those tabs closed or rebound elsewhere.
+  private isSessionReferencedByAnotherTab(handoffSessionId: string, exceptTabId?: number): boolean {
+    for (const [tabId, bound] of this.sessionByTab) {
+      if (tabId === exceptTabId) continue;
+      if (bound.sessionId === handoffSessionId) return true;
+    }
+    return false;
+  }
+
+  private releaseSessionIfUnreferenced(handoffSessionId: string, exceptTabId?: number): void {
+    if (this.isSessionReferencedByAnotherTab(handoffSessionId, exceptTabId)) return;
+    this.releaseSession(handoffSessionId);
   }
 
   // Looks up (or lazily creates) the router for a specific handoffSessionId
@@ -72,7 +94,18 @@ export class SessionRegistry {
     this.tokenBySessionId.delete(handoffSessionId);
   }
 
+  // Real lifecycle trigger: chrome.tabs.onRemoved in index.ts calls this
+  // when a tab is genuinely gone (closed, discarded, or its window
+  // closed) — never on ordinary same-tab navigation, which fires no such
+  // event. Removes this tab's own binding, then releases its session's
+  // router/token too, but ONLY if no other tab still references that same
+  // session (see isSessionReferencedByAnotherTab) — so closing tab A never
+  // tears down state a still-open tab B legitimately depends on.
   releaseTab(tabId: number): void {
+    const bound = this.sessionByTab.get(tabId);
     this.sessionByTab.delete(tabId);
+    if (bound) {
+      this.releaseSessionIfUnreferenced(bound.sessionId, tabId);
+    }
   }
 }
