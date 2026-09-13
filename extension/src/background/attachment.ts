@@ -15,25 +15,26 @@ function parseFilename(contentDisposition: string): string {
   return match ? match[1] : "document.docx";
 }
 
-// Calls the existing render route fresh every time (design spec Section
-// 7) — no caching, no new persisted file bytes. pack_artifact_id is
-// always explicit and always the session's pinned value; this function
-// has no parameter that could omit it and fall back to "current".
+// Calls the dedicated session-scoped document endpoint
+// (GET /api/handoff/sessions/{sessionId}/documents/{kind}) fresh every
+// time — no caching, no reuse of bytes fetched earlier in the
+// application lifecycle. Authority is session id + session token +
+// document kind ONLY: there is no workspaceId/packArtifactId/durable-
+// credential parameter at all, so a caller cannot select a different
+// workspace or pack even by mistake — the server derives both from the
+// session token alone (design spec Section 7 / Task 11).
 export async function fetchExactPackDocument(
   baseUrl: string,
-  credential: string,
-  workspaceId: string,
-  packArtifactId: string,
+  sessionId: string,
+  sessionToken: string,
   kind: "cv" | "cover_letter",
 ): Promise<RenderedDocument> {
-  const url =
-    `${baseUrl}/api/workspaces/${workspaceId}/application-pack/render/${kind}` +
-    `?pack_artifact_id=${encodeURIComponent(packArtifactId)}`;
+  const url = `${baseUrl}/api/handoff/sessions/${sessionId}/documents/${kind}`;
   const response = await fetch(url, {
-    headers: { "X-Handoff-Credential": credential },
+    headers: { "X-Handoff-Session-Token": sessionToken },
   });
   if (!response.ok) {
-    throw new Error(`failed to render ${kind} for pack ${packArtifactId}: ${response.status}`);
+    throw new Error(`failed to fetch ${kind} for session ${sessionId}: ${response.status}`);
   }
   const bytes = await response.arrayBuffer();
   return {

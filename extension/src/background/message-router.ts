@@ -51,4 +51,27 @@ export class MessageRouter {
     };
     await this.queue.enqueue(event);
   }
+
+  // Background-originated events (e.g. attachment outcomes) never come
+  // from a content script's own ContentScriptMessage — there is no page
+  // field being observed, only an outcome the background worker itself
+  // determined. This still advances the SAME clientSequence counter as
+  // route() so a session's sequence numbering (and therefore its
+  // durable-queue ordering) has exactly one source of truth per session,
+  // never a separate counter for background-originated events.
+  async routeEvent(
+    eventType: string, eventPayload: Record<string, unknown>, pageFieldKey: string | null,
+  ): Promise<void> {
+    this._clientSequence += 1;
+    const event: QueuedEvent = {
+      eventId: nextEventId(),
+      clientSequence: this._clientSequence,
+      handoffSessionId: this.handoffSessionId,
+      eventType,
+      eventPayload,
+      pageFieldKey: pageFieldKey ?? undefined,
+      observedAt: new Date().toISOString(),
+    };
+    await this.queue.enqueue(event);
+  }
 }

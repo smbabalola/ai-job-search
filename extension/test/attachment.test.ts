@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildAttachmentEventPayload, fetchExactPackDocument } from "../src/background/attachment";
 
 describe("fetchExactPackDocument", () => {
-  it("calls the exact render route with the pinned pack_artifact_id and reads the hash header", async () => {
+  it("calls the session-scoped document endpoint with the session token and reads the hash header", async () => {
     const bytes = new TextEncoder().encode("fake docx bytes").buffer;
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -16,20 +16,28 @@ describe("fetchExactPackDocument", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await fetchExactPackDocument(
-      "http://127.0.0.1:8420", "cred-123", "ws_1", "art_XYZ", "cv",
+      "http://127.0.0.1:8420", "hs_1", "session-tok-1", "cv",
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8420/api/workspaces/ws_1/application-pack/render/cv?pack_artifact_id=art_XYZ",
-      expect.objectContaining({ headers: expect.objectContaining({ "X-Handoff-Credential": "cred-123" }) }),
+      "http://127.0.0.1:8420/api/handoff/sessions/hs_1/documents/cv",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Handoff-Session-Token": "session-tok-1" }),
+      }),
     );
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
     expect(result.sha256).toBe("sha256:abc123");
     expect(result.filename).toBe("Acme_Engineer_CV.docx");
     expect(result.byteLength).toBe(bytes.byteLength);
     vi.unstubAllGlobals();
   });
 
-  it("always includes the explicit pack_artifact_id, never omitting it for a handoff session", async () => {
+  it("has no workspaceId/packArtifactId/durable-credential parameter at all — authority is session id + session token only", () => {
+    expect(fetchExactPackDocument.length).toBe(4); // baseUrl, sessionId, sessionToken, kind
+  });
+
+  it("re-fetches fresh on every call rather than caching (no internal memoization across calls)", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       headers: new Map([
@@ -41,10 +49,20 @@ describe("fetchExactPackDocument", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchExactPackDocument("http://127.0.0.1:8420", "cred", "ws_1", "art_PINNED", "cover_letter");
+    await fetchExactPackDocument("http://127.0.0.1:8420", "hs_1", "tok", "cover_letter");
+    await fetchExactPackDocument("http://127.0.0.1:8420", "hs_1", "tok", "cover_letter");
 
-    const [calledUrl] = fetchMock.mock.calls[0] as [string, unknown];
-    expect(calledUrl).toContain("pack_artifact_id=art_PINNED");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
+  });
+
+  it("throws when the request fails (e.g. wrong/expired session token)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchExactPackDocument("http://127.0.0.1:8420", "hs_1", "bad-tok", "cv"),
+    ).rejects.toThrow();
     vi.unstubAllGlobals();
   });
 });

@@ -105,4 +105,33 @@ describe("MessageRouter", () => {
     expect(queued.clientSequence).toBe(6);
     expect(router.clientSequence).toBe(6);
   });
+
+  it("routeEvent enqueues a background-originated event advancing the same clientSequence counter as route()", async () => {
+    const store = new InMemoryStore();
+    const queue = new DurableEventQueue(store, vi.fn().mockResolvedValue(true));
+    const router = new MessageRouter(queue, "hs_1");
+
+    await router.route(makeMessage());
+    await router.routeEvent("attachment_selected", { kind: "cv", outcome: "selected" }, "greenhouse:attachment:resume");
+
+    const queued = await store.getAll();
+    expect(queued).toHaveLength(2);
+    expect(queued[1].clientSequence).toBe(2);
+    expect(queued[1].handoffSessionId).toBe("hs_1");
+    expect(queued[1].eventType).toBe("attachment_selected");
+    expect(queued[1].eventPayload).toEqual({ kind: "cv", outcome: "selected" });
+    expect(queued[1].pageFieldKey).toBe("greenhouse:attachment:resume");
+    expect(router.clientSequence).toBe(2);
+  });
+
+  it("routeEvent accepts a null pageFieldKey for outcomes with no specific field (e.g. no_compatible_target)", async () => {
+    const store = new InMemoryStore();
+    const queue = new DurableEventQueue(store, vi.fn().mockResolvedValue(true));
+    const router = new MessageRouter(queue, "hs_1");
+
+    await router.routeEvent("attachment_no_compatible_target", { kind: "cover_letter" }, null);
+
+    const [queued] = await store.getAll();
+    expect(queued.pageFieldKey).toBeUndefined();
+  });
 });

@@ -59,6 +59,16 @@ def test_production_build_contains_loopback_content_bridge_bundle():
     assert bridge_runtime.stat().st_size > 0
 
 
+def test_production_build_contains_attachment_runner_bundle():
+    # Dynamically injected via chrome.scripting.executeScript (world:
+    # "MAIN"), never declared in manifest.json's content_scripts — same
+    # pattern as content/index.js itself, which is also never listed
+    # there.
+    runner = BUILD_ROOT / "attachment-runner" / "index.js"
+    assert runner.is_file()
+    assert runner.stat().st_size > 0
+
+
 def test_loopback_content_bridge_adds_no_new_host_permission():
     manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
 
