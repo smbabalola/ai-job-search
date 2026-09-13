@@ -109,10 +109,12 @@ def get_current_profile_snapshot(
 def create_job_from_source_record(
     conn: sqlite3.Connection, *, company: str, title: str, source_record: dict[str, Any],
     workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
-    commit: bool = True,
+    commit: bool = True, source_record_origin: str | None = None,
 ) -> dict[str, Any]:
     try:
-        job_snapshot = normalize_job_source_record(source_record)
+        job_snapshot = normalize_job_source_record(
+            source_record, source_record_origin=source_record_origin,
+        )
     except Exception as exc:
         raise PipelineError(f"job ingestion failed: {exc}") from exc
     try:

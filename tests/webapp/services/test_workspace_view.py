@@ -1,3 +1,5 @@
+import pytest
+
 from tests.webapp.fixtures.application_material import completion_ready_pack_payload
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect, init_db
@@ -20,11 +22,13 @@ from webapp.services.input_identity import (
 )
 from webapp.persistence.discovery import ingest_discovery_record
 from webapp.services.discovery import promote_discovery_candidate
+from webapp.services.pipeline import create_job_from_source_record
 from webapp.services.workspace_view import (
     build_conflicted_concept_ids,
     build_dashboard_view_model,
     build_profile_view_model,
     build_workspace_view_model,
+    resolve_apply_target,
     resolve_apply_target_url,
     resolve_next_action,
     stage_state_label,
@@ -888,14 +892,23 @@ def test_resolve_apply_target_url_returns_none_for_null_source_url(tmp_path):
     assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"]) is None
 
 
-def test_resolve_apply_target_url_rejects_untrustworthy_scheme(tmp_path):
-    conn, _ = _workspace(tmp_path)
-    candidate = ingest_discovery_record(
-        conn, _discovery_source_record(source_url="javascript:alert(1)"),
-    )["candidate"]
-    promoted = promote_discovery_candidate(conn, candidate["id"])
+def test_untrustworthy_scheme_is_rejected_at_discovery_ingestion(tmp_path):
+    # An untrustworthy scheme is now caught at source-record ingestion
+    # itself (product.job_ingestion's own URL-format validation, added by
+    # the Manual Job URL / Source Intake workstream) rather than only by
+    # this module's resolver — so a javascript: URL can no longer even
+    # reach discovery storage. See
+    # test_manual_job_with_untrustworthy_scheme_has_no_apply_target below
+    # for proof the resolver still independently rejects an untrustworthy
+    # URL that somehow bypasses ingestion (defense in depth, not reliance
+    # on ingestion alone).
+    from product.job_ingestion import JobIngestionValidationError
 
-    assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"]) is None
+    conn, _ = _workspace(tmp_path)
+    with pytest.raises(JobIngestionValidationError):
+        ingest_discovery_record(
+            conn, _discovery_source_record(source_url="javascript:alert(1)"),
+        )
 
 
 def test_resolve_apply_target_url_does_not_leak_another_workspaces_url(tmp_path):
@@ -932,3 +945,135 @@ def test_resolve_apply_target_url_rejects_cross_account_workspace(tmp_path):
         assert False, "expected JobWorkspaceNotFound"
     except JobWorkspaceNotFound:
         pass
+
+
+def _manual_job_workspace(conn, *, source_url=None, source_record_origin="manual_entry", metadata=None):
+    record = {
+        "schema_version": "job-source-record.v0", "source": "manual",
+        "captured_at": "2026-08-21T09:00:00+00:00", "company": "Acme",
+        "title": "Backend Engineer",
+    }
+    if source_url is not None:
+        record["source_url"] = source_url
+    if metadata is not None:
+        record["metadata"] = metadata
+    created = create_job_from_source_record(
+        conn, company="Acme", title="Backend Engineer", source_record=record,
+        source_record_origin=source_record_origin,
+    )
+    return created["workspace"]["id"]
+
+
+def test_manually_supplied_snapshot_url_is_returned_when_no_discovery_origin_url_exists(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_id = _manual_job_workspace(
+        conn, source_url="https://boards.example.com/acme/42",
+    )
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id) == (
+        "https://boards.example.com/acme/42"
+    )
+
+
+def test_resolve_apply_target_reports_user_supplied_provenance_for_manual_job(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_id = _manual_job_workspace(
+        conn, source_url="https://boards.example.com/acme/42", source_record_origin="manual_entry",
+    )
+
+    target = resolve_apply_target(conn, workspace_id=workspace_id)
+
+    assert target is not None
+    assert target.url == "https://boards.example.com/acme/42"
+    assert target.provenance == "user_supplied"
+
+
+def test_resolve_apply_target_reports_imported_source_provenance_for_imported_job(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_id = _manual_job_workspace(
+        conn, source_url="https://boards.example.com/acme/42", source_record_origin="imported_json",
+    )
+
+    target = resolve_apply_target(conn, workspace_id=workspace_id)
+
+    assert target is not None
+    assert target.provenance == "imported_source"
+
+
+def test_resolve_apply_target_reports_discovery_verified_provenance(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"])
+
+    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"])
+
+    assert target is not None
+    assert target.url == "https://freehire.me/jobs/planner-77"
+    assert target.provenance == "discovery_verified"
+
+
+def test_discovery_origin_url_wins_over_manually_supplied_snapshot_url(tmp_path):
+    """A workspace promoted from discovery always resolves through
+    application_workspace_origins, never through its own job_posting_snapshot
+    fallback — so the discovery URL always wins even if the snapshot also
+    happens to carry a (weaker) source_url."""
+    conn, _ = _workspace(tmp_path)
+    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"])
+
+    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"])
+
+    assert target.url == "https://freehire.me/jobs/planner-77"
+    assert target.provenance == "discovery_verified"
+
+
+def test_manual_job_without_url_has_no_apply_target(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_id = _manual_job_workspace(conn, source_url=None)
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
+    assert resolve_apply_target(conn, workspace_id=workspace_id) is None
+
+
+def test_manual_job_with_untrustworthy_scheme_has_no_apply_target(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    # normalize_job_source_record's own validation already rejects a
+    # malformed/relative/scheme-less URL at creation time, so the only way
+    # an untrustworthy source_url could reach the resolver is a value that
+    # passes ingestion validation but not the resolver's own separate
+    # trust check — this asserts the resolver enforces its own check too,
+    # not merely trusting ingestion to have already done it.
+    workspace_id = _manual_job_workspace(conn, source_url="https://boards.example.com/acme/42")
+    conn.execute(
+        "UPDATE artifacts SET payload_json = REPLACE(payload_json, "
+        "'https://boards.example.com/acme/42', 'javascript:alert(1)') "
+        "WHERE workspace_id = ? AND artifact_type = 'job_posting_snapshot'",
+        (workspace_id,),
+    )
+    conn.commit()
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
+
+
+def test_imported_json_cannot_self_assert_discovery_verified_via_resolver(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_id = _manual_job_workspace(
+        conn, source_url="https://boards.example.com/acme/42",
+        source_record_origin="imported_json",
+        metadata={"ingestion": {"source_url_provenance": "discovery_verified"}},
+    )
+
+    target = resolve_apply_target(conn, workspace_id=workspace_id)
+
+    assert target.provenance == "imported_source"
+
+
+def test_workspace_a_snapshot_url_does_not_resolve_for_workspace_b(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    workspace_a = _manual_job_workspace(conn, source_url="https://boards.example.com/a")
+    workspace_b = create_workspace(conn, company="Other", title="Other Role")["id"]
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_a) == (
+        "https://boards.example.com/a"
+    )
+    assert resolve_apply_target_url(conn, workspace_id=workspace_b) is None

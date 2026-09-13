@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,12 @@ class CreateWorkspaceBody(StrictBody):
     company: str
     title: str
     source_record: dict[str, Any]
+    # Server-trusted classification of which intake boundary built this
+    # request — never inferred from source_record's own contents, so
+    # normalize_job_source_record can safely grant a stronger source_url
+    # provenance to "manual_entry"/"manual_paste" than to "imported_json"
+    # without trusting anything the caller put inside source_record itself.
+    source_record_origin: Literal["manual_entry", "manual_paste", "imported_json"]
 
 
 class ProcessingBody(StrictBody):
@@ -66,6 +72,7 @@ def post_workspace(
         return create_job_workspace(
             conn, company=body.company, title=body.title,
             source_record=body.source_record, account_id=scope.account_id,
+            source_record_origin=body.source_record_origin,
         )
     except PipelineError as exc:
         raise _service_error(exc) from exc

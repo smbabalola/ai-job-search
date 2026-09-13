@@ -136,6 +136,7 @@ def _create_application(client: TestClient) -> dict:
             "company": "Shared Employer",
             "title": "Platform Engineer",
             "source_record": _source_record(),
+            "source_record_origin": "manual_entry",
         },
     )
     assert response.status_code == 201
