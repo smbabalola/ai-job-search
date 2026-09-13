@@ -125,6 +125,104 @@ class JobIngestionTests(unittest.TestCase):
     def test_output_is_accepted_by_job_posting_snapshot_validator(self):
         validate_job_posting_snapshot(normalize_job_source_record(rich_record()))
 
+    def test_malformed_source_url_is_rejected(self):
+        record = minimal_record()
+        record["source_url"] = "not a url"
+        self.assert_invalid(
+            lambda: normalize_job_source_record(record), fragment="source_url"
+        )
+
+    def test_relative_source_url_is_rejected(self):
+        record = minimal_record()
+        record["source_url"] = "/jobs/42"
+        self.assert_invalid(
+            lambda: normalize_job_source_record(record), fragment="source_url"
+        )
+
+    def test_hostname_less_source_url_is_rejected(self):
+        record = minimal_record()
+        record["source_url"] = "https:///jobs/42"
+        self.assert_invalid(
+            lambda: normalize_job_source_record(record), fragment="source_url"
+        )
+
+    def test_source_url_whitespace_is_trimmed(self):
+        record = minimal_record()
+        record["source_url"] = "  https://boards.example.com/jobs/42  "
+        snapshot = normalize_job_source_record(record)
+        self.assertEqual(snapshot["source_url"], "https://boards.example.com/jobs/42")
+
+    def test_source_url_query_and_fragment_are_preserved(self):
+        record = minimal_record()
+        record["source_url"] = "https://boards.example.com/jobs/42?ref=abc#section"
+        snapshot = normalize_job_source_record(record)
+        self.assertEqual(
+            snapshot["source_url"], "https://boards.example.com/jobs/42?ref=abc#section"
+        )
+
+    def test_manual_record_with_no_url_remains_valid(self):
+        record = minimal_record()
+        record["source"] = "manual"
+        snapshot = normalize_job_source_record(record, source_record_origin="manual_entry")
+        self.assertNotIn("source_url", snapshot)
+        validate_job_posting_snapshot(snapshot)
+
+    def test_manual_entry_source_url_gets_user_supplied_provenance(self):
+        record = minimal_record()
+        record["source"] = "manual"
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="manual_entry")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "user_supplied"
+        )
+
+    def test_manual_paste_source_url_gets_user_supplied_provenance(self):
+        record = minimal_record()
+        record["source"] = "manual-paste"
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="manual_paste")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "user_supplied"
+        )
+
+    def test_default_origin_gets_imported_source_provenance(self):
+        record = minimal_record()
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record)
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
+        )
+
+    def test_imported_json_origin_gets_imported_source_provenance(self):
+        record = minimal_record()
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        snapshot = normalize_job_source_record(record, source_record_origin="imported_json")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
+        )
+
+    def test_imported_json_cannot_self_assert_discovery_verified_provenance(self):
+        record = minimal_record()
+        record["source_url"] = "https://boards.example.com/jobs/42"
+        record["metadata"] = {"ingestion": {"source_url_provenance": "discovery_verified"}}
+        snapshot = normalize_job_source_record(record, source_record_origin="imported_json")
+        # The caller-supplied claim lands under source_metadata (preserved
+        # verbatim, as any other unrecognized metadata would be) — it must
+        # never overwrite the server-computed top-level ingestion provenance.
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "imported_source"
+        )
+
+    def test_no_source_url_means_no_provenance_recorded(self):
+        snapshot = normalize_job_source_record(minimal_record())
+        self.assertNotIn("source_url_provenance", snapshot["metadata"]["ingestion"])
+
+    def test_freehire_source_url_gets_discovery_verified_provenance(self):
+        snapshot = normalize_freehire_detail(freehire_detail(), "2026-08-16T14:30:00Z")
+        self.assertEqual(
+            snapshot["metadata"]["ingestion"]["source_url_provenance"], "discovery_verified"
+        )
+
     def test_evidence_ids_are_deterministic(self):
         first = normalize_job_source_record(rich_record())
         second = normalize_job_source_record(copy.deepcopy(rich_record()))

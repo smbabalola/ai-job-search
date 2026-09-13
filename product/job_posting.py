@@ -12,6 +12,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 
 SCHEMA_PATH = Path(__file__).with_name("schemas") / "job-fit-contract.v0.schema.json"
@@ -28,6 +29,20 @@ JOB_EVIDENCE_COLLECTIONS = (
     "eligibility_requirements",
     "logistics_requirements",
 )
+
+
+def is_trustworthy_job_url(url: Any) -> bool:
+    """Absolute http/https URL with a non-empty hostname, and nothing else —
+    never derives, repairs, or guesses a URL; a caller passing anything else
+    (relative, malformed, or another scheme) gets False, not a best-effort fix."""
+
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
 class JobPostingValidationError(ValueError):
@@ -87,9 +102,15 @@ def validate_job_posting_snapshot(snapshot: Any) -> None:
     _id(snapshot.get("job_id"), "$.job_snapshot.job_id", errors)
     for field in ("source", "captured_at", "company", "title"):
         _nonempty_string(snapshot.get(field), f"$.job_snapshot.{field}", errors)
-    for field in ("source_url", "location", "employment_type", "description", "raw_text"):
+    for field in ("location", "employment_type", "description", "raw_text"):
         if field in snapshot:
             _nonempty_string(snapshot[field], f"$.job_snapshot.{field}", errors)
+    if "source_url" in snapshot:
+        _nonempty_string(snapshot["source_url"], "$.job_snapshot.source_url", errors)
+        if isinstance(snapshot["source_url"], str) and not is_trustworthy_job_url(snapshot["source_url"]):
+            errors.append(
+                "$.job_snapshot.source_url: must be an absolute http/https URL with a hostname"
+            )
     if "compensation" in snapshot and not isinstance(snapshot["compensation"], dict):
         errors.append("$.job_snapshot.compensation: must be an object")
     if "metadata" in snapshot and not isinstance(snapshot["metadata"], dict):
