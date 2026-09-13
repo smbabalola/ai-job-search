@@ -51,3 +51,26 @@ def test_production_build_contains_injectable_content_runtime():
     content_runtime = BUILD_ROOT / "content" / "index.js"
     assert content_runtime.is_file()
     assert content_runtime.stat().st_size > 0
+
+
+def test_production_build_contains_loopback_content_bridge_bundle():
+    bridge_runtime = BUILD_ROOT / "content-bridge" / "index.js"
+    assert bridge_runtime.is_file()
+    assert bridge_runtime.stat().st_size > 0
+
+
+def test_loopback_content_bridge_adds_no_new_host_permission():
+    manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
+
+    # The loopback bridge is a content_scripts "matches" entry, not a
+    # host_permissions grant — host_permissions must remain exactly
+    # what Sub-project 1 already established, no employer/ATS host
+    # ever added here or anywhere else.
+    assert manifest["host_permissions"] == ["http://127.0.0.1:8420/*"]
+
+    bridge_scripts = [
+        cs for cs in manifest.get("content_scripts", [])
+        if "content-bridge/index.js" in cs.get("js", [])
+    ]
+    assert len(bridge_scripts) == 1
+    assert bridge_scripts[0]["matches"] == ["http://127.0.0.1:8420/*"]

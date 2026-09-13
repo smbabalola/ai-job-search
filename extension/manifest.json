@@ -23,5 +23,11 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "content_scripts": []
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1:8420/*"],
+      "js": ["content-bridge/index.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }

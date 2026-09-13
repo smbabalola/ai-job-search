@@ -4,8 +4,17 @@ import { CredentialStore } from "./credential-store";
 import { ServerClient } from "./server-client";
 import { DurableEventQueue } from "./event-queue";
 import { MessageRouter } from "./message-router";
+import { PendingContextStore } from "./pending-context-store";
+import { extractValidPendingContext } from "./pending-context-validation";
 import { INJECTED_SNAPSHOT_KEY } from "../content/snapshot-source";
 import type { ContentScriptMessage } from "../content/messages";
+
+// The one loopback origin the webapp bridge content script is allowed
+// to message from — matches manifest.json's host_permissions and the
+// content-bridge content_scripts "matches" entry exactly. A message
+// claiming to be the webapp bridge from any other sender URL is
+// rejected outright, never trusted.
+const JOBSEARCH_WEBAPP_ORIGIN = "http://127.0.0.1:8420";
 
 // Manual-testing-only storage keys. There is no session-start UI yet
 // (separate ticket); until it exists, a developer sets these by hand via
@@ -28,6 +37,7 @@ const credentialStore = new CredentialStore();
 const eventStore = new ChromeEventStore();
 const serverClient = new ServerClient(() => credentialStore.get());
 const eventQueue = new DurableEventQueue(eventStore, (event) => serverClient.sendEvent(event));
+const pendingContextStore = new PendingContextStore();
 
 let router: MessageRouter | null = null;
 
@@ -132,7 +142,26 @@ function isValidContentScriptMessage(
   return typeof (message as { type?: unknown }).type === "string";
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, sender) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  if (
+    typeof message === "object" && message !== null &&
+    (message as { type?: unknown }).type === "set_pending_handoff_context"
+  ) {
+    const context = extractValidPendingContext(message, sender, JOBSEARCH_WEBAPP_ORIGIN);
+    if (!context) {
+      sendResponse({ ok: false, error: "invalid pending handoff context" });
+      return;
+    }
+    pendingContextStore
+      .set(context)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.warn("[JobSearch Handoff] failed to persist pending context", err);
+        sendResponse({ ok: false, error: "failed to persist pending context" });
+      });
+    return true; // keep the message channel open for the async sendResponse above
+  }
+
   if (
     typeof message === "object" && message !== null &&
     (message as { type?: unknown }).type === "popup_run_autofill" &&
