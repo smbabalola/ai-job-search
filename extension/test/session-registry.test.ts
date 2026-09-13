@@ -102,17 +102,90 @@ describe("SessionRegistry", () => {
     expect(await registry.ensureRouterForSession("hs_b")).toBe(routerB);
   });
 
-  it("rebinding a tab to a new session does not corrupt the prior session's own token entry", () => {
+  it("rebinding a tab to a new session releases the prior session's router/token when no other tab holds it", async () => {
     const registry = new SessionRegistry(fakeEventQueue(), async () => 0);
     registry.bindTab(1, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    await registry.ensureRouterForSession("hs_a");
     // Same tab later re-associates a different session (e.g. user
     // clicked "Apply with extension" again for a different workspace).
     registry.bindTab(1, session({ sessionId: "hs_b", sessionToken: "tok_b" }));
 
     expect(registry.sessionForTab(1)?.sessionId).toBe("hs_b");
-    // hs_a's token entry is untouched by the rebind — only releaseSession
-    // removes a session's token, not a tab being reassigned.
-    expect(registry.tokenForSession("hs_a")).toBe("tok_a");
+    // hs_a is no longer referenced by any tab, so its router/token are
+    // cleaned up as part of the rebind — no stale entry is left behind.
+    expect(registry.tokenForSession("hs_a")).toBeUndefined();
     expect(registry.tokenForSession("hs_b")).toBe("tok_b");
+  });
+
+  it("rebinding a tab does not release a prior session still held by another tab", async () => {
+    const registry = new SessionRegistry(fakeEventQueue(), async () => 0);
+    registry.bindTab(1, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    registry.bindTab(2, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    await registry.ensureRouterForSession("hs_a");
+
+    // Tab 1 moves to a different session; tab 2 still legitimately holds hs_a.
+    registry.bindTab(1, session({ sessionId: "hs_b", sessionToken: "tok_b" }));
+
+    expect(registry.tokenForSession("hs_a")).toBe("tok_a");
+    expect(registry.sessionForTab(2)?.sessionId).toBe("hs_a");
+  });
+
+  it("closing tab A releases A's session without affecting tab B's independent session", async () => {
+    const registry = new SessionRegistry(fakeEventQueue(), async () => 0);
+    registry.bindTab(1, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    registry.bindTab(2, session({ sessionId: "hs_b", sessionToken: "tok_b" }));
+    const routerB = await registry.ensureRouterForSession("hs_b");
+    await registry.ensureRouterForSession("hs_a");
+
+    registry.releaseTab(1);
+
+    expect(registry.sessionForTab(1)).toBeUndefined();
+    expect(registry.tokenForSession("hs_a")).toBeUndefined();
+    // Tab B / session hs_b is completely untouched.
+    expect(registry.sessionForTab(2)?.sessionId).toBe("hs_b");
+    expect(registry.tokenForSession("hs_b")).toBe("tok_b");
+    expect(await registry.ensureRouterForSession("hs_b")).toBe(routerB);
+  });
+
+  it("closing a tab does not release its session while another tab still holds the same session", async () => {
+    const registry = new SessionRegistry(fakeEventQueue(), async () => 0);
+    registry.bindTab(1, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    registry.bindTab(2, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    const router = await registry.ensureRouterForSession("hs_a");
+
+    registry.releaseTab(1);
+
+    expect(registry.sessionForTab(1)).toBeUndefined();
+    expect(registry.sessionForTab(2)?.sessionId).toBe("hs_a");
+    // hs_a is still referenced by tab 2, so its router/token survive.
+    expect(registry.tokenForSession("hs_a")).toBe("tok_a");
+    expect(await registry.ensureRouterForSession("hs_a")).toBe(router);
+  });
+
+  it("closing a tab that never bound a session is a no-op", () => {
+    const registry = new SessionRegistry(fakeEventQueue(), async () => 0);
+    registry.bindTab(2, session({ sessionId: "hs_b", sessionToken: "tok_b" }));
+
+    expect(() => registry.releaseTab(999)).not.toThrow();
+    expect(registry.sessionForTab(2)?.sessionId).toBe("hs_b");
+    expect(registry.tokenForSession("hs_b")).toBe("tok_b");
+  });
+
+  it("cleanup triggered by closing one tab cannot clear another active session's sequence state", async () => {
+    const getPersistedSequence = vi.fn().mockImplementation(async (id: string) =>
+      id === "hs_b" ? 7 : 0,
+    );
+    const registry = new SessionRegistry(fakeEventQueue(), getPersistedSequence);
+    registry.bindTab(1, session({ sessionId: "hs_a", sessionToken: "tok_a" }));
+    registry.bindTab(2, session({ sessionId: "hs_b", sessionToken: "tok_b" }));
+    await registry.ensureRouterForSession("hs_a");
+
+    registry.releaseTab(1);
+
+    // hs_b's router is created fresh here (first ensure call for it), and
+    // must still resume from its own persisted sequence untouched by
+    // hs_a's tab having closed moments earlier.
+    const routerB = await registry.ensureRouterForSession("hs_b");
+    expect(routerB.clientSequence).toBe(7);
   });
 });

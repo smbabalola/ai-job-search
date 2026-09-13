@@ -57,6 +57,18 @@ async function persistSequenceForSession(handoffSessionId: string, sequence: num
   await sequenceStore.set(handoffSessionId, sequence);
 }
 
+// Real lifecycle trigger (Task 13 residual cleanup): a tab being closed
+// is the one unambiguous "this tab's session state is genuinely no
+// longer usable" signal already available to the extension, with no new
+// host permissions required (chrome.tabs.onRemoved needs none beyond the
+// existing "scripting"/"activeTab" grants). Deliberately NOT wired to
+// any submission-detection or navigation event — ordinary same-tab
+// navigation during a legitimate multi-page application must never
+// release this tab's session.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  sessionRegistry.releaseTab(tabId);
+});
+
 // Runs the content bundle once with no snapshot present — content/index.ts's
 // else-branch detects this and runs probePage() (detect/scan/classify only:
 // no DOM writes, no candidate data, no handoff events), storing the result
