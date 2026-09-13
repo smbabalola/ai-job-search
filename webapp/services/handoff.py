@@ -153,10 +153,21 @@ def discover_resumable_handoff_sessions(
     # Discovery only — never used to resolve a session's identity or to
     # grant authorization (design spec Section 5.2).
     scope.require_job_workspace(conn, workspace_id)
-    return find_in_progress_handoff_sessions(
+    candidates = find_in_progress_handoff_sessions(
         conn, account_id=scope.account_id, workspace_id=workspace_id,
         target_domain=target_domain,
     )
+    # The server is the authority on expiry, not the browser extension
+    # (design spec Section 4) — an expired session must never be offered
+    # as a resumable candidate here, even though resume_handoff_session
+    # would separately reject it if a caller tried anyway. Filtering here
+    # too means a client never even sees a stale session to choose from.
+    now = datetime.now(timezone.utc)
+    return [
+        session for session in candidates
+        if now - datetime.fromisoformat(session["last_activity_at"])
+        <= HANDOFF_SESSION_INACTIVITY_TIMEOUT
+    ]
 
 
 class HandoffSessionNotFound(HandoffError):

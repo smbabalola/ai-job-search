@@ -263,6 +263,7 @@ from webapp.services.handoff import (
     record_handoff_event,
     replay_handoff_session,
     resolve_session_scope,
+    resume_handoff_session,
 )
 
 
@@ -624,6 +625,122 @@ def test_resolve_session_scope_rejects_expired_session(tmp_path):
         assert False, "expected HandoffSessionExpired"
     except HandoffSessionExpired:
         pass
+    conn.close()
+
+
+def test_resume_handoff_session_succeeds_and_rotates_token(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+    original_token = mint_session_token(conn, handoff_session_id=session["id"])
+
+    rotated_token = resume_handoff_session(conn, scope, handoff_session_id=session["id"])
+
+    assert rotated_token != original_token
+    # The original token must no longer resolve — resume revokes every
+    # prior live token before minting the new one (design spec Section 3.2).
+    try:
+        resolve_session_scope(conn, raw_token=original_token)
+        assert False, "expected the pre-resume token to be revoked"
+    except HandoffSessionTokenInvalid:
+        pass
+    # The rotated token resolves successfully.
+    resolved = resolve_session_scope(conn, raw_token=rotated_token)
+    assert resolved.handoff_session_id == session["id"]
+    conn.close()
+
+
+def test_resume_handoff_session_rejects_expired_session(tmp_path):
+    """The approved session-security design requires the server, not the
+    browser extension, to be the authority on expiry: resume must
+    independently reject a session whose last_activity_at exceeds the
+    inactivity timeout, even when called directly (i.e. even if a client
+    never pre-filtered candidates by staleness)."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+
+    stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (stale, session["id"]),
+    )
+    conn.commit()
+
+    try:
+        resume_handoff_session(conn, scope, handoff_session_id=session["id"])
+        assert False, "expected HandoffSessionExpired"
+    except HandoffSessionExpired:
+        pass
+    conn.close()
+
+
+def test_discover_resumable_sessions_excludes_expired_session(tmp_path):
+    """Discovery must not present a stale/expired session as resumable —
+    the approved design places expiry authority on the server, and a
+    session discovery offers as a resume candidate is exactly what a
+    client-side orchestration will act on. An expired session lingering
+    in discover results would defeat that authority even though resume
+    itself would separately reject it."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+
+    stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (stale, session["id"]),
+    )
+    conn.commit()
+
+    found = discover_resumable_handoff_sessions(
+        conn, scope, workspace_id=workspace["id"], target_domain="x.test",
+    )
+    assert found == []
+    conn.close()
+
+
+def test_discover_resumable_sessions_includes_active_unexpired_session(tmp_path):
+    """Companion to the exclusion test above: a session within the
+    inactivity window must still surface normally, so the expiry filter
+    cannot be so aggressive that it hides legitimately resumable
+    sessions."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_pack(conn)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"],
+        target_url="https://x.test/apply", target_domain="x.test",
+        ats_adapter_id="generic", ats_adapter_version="generic@1",
+    )
+
+    stale_but_not_expired = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (stale_but_not_expired, session["id"]),
+    )
+    conn.commit()
+
+    found = discover_resumable_handoff_sessions(
+        conn, scope, workspace_id=workspace["id"], target_domain="x.test",
+    )
+    assert len(found) == 1
+    assert found[0]["id"] == session["id"]
     conn.close()
 
 
