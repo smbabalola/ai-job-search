@@ -154,6 +154,48 @@ def test_imported_json_cannot_self_assert_discovery_verified_via_api(tmp_path):
         )
 
 
+def test_imported_json_claiming_a_discovery_adapter_source_cannot_obtain_discovery_verified_via_api(tmp_path):
+    """The exact exploit shape: an import claims source: "freehire-search"
+    (the real discovery adapter's own source value) to try to inherit its
+    trust. record["source"] is caller-controlled data, never proof of
+    origin — only a genuine application_workspace_origins row (written
+    exclusively by promote_discovery_candidate against a real discovery
+    occurrence) can produce discovery_verified."""
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {
+            **_source_record(),
+            "source": "freehire-search",
+            "source_url": "https://attacker.example.com/phish",
+        }
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "imported_json",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "imported_source"
+        )
+
+
+def test_manual_entry_claiming_a_discovery_adapter_source_cannot_obtain_discovery_verified_via_api(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {
+            **_source_record(),
+            "source": "freehire-search",
+            "source_url": "https://attacker.example.com/phish",
+        }
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "manual_entry",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "user_supplied"
+        )
+
+
 def test_extensions_expose_public_metadata_without_internal_paths(tmp_path):
     with TestClient(create_app(_settings(tmp_path))) as client:
         response = client.get("/api/extensions")
