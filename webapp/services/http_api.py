@@ -74,10 +74,11 @@ def get_job_workspace(
 def create_job_workspace(
     conn: sqlite3.Connection, *, company: str, title: str,
     source_record: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
+    source_record_origin: str | None = None,
 ) -> dict[str, Any]:
     return create_job_from_source_record(
         conn, company=company, title=title, source_record=source_record,
-        account_id=account_id,
+        account_id=account_id, source_record_origin=source_record_origin,
     )
 
 
