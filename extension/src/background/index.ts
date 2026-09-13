@@ -12,8 +12,12 @@ import {
   type BoundSession,
 } from "./session-orchestration";
 import { SessionSequenceStore } from "./session-sequence-store";
+import { buildCandidateSnapshotFromProjection } from "./snapshot-projection";
 import { INJECTED_SNAPSHOT_KEY } from "../content/snapshot-source";
+import { INJECTED_PROBE_RESULT_KEY, readInjectedProbeResult } from "../content/probe-source";
+import type { ProbeResult } from "../content/probe";
 import type { ContentScriptMessage } from "../content/messages";
+import type { CandidateSnapshot } from "../adapters/types";
 
 // The one loopback origin the webapp bridge content script is allowed
 // to message from — matches manifest.json's host_permissions and the
@@ -75,16 +79,25 @@ async function persistClientSequence(current: MessageRouter): Promise<void> {
   await sequenceStore.set(current.handoffSessionId, current.clientSequence);
 }
 
-// TEMPORARY placeholder pending the Task 8 probe (not yet authorized):
-// genuine ATS adapter detection requires a live DOM (Adapter.detect(document)
-// in src/adapters/*.ts), which is content-script territory, not something
-// this background-script orchestration can or should call directly. Until
-// the probe step exists and supplies a real detected adapter identity, the
-// generic adapter's own id/version is used as an honest "unknown/unclassified"
-// placeholder rather than inventing a domain-to-adapter guess — a wrong
-// static guess would silently mislabel a session's ats_adapter_id at
-// start_session time, which is worse than an explicit placeholder.
-const PLACEHOLDER_ADAPTER_IDENTITY = { atsAdapterId: "generic", atsAdapterVersion: "generic@1" };
+// Runs the content bundle once with no snapshot present — content/index.ts's
+// else-branch detects this and runs probePage() (detect/scan/classify only:
+// no DOM writes, no candidate data, no handoff events), storing the result
+// on globalThis under INJECTED_PROBE_RESULT_KEY. A second, tiny executeScript
+// call reads that value back synchronously, mirroring the existing
+// snapshot-source.ts globalThis-bridge pattern rather than a
+// chrome.runtime.sendMessage round trip.
+async function probeTab(tabId: number): Promise<ProbeResult | null> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content/index.js"],
+  });
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (key: string) => (globalThis as unknown as Record<string, unknown>)[key],
+    args: [INJECTED_PROBE_RESULT_KEY],
+  });
+  return readInjectedProbeResult({ [INJECTED_PROBE_RESULT_KEY]: result });
+}
 
 export async function runAutofillOnTab(tabId: number): Promise<void> {
   const pendingContext = await pendingContextStore.peek();
@@ -110,10 +123,31 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
 
   const targetDomain = new URL(pendingContext.targetUrl).hostname;
 
+  let probeResult: ProbeResult | null;
+  try {
+    probeResult = await probeTab(tabId);
+  } catch (err) {
+    // Injection legitimately fails on restricted URLs (chrome://, the Web
+    // Store, the built-in PDF viewer, etc.) — recoverable, pending context
+    // stays intact.
+    console.warn("[JobSearch Handoff] probe injection failed", err);
+    return;
+  }
+  if (!probeResult) {
+    // No adapter detected the page at all (the generic adapter's own
+    // detect() only requires a single input/textarea to exist, so this
+    // means the page has no form present yet, e.g. still loading) —
+    // recoverable, pending context stays intact for a retry.
+    console.warn("[JobSearch Handoff] no ATS adapter detected this page; nothing to apply to yet");
+    return;
+  }
+
   let session: BoundSession;
   try {
     session = await associateHandoffSession(
-      pendingContext, targetDomain, PLACEHOLDER_ADAPTER_IDENTITY, serverClient,
+      pendingContext, targetDomain,
+      { atsAdapterId: probeResult.atsAdapterId, atsAdapterVersion: probeResult.atsAdapterVersion },
+      serverClient,
     );
   } catch (err) {
     // A recoverable discovery/start failure must not clear the pending
@@ -129,6 +163,20 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
   boundSession = session;
   await ensureRouter();
 
+  let snapshot: CandidateSnapshot;
+  try {
+    // Requests ONLY the normalized field types the probe found this page
+    // actually needs — never the full candidate profile (design spec
+    // Section 7 / this bundle's own invariant).
+    const projection = await serverClient.fetchSessionSnapshot(
+      session.sessionId, probeResult.normalizedFieldTypes, session.sessionToken,
+    );
+    snapshot = buildCandidateSnapshotFromProjection(projection);
+  } catch (err) {
+    console.warn("[JobSearch Handoff] failed to fetch candidate snapshot projection", err);
+    return;
+  }
+
   // Injection legitimately fails on restricted URLs (chrome://, the Web
   // Store, the built-in PDF viewer, etc.) — catch so one failed click
   // doesn't surface as an unhandled promise rejection.
@@ -142,18 +190,12 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
     // Both executeScript calls share the same isolated-world globalThis for
     // this tab, so the snapshot written by the first call is still visible
     // to the second call's injected bundle via INJECTED_SNAPSHOT_KEY.
-    //
-    // NOTE: candidate snapshot fetch/injection is Task 10's responsibility,
-    // not this task's — INJECTED_SNAPSHOT_KEY is written with an empty
-    // placeholder here only to preserve the existing two-step injection
-    // shape until Task 10 replaces it with a real session-scoped snapshot
-    // projection fetch.
     await chrome.scripting.executeScript({
       target: { tabId },
       func: (key: string, value: unknown) => {
         (globalThis as unknown as Record<string, unknown>)[key] = value;
       },
-      args: [INJECTED_SNAPSHOT_KEY, {}],
+      args: [INJECTED_SNAPSHOT_KEY, snapshot],
     });
 
     await chrome.scripting.executeScript({

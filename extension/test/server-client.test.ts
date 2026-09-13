@@ -187,4 +187,43 @@ describe("ServerClient session-token-scoped calls", () => {
     expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
     vi.unstubAllGlobals();
   });
+
+  it("fetchSessionSnapshot authorizes with X-Handoff-Session-Token, requests only the given field types, and returns the raw projection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        snapshot: { name: { value: "Ada Lovelace", profile_evidence_ids: ["c1"] } },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ServerClient(async () => {
+      throw new Error("fetchSessionSnapshot must not read the durable credential");
+    });
+    const result = await client.fetchSessionSnapshot("hs_1", ["name", "email"], "session-tok-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8420/api/handoff/sessions/hs_1/snapshot",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ normalized_field_types: ["name", "email"] }),
+      }),
+    );
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(options.headers).toMatchObject({ "X-Handoff-Session-Token": "session-tok-1" });
+    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
+    expect(result).toEqual({ name: { value: "Ada Lovelace", profile_evidence_ids: ["c1"] } });
+    vi.unstubAllGlobals();
+  });
+
+  it("fetchSessionSnapshot throws when the request fails (e.g. wrong/expired session token)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ServerClient(async () => "durable-cred");
+    await expect(
+      client.fetchSessionSnapshot("hs_1", ["name"], "bad-token"),
+    ).rejects.toThrow();
+    vi.unstubAllGlobals();
+  });
 });

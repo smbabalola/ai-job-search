@@ -8,7 +8,8 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build:test-bundle": "esbuild src/adapters/index.ts --bundle --format=iife --global-name=HandoffAdapters --outfile=dist/adapters-bundle.js"
+    "build:test-bundle": "esbuild src/adapters/index.ts --bundle --format=iife --global-name=HandoffAdapters --outfile=dist/adapters-bundle.js",
+    "build:probe-test-bundle": "esbuild src/content/probe.ts --bundle --format=iife --global-name=HandoffProbe --outfile=dist/probe-bundle.js"
   },
   "devDependencies": {
     "@types/chrome": "^0.2.9",
