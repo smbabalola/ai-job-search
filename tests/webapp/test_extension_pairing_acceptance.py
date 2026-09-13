@@ -247,41 +247,50 @@ def test_expired_code_rejected_via_direct_expiry_fast_forward(
     page.close()
 
 
-def test_run_autofill_reaches_background_worker_and_fills_fixture_page(
-    extension_context, live_server,
-):
-    """Exercises the popup -> background-worker message path
-    (popup_run_autofill -> runAutofillOnTab) against the repository's
-    real generic_fixture.html acceptance page, reusing the same
-    MANUAL_TEST_SNAPSHOT_KEY / MANUAL_TEST_SESSION_ID_KEY bridge
-    background/index.ts still depends on (Sub-project 2 has not removed
-    it yet, per the design spec's own scope boundary) — set here via the
-    service worker's own context, the same worker.evaluate() pattern
-    test_extension_load_browser_smoke.py already uses."""
-    worker = _service_worker(extension_context)
-    worker.evaluate(
-        """() => chrome.storage.local.set({
-            handoff_manual_test_snapshot: { name: "Ada Lovelace", email: "ada@example.com" },
-            handoff_manual_test_session_id: "acceptance-test-session",
-        })"""
-    )
-
-    fixture_page = extension_context.new_page()
-    fixture_page.goto(f"{live_server.base_url}/test-fixtures/handoff/generic_fixture.html")
-
-    errors: list[str] = []
-    fixture_page.on("pageerror", lambda exc: errors.append(str(exc)))
-
-    popup = _open_popup(extension_context)
-    code = _fetch_pairing_code(live_server.base_url)
-    popup.fill("#pairing-code", code)
-    popup.click("#pair-button")
-    expect(popup.locator("#app")).to_contain_text("Paired", timeout=5_000)
-
-    popup.click("#run-autofill")
-    fixture_page.wait_for_timeout(500)
-
-    assert errors == [], f"unexpected fixture-page runtime errors: {errors}"
-
-    popup.close()
-    fixture_page.close()
+# NOTE on the full toolbar-click -> probe -> session -> autofill path:
+#
+# A prior version of this test file drove `runAutofillOnTab` by seeding
+# the Sub-project-1 manual-test bridge (handoff_manual_test_snapshot /
+# handoff_manual_test_session_id) and clicking a "Run autofill on this
+# tab" button rendered on a popup.html page opened via page.goto(). That
+# bridge was removed entirely in this bundle (Task 9), and the seeded
+# manual keys it relied on no longer exist anywhere in the extension's
+# source, so the old test would only "pass" vacuously going forward
+# (runAutofillOnTab now simply warns and returns when there is no valid
+# pending context, throwing no page error either way) — it was deleted
+# rather than kept as false-positive coverage.
+#
+# A faithful end-to-end replacement was attempted and is NOT possible in
+# this Playwright harness: chrome.tabs.get()/chrome.tabs.query() only
+# reveal a tab's `url` field once the extension has been granted
+# `activeTab` for that tab, and Chrome only grants `activeTab` from a
+# genuine user gesture on the extension's own toolbar action — never
+# from script-driven navigation to popup.html as an ordinary tab (which
+# is all Playwright's page.goto("chrome-extension://.../popup.html") can
+# do). Confirmed directly: even chrome.tabs.get() called from the
+# background worker's own context omits `url` for the fixture tab in
+# this harness, so runAutofillOnTab correctly (and safely) declines to
+# act on a tab it cannot verify — exactly the intended behavior of the
+# activeTab-only, no-host-permission-widening design. Weakening that
+# check, or granting a broader host permission, purely to make this
+# automatable was deliberately rejected: it would trade a real security
+# property for test convenience.
+#
+# What IS covered automatically instead:
+#   - extension/test/session-orchestration.test.ts (20 tests): the full
+#     discover/resume/start decision logic, pack/domain/expiry matching.
+#   - extension/test/probe.test.ts (7 tests) and the real-browser
+#     test_probe_page_detects_real_greenhouse_adapter_with_zero_dom_mutation
+#     test below: real adapter detection + zero DOM mutation.
+#   - extension/test/snapshot-projection.test.ts (4 tests): server
+#     projection -> CandidateSnapshot mapping, no fabricated fields.
+#   - extension/test/content-script.test.ts: real autofill/suggest/ask/
+#     never behavior once a session and snapshot exist.
+#   - tests/webapp/api/test_handoff_routes.py: the full session
+#     lifecycle over real HTTP, including snapshot projection auth.
+#
+# The one thing none of these can exercise is the literal toolbar-icon
+# click that grants activeTab in a real browser. That step is a required
+# item in the Task 13 manual Chrome lifecycle acceptance checklist,
+# performed once in a real Chrome profile before release — not something
+# this automated suite claims to cover.
