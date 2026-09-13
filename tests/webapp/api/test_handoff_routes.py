@@ -436,3 +436,131 @@ def test_cross_account_denial_over_http(tmp_path):
             },
         )
         assert response.status_code == 404
+
+
+_SAMPLE_CANDIDATE_SNAPSHOT = {
+    "profile_schema_version": "profile.v1",
+    "identity": {"name": {"value": "Ada Lovelace", "profile_evidence_ids": ["claim_name"]}},
+    "contact": {
+        "email": {"value": "ada@example.com", "profile_evidence_ids": ["claim_email"]},
+        "phone": None, "linkedin": None, "github": None, "location": None,
+    },
+    "employment": [], "education": [], "certifications": [], "skills": [],
+    "languages": [], "projects": [], "publications": [], "awards": [],
+}
+
+
+def _app_with_candidate_pack(tmp_path):
+    settings = Settings(
+        db_path=tmp_path / "jobsearch.sqlite3", documents_root=tmp_path / "documents",
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        artifact = save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload={
+                "schema_version": "application-pack.v1",
+                "candidate_snapshot": _SAMPLE_CANDIDATE_SNAPSHOT,
+            },
+        )
+        conn.close()
+    return app, workspace["id"], artifact["id"]
+
+
+def test_post_snapshot_returns_projected_fields(tmp_path):
+    app, workspace_id, artifact_id = _app_with_candidate_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/snapshot", headers=headers,
+            json={"normalized_field_types": ["name", "email"]},
+        )
+        assert response.status_code == 200, response.text
+        snapshot = response.json()["snapshot"]
+        assert set(snapshot.keys()) == {"name", "email"}
+        assert snapshot["name"]["value"] == "Ada Lovelace"
+
+
+def test_post_snapshot_requires_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app_with_candidate_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        # durable credential, not a session token — must be rejected
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/snapshot",
+            headers={"X-Handoff-Credential": credential},
+            json={"normalized_field_types": ["name"]},
+        )
+        assert response.status_code == 422
+
+
+def test_post_snapshot_rejects_mismatched_session_path(tmp_path):
+    app, workspace_id, artifact_id = _app_with_candidate_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        session_a = _start_session(client, credential, workspace_id, artifact_id)
+        session_b = _start_session(
+            client, credential, workspace_id, artifact_id, target_domain="y.test",
+        )
+
+        response = client.post(
+            f"/api/handoff/sessions/{session_b['id']}/snapshot",
+            headers={"X-Handoff-Session-Token": session_a["session_token"]},
+            json={"normalized_field_types": ["name"]},
+        )
+        assert response.status_code == 404
+
+
+def test_post_snapshot_rejects_expired_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app_with_candidate_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        conn = connect(app.state.settings.db_path)
+        stale = "2020-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/snapshot", headers=headers,
+            json={"normalized_field_types": ["name"]},
+        )
+        assert response.status_code == 401
+
+
+def test_post_snapshot_cannot_accept_arbitrary_json_path_instead_of_field_type(tmp_path):
+    app, workspace_id, artifact_id = _app_with_candidate_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        # The request schema has no field for a raw path/key — attempting
+        # to smuggle one in as an extra body field must be rejected
+        # outright (StrictBody's extra="forbid"), not silently ignored.
+        response = client.post(
+            f"/api/handoff/sessions/{session_id}/snapshot", headers=headers,
+            json={
+                "normalized_field_types": ["name"],
+                "candidate_path": "identity.name.value",
+            },
+        )
+        assert response.status_code == 422

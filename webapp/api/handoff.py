@@ -10,6 +10,7 @@ from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_
 from webapp.services.handoff import (
     HandoffError,
     HandoffEventRejected,
+    HandoffPackArtifactInvalid,
     HandoffPackNotFound,
     HandoffPackStale,
     HandoffSessionExpired,
@@ -23,6 +24,7 @@ from webapp.services.handoff import (
     exchange_pairing_secret_for_credential,
     generate_pairing_secret,
     mint_session_token,
+    project_session_snapshot,
     record_handoff_event,
     replay_handoff_session,
     resolve_account_scope_from_extension_credential,
@@ -66,6 +68,15 @@ class ConfirmSubmissionBody(StrictBody):
     effective_date: str | None = None
 
 
+class SnapshotProjectionBody(StrictBody):
+    # Normalized field types only — never an arbitrary candidate JSON
+    # path. The server's closed mapping (project_session_snapshot) is
+    # what decides which paths this list can ever select from; this
+    # field is purely a filter over that mapping (design spec Section
+    # 7.1).
+    normalized_field_types: list[str]
+
+
 def get_extension_scope(
     request: Request,
     x_handoff_credential: str = Header(...),
@@ -97,7 +108,13 @@ def _translate(exc: Exception) -> HTTPException:
         return HTTPException(status_code=401, detail=str(exc))
     if isinstance(
         exc,
-        (HandoffPackNotFound, HandoffSessionNotActive, HandoffEventRejected, HandoffPackStale),
+        (
+            HandoffPackNotFound,
+            HandoffSessionNotActive,
+            HandoffEventRejected,
+            HandoffPackStale,
+            HandoffPackArtifactInvalid,
+        ),
     ):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
@@ -172,6 +189,28 @@ def post_resume_session(
     except HandoffError as exc:
         raise _translate(exc) from exc
     return {"session_token": token}
+
+
+@router.post("/sessions/{session_id}/snapshot")
+def post_session_snapshot(
+    session_id: str, body: SnapshotProjectionBody,
+    scope: SessionScope = Depends(get_session_scope),
+    conn: sqlite3.Connection = Depends(get_conn),
+):
+    # workspace_id/pack_artifact_id are never accepted as request
+    # parameters — both come from the resolved SessionScope, which is
+    # itself resolved entirely from the presented session token. A token
+    # for session A can never be used to fetch session B's projection,
+    # even for the same account (design spec Section 7.1).
+    if scope.handoff_session_id != session_id:
+        raise _translate(HandoffSessionNotFound(f"handoff session {session_id!r} not found"))
+    try:
+        snapshot = project_session_snapshot(
+            conn, scope, normalized_field_types=body.normalized_field_types,
+        )
+    except HandoffError as exc:
+        raise _translate(exc) from exc
+    return {"snapshot": snapshot}
 
 
 @router.post("/sessions/{session_id}/events", status_code=201)

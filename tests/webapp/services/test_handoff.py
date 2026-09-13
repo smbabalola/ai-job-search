@@ -668,3 +668,258 @@ def test_rotate_session_token_revokes_prior_tokens(tmp_path):
         pass
     resolve_session_scope(conn, raw_token=token_2)  # succeeds
     conn.close()
+
+
+from webapp.services.handoff import HandoffPackArtifactInvalid, project_session_snapshot
+
+_SAMPLE_CANDIDATE_SNAPSHOT = {
+    "profile_schema_version": "profile.v1",
+    "identity": {"name": {"value": "Ada Lovelace", "profile_evidence_ids": ["claim_name"]}},
+    "contact": {
+        "email": {"value": "ada@example.com", "profile_evidence_ids": ["claim_email"]},
+        "phone": {"value": "+1 555 0100", "profile_evidence_ids": ["claim_phone"]},
+        "linkedin": None,
+        "github": None,
+        "location": {"value": "London, UK", "profile_evidence_ids": ["claim_loc"]},
+    },
+    "employment": [
+        {
+            "record_id": "rec_1",
+            "role": {"value": "Engineer", "profile_evidence_ids": ["claim_role"]},
+            "employer": {"value": "Acme Corp", "profile_evidence_ids": ["claim_employer"]},
+            "date_range": None, "location": None, "details": [],
+        },
+    ],
+    "education": [], "certifications": [], "skills": [], "languages": [],
+    "projects": [], "publications": [], "awards": [],
+}
+
+
+def _workspace_with_candidate_pack(conn, *, candidate_snapshot=None, workspace_id="ws_snapshot"):
+    ensure_profile_workspace(conn, account_id="account_local")
+    workspace = create_workspace(
+        conn, company="Acme", title="Engineer", account_id="account_local",
+        workspace_id=workspace_id,
+    )
+    artifact = save_artifact(
+        conn, workspace_id=workspace["id"], artifact_type="application_pack",
+        payload={
+            "schema_version": "application-pack.v1",
+            "candidate_snapshot": candidate_snapshot
+            if candidate_snapshot is not None else _SAMPLE_CANDIDATE_SNAPSHOT,
+        },
+    )
+    return workspace, artifact
+
+
+def _started_session_scope(conn, scope, workspace, artifact, **overrides):
+    body = {
+        "target_url": "https://x.test/apply", "target_domain": "x.test",
+        "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
+    }
+    body.update(overrides)
+    session = start_handoff_session(
+        conn, scope, workspace_id=workspace["id"], pack_artifact_id=artifact["id"], **body,
+    )
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+    return session, resolve_session_scope(conn, raw_token=token)
+
+
+def test_project_session_snapshot_returns_only_requested_recognized_paths(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["name", "email"],
+    )
+
+    assert set(projection.keys()) == {"name", "email"}
+    assert projection["name"] == {"value": "Ada Lovelace", "profile_evidence_ids": ["claim_name"]}
+    assert projection["email"] == {"value": "ada@example.com", "profile_evidence_ids": ["claim_email"]}
+    conn.close()
+
+
+def test_project_session_snapshot_silently_drops_unrecognized_field_type(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["name", "not_a_real_field_type"],
+    )
+
+    assert set(projection.keys()) == {"name"}
+    conn.close()
+
+
+def test_project_session_snapshot_never_releases_legal_declaration_or_unknown(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope,
+        normalized_field_types=["legal_declaration", "unknown", "name"],
+    )
+
+    assert set(projection.keys()) == {"name"}
+    conn.close()
+
+
+def test_project_session_snapshot_does_not_derive_years_of_experience(tmp_path):
+    """years_of_experience is classified by Greenhouse's adapter but has
+    no candidate-backed derivation anywhere in this codebase today
+    (map() returns null). The projection endpoint must not invent one -
+    requesting it must degrade to "no value released", identical to
+    requesting any other unrecognized type, not synthesize a value."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["years_of_experience"],
+    )
+
+    assert projection == {}
+    conn.close()
+
+
+def test_project_session_snapshot_duplicate_requested_types_do_not_broaden_result(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["name", "name", "name"],
+    )
+
+    assert projection == {"name": {"value": "Ada Lovelace", "profile_evidence_ids": ["claim_name"]}}
+    conn.close()
+
+
+def test_project_session_snapshot_omits_null_fields_rather_than_fabricating(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    # linkedin/github are None in the sample snapshot (no claim on file).
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["linkedin", "github"],
+    )
+    assert projection == {}
+    conn.close()
+
+
+def test_project_session_snapshot_resolves_indexed_employment_path(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    projection = project_session_snapshot(
+        conn, session_scope, normalized_field_types=["employment[0].employer"],
+    )
+    assert projection == {
+        "employment[0].employer": {"value": "Acme Corp", "profile_evidence_ids": ["claim_employer"]},
+    }
+    conn.close()
+
+
+def test_project_session_snapshot_pinned_to_original_pack_not_current(tmp_path):
+    """The regression test for the drift this whole design avoids: a
+    session started against pack A must keep seeing pack A's candidate
+    data forever, even after a newer pack B is saved as the workspace's
+    current pack."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact_a = _workspace_with_candidate_pack(
+        conn, candidate_snapshot={
+            **_SAMPLE_CANDIDATE_SNAPSHOT,
+            "identity": {"name": {"value": "Original Name", "profile_evidence_ids": ["c1"]}},
+        },
+    )
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact_a)
+
+    # A newer pack for the SAME workspace, never referenced by this
+    # session.
+    save_artifact(
+        conn, workspace_id=workspace["id"], artifact_type="application_pack",
+        payload={
+            "schema_version": "application-pack.v1",
+            "candidate_snapshot": {
+                **_SAMPLE_CANDIDATE_SNAPSHOT,
+                "identity": {"name": {"value": "Newer Name", "profile_evidence_ids": ["c2"]}},
+            },
+        },
+    )
+
+    projection = project_session_snapshot(conn, session_scope, normalized_field_types=["name"])
+    assert projection["name"]["value"] == "Original Name"
+    conn.close()
+
+
+def test_project_session_snapshot_rejects_malformed_non_application_pack_artifact(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_candidate_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    # A SessionScope pointing at a real, but wrong-typed, artifact -
+    # simulates a corrupted/mismatched pack_artifact_id.
+    other_artifact = save_artifact(
+        conn, workspace_id=workspace["id"], artifact_type="job_posting_snapshot",
+        payload={"schema_version": "job-posting.v1"},
+    )
+    from webapp.services.handoff import SessionScope
+    corrupted_scope = SessionScope(
+        account_id=session_scope.account_id,
+        handoff_session_id=session_scope.handoff_session_id,
+        workspace_id=session_scope.workspace_id,
+        pack_artifact_id=other_artifact["id"],
+    )
+
+    try:
+        project_session_snapshot(conn, corrupted_scope, normalized_field_types=["name"])
+        assert False, "expected HandoffPackArtifactInvalid"
+    except HandoffPackArtifactInvalid:
+        pass
+    conn.close()
+
+
+def test_project_session_snapshot_cross_workspace_session_cannot_read_another_workspaces_pack(tmp_path):
+    """Not a distinct code path from the pinning test above, but an
+    explicit regression proof: two different workspaces' sessions each
+    only ever see their own pinned pack, never the other's, even though
+    both belong to the same account."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace_a, artifact_a = _workspace_with_candidate_pack(
+        conn, workspace_id="ws_a",
+        candidate_snapshot={
+            **_SAMPLE_CANDIDATE_SNAPSHOT,
+            "identity": {"name": {"value": "Workspace A Candidate", "profile_evidence_ids": ["c1"]}},
+        },
+    )
+    workspace_b, artifact_b = _workspace_with_candidate_pack(
+        conn, workspace_id="ws_b",
+        candidate_snapshot={
+            **_SAMPLE_CANDIDATE_SNAPSHOT,
+            "identity": {"name": {"value": "Workspace B Candidate", "profile_evidence_ids": ["c2"]}},
+        },
+    )
+    _session_a, scope_a = _started_session_scope(conn, scope, workspace_a, artifact_a)
+    _session_b, scope_b = _started_session_scope(conn, scope, workspace_b, artifact_b)
+
+    projection_a = project_session_snapshot(conn, scope_a, normalized_field_types=["name"])
+    projection_b = project_session_snapshot(conn, scope_b, normalized_field_types=["name"])
+
+    assert projection_a["name"]["value"] == "Workspace A Candidate"
+    assert projection_b["name"]["value"] == "Workspace B Candidate"
+    conn.close()

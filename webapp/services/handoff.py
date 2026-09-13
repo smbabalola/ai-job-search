@@ -262,6 +262,88 @@ def resume_handoff_session(
     return token
 
 
+class HandoffPackArtifactInvalid(HandoffError):
+    pass
+
+
+# Closed, server-owned mapping: the ONLY set of normalized_field_types
+# this endpoint can ever release candidate data for, and the ONLY place
+# that decides which candidate_snapshot path each one reads. A request
+# can select a subset of this mapping; it can never name a path outside
+# it (design spec Section 7.2 step 3) — this is what makes "cannot
+# become a bulk dump" structural rather than conventional.
+#
+# Enumerated directly from every real adapter on this branch
+# (extension/src/adapters/{generic,greenhouse,lever}.ts) as of this
+# task: the six shared safe-catalog types (name, email, phone, linkedin,
+# github, location) every adapter can emit, plus Greenhouse's one
+# adapter-specific rule (employment[0].employer). "legal_declaration"
+# and "unknown" are deliberately absent — neither is ever candidate-
+# backed (behavior never/ask, sourceKind none). "years_of_experience"
+# is ALSO deliberately absent: Greenhouse's classify() emits it, but its
+# map() has no derivation for it today (returns null with a "Task 15"
+# comment marking it unimplemented) - adding a mapping entry here would
+# invent a derivation this codebase doesn't have, not merely wire one
+# up. A request for it degrades to "no value released" (same as any
+# other unrecognized type), not an error and not a fabricated value.
+_NORMALIZED_FIELD_TYPE_TO_CANDIDATE_PATH: dict[str, tuple[str, ...]] = {
+    "name": ("identity", "name"),
+    "email": ("contact", "email"),
+    "phone": ("contact", "phone"),
+    "linkedin": ("contact", "linkedin"),
+    "github": ("contact", "github"),
+    "location": ("contact", "location"),
+    "employment[0].employer": ("employment", 0, "employer"),
+}
+
+
+def _resolve_candidate_path(candidate_snapshot: dict[str, Any], path: tuple) -> Any | None:
+    value: Any = candidate_snapshot
+    for segment in path:
+        if isinstance(segment, int):
+            if not isinstance(value, list) or segment >= len(value):
+                return None
+            value = value[segment]
+        else:
+            if not isinstance(value, dict) or segment not in value:
+                return None
+            value = value[segment]
+    return value
+
+
+def project_session_snapshot(
+    conn: sqlite3.Connection, scope: SessionScope, *, normalized_field_types: list[str],
+) -> dict[str, Any]:
+    # scope.pack_artifact_id is the session's own immutable pin, resolved
+    # entirely from the presented session token — never a fresh "current
+    # pack for this workspace" lookup. A session started before a newer
+    # pack was confirmed continues to see its own original pack for its
+    # entire lifetime (design spec Section 7.2 step 1).
+    artifact = get_artifact(conn, scope.pack_artifact_id)
+    if artifact is None or artifact["artifact_type"] != "application_pack":
+        raise HandoffPackArtifactInvalid(
+            f"session's pinned pack artifact {scope.pack_artifact_id!r} "
+            "is missing or is not an application_pack"
+        )
+    candidate_snapshot = artifact["payload"].get("candidate_snapshot")
+    if not isinstance(candidate_snapshot, dict):
+        raise HandoffPackArtifactInvalid(
+            f"pack artifact {scope.pack_artifact_id!r} has no candidate_snapshot"
+        )
+
+    projection: dict[str, Any] = {}
+    for field_type in normalized_field_types:
+        if field_type in projection:
+            continue  # duplicate requested type: never re-derived, never re-expanded
+        path = _NORMALIZED_FIELD_TYPE_TO_CANDIDATE_PATH.get(field_type)
+        if path is None:
+            continue  # not in the closed mapping - silently dropped, never an error
+        value = _resolve_candidate_path(candidate_snapshot, path)
+        if value is not None:
+            projection[field_type] = value
+    return projection
+
+
 class HandoffEventRejected(HandoffError):
     pass
 
