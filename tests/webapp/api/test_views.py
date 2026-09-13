@@ -370,3 +370,173 @@ def test_pairing_page_renders_a_code(tmp_path):
         response = client.get("/pairing")
         assert response.status_code == 200
         assert "expires in 10 minutes" in response.text
+
+
+def _discovery_source_record(**overrides):
+    record = {
+        "schema_version": "job-source-record.v0", "source": "freehire-search",
+        "source_record_id": "planner-77", "source_url": "https://freehire.me/jobs/planner-77",
+        "captured_at": "2026-08-21T09:00:00+00:00", "company": "Acme",
+        "title": "Engineer", "location": "Remote",
+        "description": "Plan work.",
+        "requirements": [], "responsibilities": [], "language_requirements": [],
+        "eligibility_requirements": [], "logistics_requirements": [],
+    }
+    record.update(overrides)
+    return record
+
+
+def _promoted_discovery_workspace(conn, **record_overrides):
+    from webapp.persistence.discovery import ingest_discovery_record
+    from webapp.services.discovery import promote_discovery_candidate
+
+    candidate = ingest_discovery_record(
+        conn, _discovery_source_record(**record_overrides),
+    )["candidate"]
+    return promote_discovery_candidate(conn, candidate["id"])["workspace"]
+
+
+def test_workspace_detail_apply_button_enabled_for_discovery_origin_confirmed_pack(tmp_path):
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = _promoted_discovery_workspace(conn)
+        _seed_evidence(conn, workspace["id"])
+        artifact = save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("apply-cta"),
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert 'class="button apply-with-extension"' in text
+        assert f'data-workspace-id="{workspace["id"]}"' in text
+        assert f'data-pack-artifact-id="{artifact["id"]}"' in text
+        assert 'data-target-url="https://freehire.me/jobs/planner-77"' in text
+        assert "disabled" not in text.split('apply-with-extension"')[1].split(">")[0]
+
+
+def test_workspace_detail_apply_button_bound_to_exact_confirmed_pack_not_a_newer_one(tmp_path):
+    """A newer application_pack artifact saved after the CTA's pack must
+    not silently replace the rendered data-pack-artifact-id — the
+    template always reflects whatever build_workspace_view_model
+    resolves as the current pack at render time, and this proves that
+    resolution is exact, not stale/cached."""
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = _promoted_discovery_workspace(conn)
+        _seed_evidence(conn, workspace["id"])
+        save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("first-pack"),
+        )
+        newer_artifact = save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("second-pack"),
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert f'data-pack-artifact-id="{newer_artifact["id"]}"' in text
+
+
+def test_workspace_detail_apply_button_disabled_when_no_target_url(tmp_path):
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = create_workspace(conn, company="Acme", title="Engineer")  # not discovery-origin
+        _seed_evidence(conn, workspace["id"])
+        save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("no-url"),
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert 'class="button apply-with-extension"' in text
+        assert 'title="No application link found for this job"' in text
+        button_tag = text.split('apply-with-extension"')[1].split(">")[0]
+        assert "disabled" in button_tag
+        assert 'data-target-url=""' in text
+
+
+def test_workspace_detail_no_apply_button_when_no_confirmed_pack(tmp_path):
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = _promoted_discovery_workspace(conn)  # has a trustworthy URL, no pack
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert "apply-with-extension" not in text
+
+
+def test_workspace_detail_no_apply_button_when_already_applied(tmp_path):
+    """Stale/ineligible Gate-4 state for this CTA specifically: a
+    workspace already marked "applied" must not present an actionable
+    (or even disabled-but-visible) apply launch — the application has
+    already moved past the point this button represents."""
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = _promoted_discovery_workspace(conn)
+        _seed_evidence(conn, workspace["id"])
+        pack = save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=completion_ready_pack_payload("applied-already"),
+        )
+        record_status_change(
+            conn, workspace_id=workspace["id"], new_status="drafted",
+            effective_date="2026-08-20", submitted_pack_artifact_id=pack["id"],
+            _allow_drafted=True,
+        )
+        record_status_change(
+            conn, workspace_id=workspace["id"], new_status="applied",
+            effective_date="2026-08-21", submitted_pack_artifact_id=pack["id"],
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert "apply-with-extension" not in text
+
+
+def test_workspace_detail_rendered_html_contains_no_secrets_or_candidate_payload(tmp_path):
+    client, settings = _client(tmp_path)
+    with client:
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = _promoted_discovery_workspace(conn)
+        _seed_evidence(conn, workspace["id"])
+        save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload={
+                **completion_ready_pack_payload("secret-check"),
+                "candidate_snapshot": {
+                    "profile_schema_version": "profile.v1",
+                    "identity": {"name": {"value": "Should Not Render", "profile_evidence_ids": []}},
+                    "contact": {"email": None, "phone": None, "linkedin": None, "github": None, "location": None},
+                    "employment": [], "education": [], "certifications": [], "skills": [],
+                    "languages": [], "projects": [], "publications": [], "awards": [],
+                },
+            },
+        )
+        conn.close()
+
+        text = client.get(f"/workspaces/{workspace['id']}").text
+
+        assert "Should Not Render" not in text
+        assert "X-Handoff-Credential" not in text
+        assert "X-Handoff-Session-Token" not in text
+        assert "session_token" not in text
+        assert "candidate_snapshot" not in text

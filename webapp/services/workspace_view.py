@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from product.application_material_contract import (
     COMPLETION_CONTRACT_VERSION,
@@ -533,12 +534,48 @@ def build_profile_view_model(
     }
 
 
+def _is_trustworthy_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def resolve_apply_target_url(
+    conn: sqlite3.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+) -> str | None:
+    """The one trustworthy application URL for this exact workspace, or
+    None if it has no discovery-origin provenance, no persisted
+    source_url, or the persisted URL fails a basic scheme/host sanity
+    check — never derived from company/title/job-description text or
+    any heuristic, and never a fallback to an unrelated candidate's URL
+    (design spec Section 5.1). Requires account ownership of the
+    workspace first, matching every other workspace-scoped read in this
+    module — callers that already validated ownership (e.g.
+    build_workspace_view_model) still pass account_id through so this
+    function is safe to call standalone too."""
+    require_job_workspace(conn, workspace_id, account_id=account_id)
+    row = conn.execute(
+        "SELECT do.source_url FROM application_workspace_origins awo "
+        "JOIN discovery_occurrences do "
+        "ON do.id = awo.discovery_occurrence_id "
+        "AND do.search_workspace_id = awo.search_workspace_id "
+        "WHERE awo.application_workspace_id = ?",
+        (workspace_id,),
+    ).fetchone()
+    url = row["source_url"] if row else None
+    if url and _is_trustworthy_url(url):
+        return url
+    return None
+
+
 def build_workspace_view_model(
     conn: sqlite3.Connection, workspace_id: str, *, extensions_dir: Path | None = None,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     workspace = require_job_workspace(
         conn, workspace_id, account_id=account_id
+    )
+    apply_target_url = resolve_apply_target_url(
+        conn, workspace_id=workspace_id, account_id=account_id,
     )
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     artifacts = {
@@ -831,11 +868,25 @@ def build_workspace_view_model(
         "readiness_answer": readiness_answer,
         "readiness_problem": readiness_problem,
         "document_finalization": document_finalization,
+        "apply_target_url": apply_target_url,
         "controls": {
             "can_understand": bool(artifacts["job"]),
             "can_fit": understanding_state == "complete" and profile_ready,
             "can_intelligence": fit_state in {"complete", "needs_review"},
             "can_confirm_pack": review_state == "current" and has_reviewed_usable_material,
+            # "Apply with extension" additionally requires the workspace
+            # not already be past the point of applying (workflow_status
+            # None or "drafted" — the same pre-"applied" boundary the
+            # existing Status panel's own "Mark applied" control already
+            # uses). Not itself a condition in the accepted design spec's
+            # Section 5.1 (which only requires a confirmed pack + a
+            # trustworthy URL); added because presenting an actionable
+            # "apply" launch for a workspace already marked applied would
+            # misrepresent an already-submitted application as still
+            # pending. The template still requires stages.review.artifact
+            # and apply_target_url on top of this for the button to be
+            # enabled.
+            "can_apply_with_extension": workspace["workflow_status"] in (None, "drafted"),
         },
     }
 
