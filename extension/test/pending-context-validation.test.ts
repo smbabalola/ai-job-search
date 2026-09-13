@@ -53,6 +53,48 @@ describe("extractValidPendingContext", () => {
     expect(extract(validMessage(), senderWithoutUrl)).toBeNull();
   });
 
+  // Regression tests for the origin check hardening: a naive
+  // sender.url.startsWith(origin + "/") is not the same as a real
+  // parsed-origin comparison. These construct URLs that a plain string
+  // prefix test could handle correctly by coincidence too, but pin the
+  // actual mechanism (new URL(...).origin === expectedOrigin) as the
+  // real boundary going forward, and cover cases a prefix check is
+  // categorically the wrong tool for.
+  it("rejects a sender url with the right host but wrong port (origin includes port)", () => {
+    const wrongPortSender: chrome.runtime.MessageSender = {
+      tab: { id: 42 } as chrome.tabs.Tab,
+      url: "http://127.0.0.1:9999/workspaces/ws_1",
+    };
+    expect(extract(validMessage(), wrongPortSender)).toBeNull();
+  });
+
+  it("rejects a sender url with the right host but wrong scheme", () => {
+    const wrongSchemeSender: chrome.runtime.MessageSender = {
+      tab: { id: 42 } as chrome.tabs.Tab,
+      url: "https://127.0.0.1:8420/workspaces/ws_1",
+    };
+    expect(extract(validMessage(), wrongSchemeSender)).toBeNull();
+  });
+
+  it("rejects a sender url containing the origin as a substring but not as its own origin", () => {
+    // Not exploitable via startsWith(origin + "/") either (this doesn't
+    // begin with the origin), but confirms the check is a real parsed
+    // -origin comparison, not any kind of substring/contains match.
+    const lookalikeSender: chrome.runtime.MessageSender = {
+      tab: { id: 42 } as chrome.tabs.Tab,
+      url: "https://evil.example/?redirect=http://127.0.0.1:8420/workspaces/ws_1",
+    };
+    expect(extract(validMessage(), lookalikeSender)).toBeNull();
+  });
+
+  it("accepts a sender url with a different path/query on the exact same origin", () => {
+    const sameOriginDifferentPath: chrome.runtime.MessageSender = {
+      tab: { id: 42 } as chrome.tabs.Tab,
+      url: "http://127.0.0.1:8420/some/other/path?x=1",
+    };
+    expect(extract(validMessage(), sameOriginDifferentPath)).not.toBeNull();
+  });
+
   it("rejects a message with an unexpected extra field", () => {
     const result = extract(
       validMessage({ candidateSnapshot: { name: "should never be here" } }),
@@ -94,5 +136,37 @@ describe("extractValidPendingContext", () => {
     expect(result && Object.keys(result).sort()).toEqual(
       ["packArtifactId", "requestedAt", "targetUrl", "workspaceId"],
     );
+  });
+
+  // Regression tests for the requestedAt hardening: the 5-minute TTL in
+  // PendingContextStore.peek() computes now() - requestedAt, so a
+  // malformed or implausibly-future value could defeat that comparison
+  // entirely (NaN/Infinity never expire; a far-future value keeps
+  // "now - requestedAt" negative indefinitely, which is always <= the
+  // TTL and so never expires either).
+  it("rejects a non-numeric requestedAt", () => {
+    expect(extract(validMessage({ requestedAt: "not-a-number" }), LOOPBACK_SENDER)).toBeNull();
+    expect(extract(validMessage({ requestedAt: null }), LOOPBACK_SENDER)).toBeNull();
+  });
+
+  it("rejects a NaN or non-finite requestedAt", () => {
+    expect(extract(validMessage({ requestedAt: NaN }), LOOPBACK_SENDER)).toBeNull();
+    expect(extract(validMessage({ requestedAt: Infinity }), LOOPBACK_SENDER)).toBeNull();
+    expect(extract(validMessage({ requestedAt: -Infinity }), LOOPBACK_SENDER)).toBeNull();
+  });
+
+  it("rejects a requestedAt far in the future (would never expire under the 5-minute TTL)", () => {
+    const farFuture = Date.now() + 365 * 24 * 60 * 60 * 1000; // one year ahead
+    expect(extract(validMessage({ requestedAt: farFuture }), LOOPBACK_SENDER)).toBeNull();
+  });
+
+  it("accepts a requestedAt within ordinary clock-skew tolerance of now", () => {
+    const slightlyAhead = Date.now() + 5_000; // 5s ahead, well within tolerance
+    expect(extract(validMessage({ requestedAt: slightlyAhead }), LOOPBACK_SENDER)).not.toBeNull();
+  });
+
+  it("accepts a requestedAt from a few minutes in the past (still within TTL)", () => {
+    const recentPast = Date.now() - 2 * 60 * 1000;
+    expect(extract(validMessage({ requestedAt: recentPast }), LOOPBACK_SENDER)).not.toBeNull();
   });
 });

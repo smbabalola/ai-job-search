@@ -16,16 +16,45 @@ function isValidHttpTargetUrl(value: string): boolean {
   return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.host.length > 0;
 }
 
+// A string-prefix check on sender.url is not a real origin comparison
+// (e.g. userinfo/host tricks a naive startsWith could be confused by) —
+// parsing and comparing the normalized .origin is the correct boundary.
+function isFromExactOrigin(url: string, expectedOrigin: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return parsed.origin === expectedOrigin;
+}
+
+// requestedAt backs the 5-minute TTL (PendingContextStore.peek) — it
+// must be a finite number that could plausibly be "now" or recently
+// past. NaN/Infinity would defeat the TTL comparison entirely, and a
+// value unreasonably far in the future would let a context outlive its
+// intended 5-minute window indefinitely once TTL math (now - requestedAt)
+// goes negative. One minute of slack absorbs ordinary clock skew
+// between the content script's Date.now() and the service worker's
+// eventual read without meaningfully weakening the check.
+const MAX_FUTURE_CLOCK_SKEW_MS = 60_000;
+
+function isValidRequestedAt(value: unknown): value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  return value <= Date.now() + MAX_FUTURE_CLOCK_SKEW_MS;
+}
+
 // Validates a set_pending_handoff_context message and its sender in
 // full before anything is persisted: sender must be a real tab (the
 // loopback content-bridge script, never the popup or an arbitrary
-// extension page), sender.url must be exactly the JobSearch webapp
-// origin (never an employer/ATS page pretending to be it), the message
-// must carry ONLY the five expected fields (no unexpected extras
-// silently accepted), workspaceId/packArtifactId must be non-empty
-// strings, and targetUrl must be a real http(s) URL with a host. This
-// is a security boundary — data that will be persisted and later acted
-// on — so it is exported and unit-tested directly, not left as
+// extension page), sender.url's origin must be exactly the JobSearch
+// webapp origin (never an employer/ATS page pretending to be it), the
+// message must carry ONLY the five expected fields (no unexpected
+// extras silently accepted), workspaceId/packArtifactId must be
+// non-empty strings, targetUrl must be a real http(s) URL with a host,
+// and requestedAt must be a finite, not-implausibly-future timestamp.
+// This is a security boundary — data that will be persisted and later
+// acted on — so it is exported and unit-tested directly, not left as
 // untested glue the way DOM-wiring code is elsewhere in this codebase.
 export function extractValidPendingContext(
   message: unknown,
@@ -33,7 +62,7 @@ export function extractValidPendingContext(
   jobSearchWebappOrigin: string,
 ): PendingHandoffContext | null {
   if (!sender.tab?.id) return null;
-  if (!sender.url || !sender.url.startsWith(`${jobSearchWebappOrigin}/`)) return null;
+  if (!sender.url || !isFromExactOrigin(sender.url, jobSearchWebappOrigin)) return null;
   if (typeof message !== "object" || message === null) return null;
 
   const allowedKeys = new Set([
@@ -50,7 +79,7 @@ export function extractValidPendingContext(
   if (typeof candidate.workspaceId !== "string" || candidate.workspaceId.length === 0) return null;
   if (typeof candidate.packArtifactId !== "string" || candidate.packArtifactId.length === 0) return null;
   if (typeof candidate.targetUrl !== "string" || !isValidHttpTargetUrl(candidate.targetUrl)) return null;
-  if (typeof candidate.requestedAt !== "number") return null;
+  if (!isValidRequestedAt(candidate.requestedAt)) return null;
 
   return {
     workspaceId: candidate.workspaceId,
