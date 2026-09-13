@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pathlib import Path
+
 from webapp.persistence.artifacts import get_artifact
 from webapp.persistence.handoff import (
     append_handoff_event,
@@ -336,6 +338,49 @@ def project_session_snapshot(
         if value is not None:
             projection[field_type] = value
     return projection
+
+
+class HandoffDocumentKindUnsupported(HandoffError):
+    pass
+
+
+# Closed set — matches the ordinary workspace render route's own
+# _RENDER_KINDS exactly (webapp/api/review.py). Never expanded by a
+# caller-supplied value.
+_SESSION_DOCUMENT_KINDS = frozenset({"cv", "cover_letter"})
+
+
+def fetch_session_document(
+    conn: sqlite3.Connection, scope: SessionScope, *, kind: str, documents_root: Path,
+):
+    # Deferred import: webapp.services.http_api does not import from this
+    # module, so this is not circular, but importing at module load time
+    # would still couple two large service modules' import order
+    # unnecessarily for every other function in this file that never
+    # touches document rendering.
+    from webapp.services.http_api import (
+        JobWorkspaceNotFound,
+        render_job_application_pack_document,
+    )
+    from webapp.services.pipeline import PipelineError
+
+    if kind not in _SESSION_DOCUMENT_KINDS:
+        raise HandoffDocumentKindUnsupported(f"unsupported document kind {kind!r}")
+
+    # scope.workspace_id and scope.pack_artifact_id come ONLY from the
+    # resolved SessionScope (itself resolved entirely from the presented
+    # session token) — never from a caller-supplied parameter. pack_artifact_id
+    # is always explicit and always the session's own pinned value, so a
+    # newer Application Pack confirmed for the same workspace after this
+    # session started can never be substituted in (design spec Section 7 /
+    # the same pinning invariant project_session_snapshot already enforces).
+    try:
+        return render_job_application_pack_document(
+            conn, scope.workspace_id, kind=kind, pack_artifact_id=scope.pack_artifact_id,
+            account_id=scope.account_id, documents_root=documents_root,
+        )
+    except (PipelineError, JobWorkspaceNotFound) as exc:
+        raise HandoffPackArtifactInvalid(str(exc)) from exc
 
 
 class HandoffEventRejected(HandoffError):

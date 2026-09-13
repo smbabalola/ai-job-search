@@ -593,3 +593,195 @@ def test_post_snapshot_cannot_accept_arbitrary_json_path_instead_of_field_type(t
             },
         )
         assert response.status_code == 422
+
+
+_RENDERABLE_PACK_PAYLOAD = {
+    "schema_version": "application-pack.v0",
+    "job": {"company": "Acme", "title": "Engineer"},
+    "cv_content": [
+        {"unit_id": "cv_1", "unit_type": "cv_summary_line", "text": "Summary line."},
+    ],
+    "cover_letter_content": [
+        {"unit_id": "cl_1", "unit_type": "cover_letter_paragraph", "text": "Paragraph."},
+    ],
+}
+
+
+def _app_with_renderable_pack(tmp_path, payload=None):
+    settings = Settings(
+        db_path=tmp_path / "jobsearch.sqlite3", documents_root=tmp_path / "documents",
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        conn = connect(settings.db_path)
+        ensure_profile_workspace(conn)
+        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        artifact = save_artifact(
+            conn, workspace_id=workspace["id"], artifact_type="application_pack",
+            payload=payload if payload is not None else _RENDERABLE_PACK_PAYLOAD,
+        )
+        conn.close()
+    return app, workspace["id"], artifact["id"]
+
+
+def test_get_session_document_returns_cv_with_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/cv", headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.content
+        assert "content-disposition" in {k.lower() for k in response.headers.keys()}
+
+
+def test_get_session_document_returns_cover_letter_with_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/cover_letter", headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.content
+
+
+def test_get_session_document_rejects_durable_extension_credential(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/cv",
+            headers={"X-Handoff-Credential": credential},
+        )
+        assert response.status_code == 422
+
+
+def test_get_session_document_rejects_mismatched_session_path(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        session_a = _start_session(client, credential, workspace_id, artifact_id)
+        session_b = _start_session(
+            client, credential, workspace_id, artifact_id, target_domain="y.test",
+        )
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_b['id']}/documents/cv",
+            headers={"X-Handoff-Session-Token": session_a["session_token"]},
+        )
+        assert response.status_code == 404
+
+
+def test_get_session_document_rejects_expired_session_token(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        conn = connect(app.state.settings.db_path)
+        stale = "2020-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/cv", headers=headers,
+        )
+        assert response.status_code == 401
+
+
+def test_get_session_document_rejects_unsupported_kind(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/resume_pdf", headers=headers,
+        )
+        assert response.status_code == 400
+
+
+def test_get_session_document_ignores_a_newer_pack_confirmed_after_session_start(tmp_path):
+    app, workspace_id, artifact_id = _app_with_renderable_pack(
+        tmp_path, payload={
+            **_RENDERABLE_PACK_PAYLOAD,
+            "cv_content": [
+                {"unit_id": "cv_a", "unit_type": "cv_summary_line", "text": "Original pack summary."},
+            ],
+        },
+    )
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
+
+        conn = connect(app.state.settings.db_path)
+        save_artifact(
+            conn, workspace_id=workspace_id, artifact_type="application_pack",
+            payload={
+                **_RENDERABLE_PACK_PAYLOAD,
+                "cv_content": [
+                    {"unit_id": "cv_b", "unit_type": "cv_summary_line", "text": "Newer pack summary."},
+                ],
+            },
+        )
+        conn.close()
+
+        response = client.get(
+            f"/api/handoff/sessions/{session_id}/documents/cv", headers=headers,
+        )
+        assert response.status_code == 200, response.text
+
+        from docx import Document
+        from io import BytesIO
+        text = "\n".join(p.text for p in Document(BytesIO(response.content)).paragraphs)
+        assert "Original pack summary" in text
+        assert "Newer pack summary" not in text
+
+
+def test_get_session_document_cannot_select_a_different_workspace_or_pack(tmp_path):
+    """The caller has no request parameter for workspace or pack at all —
+    this proves the route signature itself (only session_id and kind in
+    the path) rather than merely that an attempted override is ignored."""
+    import inspect
+    from webapp.api.handoff import get_session_document
+
+    params = set(inspect.signature(get_session_document).parameters.keys())
+    assert "workspace_id" not in params
+    assert "pack_artifact_id" not in params
+
+
+def test_ordinary_workspace_render_route_unchanged_by_session_document_endpoint(tmp_path):
+    """Confirms the pre-existing ordinary browser/account render route
+    still exists and still works exactly as before — the new
+    session-scoped route is additive, not a replacement."""
+    app, workspace_id, artifact_id = _app_with_renderable_pack(tmp_path)
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/workspaces/{workspace_id}/application-pack/render/cv",
+            params={"pack_artifact_id": artifact_id},
+        )
+        assert response.status_code == 200, response.text
+        assert response.content

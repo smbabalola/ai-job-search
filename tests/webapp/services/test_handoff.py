@@ -1040,3 +1040,147 @@ def test_project_session_snapshot_cross_workspace_session_cannot_read_another_wo
     assert projection_a["name"]["value"] == "Workspace A Candidate"
     assert projection_b["name"]["value"] == "Workspace B Candidate"
     conn.close()
+
+
+from webapp.services.handoff import HandoffDocumentKindUnsupported, fetch_session_document
+
+_RENDERABLE_PACK_PAYLOAD = {
+    "schema_version": "application-pack.v0",
+    "job": {"company": "Acme", "title": "Engineer"},
+    "cv_content": [
+        {"unit_id": "cv_1", "unit_type": "cv_summary_line", "text": "Summary line."},
+    ],
+    "cover_letter_content": [
+        {"unit_id": "cl_1", "unit_type": "cover_letter_paragraph", "text": "Paragraph."},
+    ],
+}
+
+
+def _workspace_with_renderable_pack(conn, *, workspace_id="ws_docs", payload=None):
+    ensure_profile_workspace(conn, account_id="account_local")
+    workspace = create_workspace(
+        conn, company="Acme", title="Engineer", account_id="account_local",
+        workspace_id=workspace_id,
+    )
+    artifact = save_artifact(
+        conn, workspace_id=workspace["id"], artifact_type="application_pack",
+        payload=payload if payload is not None else _RENDERABLE_PACK_PAYLOAD,
+    )
+    return workspace, artifact
+
+
+def test_fetch_session_document_renders_cv_from_the_pinned_pack(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_renderable_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    rendered = fetch_session_document(
+        conn, session_scope, kind="cv", documents_root=tmp_path / "documents",
+    )
+    assert rendered.kind == "cv"
+    assert rendered.content
+    assert rendered.filename.endswith(".docx")
+    conn.close()
+
+
+def test_fetch_session_document_renders_cover_letter_from_the_pinned_pack(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_renderable_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    rendered = fetch_session_document(
+        conn, session_scope, kind="cover_letter", documents_root=tmp_path / "documents",
+    )
+    assert rendered.kind == "cover_letter"
+    assert rendered.content
+    conn.close()
+
+
+def test_fetch_session_document_rejects_unsupported_kind(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact = _workspace_with_renderable_pack(conn)
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact)
+
+    try:
+        fetch_session_document(
+            conn, session_scope, kind="resume_pdf", documents_root=tmp_path / "documents",
+        )
+        assert False, "expected HandoffDocumentKindUnsupported"
+    except HandoffDocumentKindUnsupported:
+        pass
+    conn.close()
+
+
+def test_fetch_session_document_ignores_a_newer_pack_confirmed_after_session_start(tmp_path):
+    """The regression test for the exact invariant this endpoint exists
+    to protect: a session started against pack A must keep rendering
+    pack A's documents forever, even after a newer pack B becomes the
+    workspace's current pack."""
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace, artifact_a = _workspace_with_renderable_pack(
+        conn, payload={
+            **_RENDERABLE_PACK_PAYLOAD,
+            "cv_content": [
+                {"unit_id": "cv_a", "unit_type": "cv_summary_line", "text": "Original pack summary."},
+            ],
+        },
+    )
+    _session, session_scope = _started_session_scope(conn, scope, workspace, artifact_a)
+
+    # A newer pack for the SAME workspace, never referenced by this session.
+    save_artifact(
+        conn, workspace_id=workspace["id"], artifact_type="application_pack",
+        payload={
+            **_RENDERABLE_PACK_PAYLOAD,
+            "cv_content": [
+                {"unit_id": "cv_b", "unit_type": "cv_summary_line", "text": "Newer pack summary."},
+            ],
+        },
+    )
+
+    rendered = fetch_session_document(
+        conn, session_scope, kind="cv", documents_root=tmp_path / "documents",
+    )
+    from docx import Document
+    from io import BytesIO
+    text = "\n".join(p.text for p in Document(BytesIO(rendered.content)).paragraphs)
+    assert "Original pack summary" in text
+    assert "Newer pack summary" not in text
+    conn.close()
+
+
+def test_fetch_session_document_cross_workspace_session_cannot_read_another_workspaces_pack(tmp_path):
+    conn = _conn(tmp_path)
+    scope = _scope(tmp_path)
+    workspace_a, artifact_a = _workspace_with_renderable_pack(
+        conn, workspace_id="ws_docs_a", payload={
+            **_RENDERABLE_PACK_PAYLOAD,
+            "cv_content": [
+                {"unit_id": "cv_a", "unit_type": "cv_summary_line", "text": "Workspace A summary."},
+            ],
+        },
+    )
+    workspace_b, artifact_b = _workspace_with_renderable_pack(
+        conn, workspace_id="ws_docs_b", payload={
+            **_RENDERABLE_PACK_PAYLOAD,
+            "cv_content": [
+                {"unit_id": "cv_b", "unit_type": "cv_summary_line", "text": "Workspace B summary."},
+            ],
+        },
+    )
+    _session_a, scope_a = _started_session_scope(conn, scope, workspace_a, artifact_a)
+    _session_b, scope_b = _started_session_scope(conn, scope, workspace_b, artifact_b)
+
+    from docx import Document
+    from io import BytesIO
+    rendered_a = fetch_session_document(conn, scope_a, kind="cv", documents_root=tmp_path / "documents")
+    rendered_b = fetch_session_document(conn, scope_b, kind="cv", documents_root=tmp_path / "documents")
+    text_a = "\n".join(p.text for p in Document(BytesIO(rendered_a.content)).paragraphs)
+    text_b = "\n".join(p.text for p in Document(BytesIO(rendered_b.content)).paragraphs)
+    assert "Workspace A summary" in text_a
+    assert "Workspace B summary" in text_b
+    conn.close()
