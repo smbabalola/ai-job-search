@@ -286,6 +286,35 @@ def test_resume_session_rejects_expired_session(tmp_path):
         assert resumed.status_code == 401
 
 
+def test_discover_sessions_excludes_expired_session_over_http(tmp_path):
+    """The server, not the browser extension, is the authority on expiry
+    (design spec Section 4) — an expired session must never appear in the
+    discover endpoint's results at all, even though a direct resume call
+    against it would separately be rejected with 401."""
+    app, workspace_id, artifact_id = _app(tmp_path)
+    with TestClient(app) as client:
+        credential = _paired_credential(client)
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+
+        conn = connect(app.state.settings.db_path)
+        stale = "2020-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+            (stale, session_id),
+        )
+        conn.commit()
+        conn.close()
+
+        discovered = client.get(
+            "/api/handoff/sessions/discover",
+            headers={"X-Handoff-Credential": credential},
+            params={"workspace_id": workspace_id, "target_domain": "x.test"},
+        )
+        assert discovered.status_code == 200, discovered.text
+        assert discovered.json()["sessions"] == []
+
+
 def test_resume_session_rejects_terminal_status_session(tmp_path):
     app, workspace_id, artifact_id = _app(tmp_path)
     with TestClient(app) as client:
