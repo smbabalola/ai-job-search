@@ -18,11 +18,14 @@ from webapp.services.input_identity import (
     semantic_proposals_identity,
     semantic_proposer_policy_identity,
 )
+from webapp.persistence.discovery import ingest_discovery_record
+from webapp.services.discovery import promote_discovery_candidate
 from webapp.services.workspace_view import (
     build_conflicted_concept_ids,
     build_dashboard_view_model,
     build_profile_view_model,
     build_workspace_view_model,
+    resolve_apply_target_url,
     resolve_next_action,
     stage_state_label,
 )
@@ -839,3 +842,93 @@ def test_dashboard_has_required_summary_fields_and_filters(tmp_path):
     record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-20", submitted_pack_artifact_id=pack["id"], _allow_drafted=True)
     assert build_dashboard_view_model(conn, filter_name="active")["workspaces"] == []
     assert build_dashboard_view_model(conn, filter_name="drafted")["workspaces"][0]["id"] == workspace_id
+
+
+def _discovery_source_record(**overrides):
+    record = {
+        "schema_version": "job-source-record.v0", "source": "freehire-search",
+        "source_record_id": "planner-77", "source_url": "https://freehire.me/jobs/planner-77",
+        "captured_at": "2026-08-21T09:00:00+00:00", "company": "Energy Co",
+        "title": "Project Planner", "location": "Aberdeen",
+        "description": "Plan work.",
+        "requirements": [], "responsibilities": [], "language_requirements": [],
+        "eligibility_requirements": [], "logistics_requirements": [],
+    }
+    record.update(overrides)
+    return record
+
+
+def test_resolve_apply_target_url_returns_url_for_discovery_origin_workspace(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"])
+    workspace_id = promoted["workspace"]["id"]
+
+    url = resolve_apply_target_url(conn, workspace_id=workspace_id)
+
+    assert url == "https://freehire.me/jobs/planner-77"
+
+
+def test_resolve_apply_target_url_returns_none_for_non_discovery_workspace(tmp_path):
+    conn, workspace_id = _workspace(tmp_path)
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
+
+
+def test_resolve_apply_target_url_returns_none_for_null_source_url(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    record = _discovery_source_record()
+    del record["source_url"]  # discovery ingestion requires a non-empty
+    # string when the key is present at all, so "no URL" is modeled by
+    # the key's genuine absence — matching how a real scraped record with
+    # no discoverable posting URL would actually look.
+    candidate = ingest_discovery_record(conn, record)["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"])
+
+    assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"]) is None
+
+
+def test_resolve_apply_target_url_rejects_untrustworthy_scheme(tmp_path):
+    conn, _ = _workspace(tmp_path)
+    candidate = ingest_discovery_record(
+        conn, _discovery_source_record(source_url="javascript:alert(1)"),
+    )["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"])
+
+    assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"]) is None
+
+
+def test_resolve_apply_target_url_does_not_leak_another_workspaces_url(tmp_path):
+    """Cross-workspace isolation: two discovery-origin workspaces, each
+    resolves only its own persisted source_url, never the other's."""
+    conn, _ = _workspace(tmp_path)
+    candidate_a = ingest_discovery_record(
+        conn, _discovery_source_record(
+            source_record_id="job-a", source_url="https://jobs.example/a",
+        ),
+    )["candidate"]
+    candidate_b = ingest_discovery_record(
+        conn, _discovery_source_record(
+            source_record_id="job-b", source_url="https://jobs.example/b",
+            company="Other Co", title="Other Role",
+        ),
+    )["candidate"]
+    workspace_a = promote_discovery_candidate(conn, candidate_a["id"])["workspace"]["id"]
+    workspace_b = promote_discovery_candidate(conn, candidate_b["id"])["workspace"]["id"]
+
+    assert resolve_apply_target_url(conn, workspace_id=workspace_a) == "https://jobs.example/a"
+    assert resolve_apply_target_url(conn, workspace_id=workspace_b) == "https://jobs.example/b"
+
+
+def test_resolve_apply_target_url_rejects_cross_account_workspace(tmp_path):
+    from webapp.persistence.accounts import create_account
+    from webapp.services.http_api import JobWorkspaceNotFound
+
+    conn, workspace_id = _workspace(tmp_path)
+    create_account(conn, account_id="account_other", display_name="Other")
+
+    try:
+        resolve_apply_target_url(conn, workspace_id=workspace_id, account_id="account_other")
+        assert False, "expected JobWorkspaceNotFound"
+    except JobWorkspaceNotFound:
+        pass
