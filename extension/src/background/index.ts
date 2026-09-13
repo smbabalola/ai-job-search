@@ -6,6 +6,12 @@ import { DurableEventQueue } from "./event-queue";
 import { MessageRouter } from "./message-router";
 import { PendingContextStore } from "./pending-context-store";
 import { extractValidPendingContext } from "./pending-context-validation";
+import {
+  associateHandoffSession,
+  isActiveTabOnPendingTarget,
+  type BoundSession,
+} from "./session-orchestration";
+import { SessionSequenceStore } from "./session-sequence-store";
 import { INJECTED_SNAPSHOT_KEY } from "../content/snapshot-source";
 import type { ContentScriptMessage } from "../content/messages";
 
@@ -16,84 +22,111 @@ import type { ContentScriptMessage } from "../content/messages";
 // rejected outright, never trusted.
 const JOBSEARCH_WEBAPP_ORIGIN = "http://127.0.0.1:8420";
 
-// Manual-testing-only storage keys. There is no session-start UI yet
-// (separate ticket); until it exists, a developer sets these by hand via
-// the service worker's DevTools console before clicking the action icon.
-// See docs/superpowers/plans/2026-09-11-extension-runtime-message-relay.md
-// Task 7 for the exact commands.
-const MANUAL_TEST_SNAPSHOT_KEY = "handoff_manual_test_snapshot";
-const MANUAL_TEST_SESSION_ID_KEY = "handoff_manual_test_session_id";
-// Stores { sessionId, sequence } together so a stale sequence from a prior
-// session can never be mistaken for a valid resume point of a new session —
-// see ensureRouter() below.
-const MANUAL_TEST_CLIENT_SEQUENCE_KEY = "handoff_manual_test_client_sequence";
-
-interface PersistedClientSequence {
-  sessionId: string;
-  sequence: number;
-}
-
 const credentialStore = new CredentialStore();
 const eventStore = new ChromeEventStore();
 const serverClient = new ServerClient(() => credentialStore.get());
-const eventQueue = new DurableEventQueue(eventStore, (event) => serverClient.sendEvent(event));
 const pendingContextStore = new PendingContextStore();
+const sequenceStore = new SessionSequenceStore();
+
+// The currently bound handoff session, established by
+// associateHandoffSession() in runAutofillOnTab below. Deliberately a
+// module-level variable (not chrome.storage) — it holds only the
+// short-lived session token for as long as this worker instance lives;
+// a service-worker restart re-derives it from a fresh
+// associateHandoffSession() call rather than resurrecting stale token
+// state, since the pending context that produced it has already been
+// cleared by then in the success case.
+let boundSession: BoundSession | null = null;
+
+// sendEvent needs the session token that was live at flush time. A
+// closure (rather than reading the module-level `boundSession` directly
+// inside ServerClient) keeps ServerClient's own dependency surface
+// unaware of orchestration state — it only knows "give me a token when
+// asked."
+const eventQueue = new DurableEventQueue(eventStore, (event) => {
+  if (!boundSession) return Promise.resolve(false);
+  return serverClient.sendEvent(event, boundSession.sessionToken);
+});
 
 let router: MessageRouter | null = null;
-
-async function getManualTestValue<T>(key: string): Promise<T | null> {
-  const result = await chrome.storage.local.get(key);
-  return (result[key] as T | undefined) ?? null;
-}
 
 // Lazily (re)constructs the module-level `router` so a service-worker
 // restart (MV3 workers are killed after ~30s idle) never leaves `router`
 // null while the content script is still emitting messages — that would
 // silently drop events instead of queuing them. Resumes clientSequence
-// numbering from chrome.storage.local when the restart is mid-session, and
-// starts fresh at 0 when the session id has actually changed, so a stale
-// sequence from a prior session is never reused (see event-queue.ts:32's
-// sort-by-clientSequence ordering, which a duplicate/rollback would
-// corrupt).
+// numbering from the per-session sequence store (session-sequence-store.ts)
+// when the restart is mid-session, and starts fresh at 0 when the bound
+// session id has actually changed, so a stale sequence from a prior
+// session is never reused (see event-queue.ts:32's sort-by-clientSequence
+// ordering, which a duplicate/rollback would corrupt).
 async function ensureRouter(): Promise<MessageRouter | null> {
-  const handoffSessionId = await getManualTestValue<string>(MANUAL_TEST_SESSION_ID_KEY);
-  if (!handoffSessionId) return null;
+  if (!boundSession) return null;
 
-  if (router && router.handoffSessionId === handoffSessionId) {
+  if (router && router.handoffSessionId === boundSession.sessionId) {
     return router;
   }
 
-  const persisted = await getManualTestValue<PersistedClientSequence>(
-    MANUAL_TEST_CLIENT_SEQUENCE_KEY,
-  );
-  const startingClientSequence =
-    persisted && persisted.sessionId === handoffSessionId ? persisted.sequence : 0;
-
-  router = new MessageRouter(eventQueue, handoffSessionId, startingClientSequence);
+  const startingClientSequence = await sequenceStore.get(boundSession.sessionId);
+  router = new MessageRouter(eventQueue, boundSession.sessionId, startingClientSequence);
   return router;
 }
 
 async function persistClientSequence(current: MessageRouter): Promise<void> {
-  const value: PersistedClientSequence = {
-    sessionId: current.handoffSessionId,
-    sequence: current.clientSequence,
-  };
-  await chrome.storage.local.set({ [MANUAL_TEST_CLIENT_SEQUENCE_KEY]: value });
+  await sequenceStore.set(current.handoffSessionId, current.clientSequence);
 }
 
-export async function runAutofillOnTab(tabId: number): Promise<void> {
-  const snapshot = await getManualTestValue<Record<string, unknown>>(MANUAL_TEST_SNAPSHOT_KEY);
-  const handoffSessionId = await getManualTestValue<string>(MANUAL_TEST_SESSION_ID_KEY);
+// TEMPORARY placeholder pending the Task 8 probe (not yet authorized):
+// genuine ATS adapter detection requires a live DOM (Adapter.detect(document)
+// in src/adapters/*.ts), which is content-script territory, not something
+// this background-script orchestration can or should call directly. Until
+// the probe step exists and supplies a real detected adapter identity, the
+// generic adapter's own id/version is used as an honest "unknown/unclassified"
+// placeholder rather than inventing a domain-to-adapter guess — a wrong
+// static guess would silently mislabel a session's ats_adapter_id at
+// start_session time, which is worse than an explicit placeholder.
+const PLACEHOLDER_ADAPTER_IDENTITY = { atsAdapterId: "generic", atsAdapterVersion: "generic@1" };
 
-  if (!snapshot || !handoffSessionId) {
+export async function runAutofillOnTab(tabId: number): Promise<void> {
+  const pendingContext = await pendingContextStore.peek();
+  if (!pendingContext) {
     console.warn(
-      "[JobSearch Handoff] no manual-test snapshot/session configured; " +
-      "set chrome.storage.local keys '" + MANUAL_TEST_SNAPSHOT_KEY + "' and '" +
-      MANUAL_TEST_SESSION_ID_KEY + "' before clicking the action (see plan Task 7).",
+      "[JobSearch Handoff] no pending handoff context; click 'Apply with extension' " +
+      "on the workspace page first, then click this toolbar icon on the resulting tab.",
     );
     return;
   }
 
+  const tab = await chrome.tabs.get(tabId);
+  if (!isActiveTabOnPendingTarget(tab.url, pendingContext)) {
+    // Wrong tab/domain is a recoverable, retry-able state — the pending
+    // context is deliberately left intact so the user can navigate to
+    // the intended page and click the toolbar icon again.
+    console.warn(
+      "[JobSearch Handoff] active tab does not match the pending handoff target; " +
+      "navigate to the intended application page first.",
+    );
+    return;
+  }
+
+  const targetDomain = new URL(pendingContext.targetUrl).hostname;
+
+  let session: BoundSession;
+  try {
+    session = await associateHandoffSession(
+      pendingContext, targetDomain, PLACEHOLDER_ADAPTER_IDENTITY, serverClient,
+    );
+  } catch (err) {
+    // A recoverable discovery/start failure must not clear the pending
+    // context — the user can retry the toolbar click without having to
+    // re-click "Apply with extension" on the workspace page.
+    console.warn("[JobSearch Handoff] failed to establish handoff session", err);
+    return;
+  }
+
+  // Only clear the pending context once a session has been successfully
+  // bound to the intended workspace/pack/domain — never before.
+  await pendingContextStore.clear();
+  boundSession = session;
   await ensureRouter();
 
   // Injection legitimately fails on restricted URLs (chrome://, the Web
@@ -109,12 +142,18 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
     // Both executeScript calls share the same isolated-world globalThis for
     // this tab, so the snapshot written by the first call is still visible
     // to the second call's injected bundle via INJECTED_SNAPSHOT_KEY.
+    //
+    // NOTE: candidate snapshot fetch/injection is Task 10's responsibility,
+    // not this task's — INJECTED_SNAPSHOT_KEY is written with an empty
+    // placeholder here only to preserve the existing two-step injection
+    // shape until Task 10 replaces it with a real session-scoped snapshot
+    // projection fetch.
     await chrome.scripting.executeScript({
       target: { tabId },
       func: (key: string, value: unknown) => {
         (globalThis as unknown as Record<string, unknown>)[key] = value;
       },
-      args: [INJECTED_SNAPSHOT_KEY, snapshot],
+      args: [INJECTED_SNAPSHOT_KEY, {}],
     });
 
     await chrome.scripting.executeScript({
