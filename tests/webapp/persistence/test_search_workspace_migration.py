@@ -87,6 +87,7 @@ def test_new_database_has_one_deterministic_default_search_workspace(tmp_path):
         "009_handoff_session_activity",
         "010_policy_decisions",
         "011_application_blockers",
+        "012_blocker_resolution_history",
     }
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -116,6 +117,7 @@ def test_profile_manager_and_account_migrations_are_idempotent(tmp_path):
         "009_handoff_session_activity",
         "010_policy_decisions",
         "011_application_blockers",
+        "012_blocker_resolution_history",
     }
     assert upgraded.execute("PRAGMA foreign_key_check").fetchall() == []
 
