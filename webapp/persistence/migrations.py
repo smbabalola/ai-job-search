@@ -25,6 +25,7 @@ ONBOARDING_WALKTHROUGHS_MIGRATION_ID = "006_onboarding_walkthroughs"
 PAIRING_SECRETS_MIGRATION_ID = "007_pairing_secrets"
 HANDOFF_SESSION_TOKENS_MIGRATION_ID = "008_handoff_session_tokens"
 HANDOFF_SESSION_ACTIVITY_MIGRATION_ID = "009_handoff_session_activity"
+POLICY_DECISIONS_MIGRATION_ID = "010_policy_decisions"
 
 
 def _now() -> str:
@@ -55,6 +56,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (PAIRING_SECRETS_MIGRATION_ID, _migrate_pairing_secrets, False),
         (HANDOFF_SESSION_TOKENS_MIGRATION_ID, _migrate_handoff_session_tokens, False),
         (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID, _migrate_handoff_session_activity, False),
+        (POLICY_DECISIONS_MIGRATION_ID, _migrate_policy_decisions, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -344,6 +346,82 @@ def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
 def _migrate_handoff_session_activity(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE handoff_sessions ADD COLUMN last_activity_at TEXT")
     conn.execute("UPDATE handoff_sessions SET last_activity_at = started_at")
+
+
+def _migrate_policy_decisions(conn: sqlite3.Connection) -> None:
+    # Durable, append-only ledger of every automatic (or future human)
+    # classification product/application_decision_policy.py produces for a
+    # review item, keyed to the exact source artifact and policy version
+    # that produced it. Rows are never updated or deleted: when an upstream
+    # artifact reruns, decisions tied to the old artifact_id remain
+    # permanently queryable as audit history -- selecting which decision
+    # currently governs a workspace's workflow state is Phase 4 read
+    # logic, not something this table itself decides.
+    #
+    # subject_key is deliberately NOT NULL (unlike review_decisions.
+    # domain_item_id, which is nullable): a stage-level decision with no
+    # natural per-item identity must still supply a stable literal (e.g.
+    # "stage") rather than NULL, because SQLite's UNIQUE constraint permits
+    # unlimited rows sharing a NULL in an indexed column -- a NULLable
+    # subject_key would silently defeat the idempotency guarantee below.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE policy_decisions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            stage TEXT NOT NULL CHECK (
+                stage IN ('understanding', 'fit', 'application_intelligence', 'content')
+            ),
+            source_artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+            review_item_type TEXT NOT NULL,
+            subject_key TEXT NOT NULL,
+            domain_item_id TEXT,
+            outcome TEXT NOT NULL CHECK (
+                outcome IN (
+                    'AUTO_PROCEED', 'AUTO_PROCEED_WITH_GAPS', 'AUTO_OMIT',
+                    'AUTO_REJECT', 'REQUIRE_USER', 'NOT_APPLICABLE'
+                )
+            ),
+            policy_version TEXT NOT NULL,
+            policy_fingerprint TEXT NOT NULL,
+            evidence_ids TEXT NOT NULL,
+            supported_facts TEXT NOT NULL,
+            recorded_gaps TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            confidence TEXT,
+            blocking INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+            created_at TEXT NOT NULL,
+            UNIQUE (
+                workspace_id, stage, source_artifact_id, review_item_type,
+                subject_key, policy_fingerprint
+            )
+        );
+
+        CREATE INDEX idx_policy_decisions_workspace_artifact
+            ON policy_decisions(workspace_id, source_artifact_id);
+        """,
+    )
+    conn.execute(
+        "CREATE TRIGGER policy_decisions_immutable_update "
+        "BEFORE UPDATE ON policy_decisions "
+        "BEGIN SELECT RAISE(ABORT, 'policy decisions are immutable, append-only audit history'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER policy_decisions_immutable_delete "
+        "BEFORE DELETE ON policy_decisions "
+        "BEGIN SELECT RAISE(ABORT, 'policy decisions are immutable, append-only audit history'); END"
+    )
+    # Additive-only: existing review_decisions rows remain valid with both
+    # new columns NULL (interpreted as "resolved by a human, before this
+    # column existed" -- no backfill, no reinterpretation of historical
+    # rows).
+    conn.execute("ALTER TABLE review_decisions ADD COLUMN resolved_by TEXT")
+    conn.execute(
+        "ALTER TABLE review_decisions ADD COLUMN policy_decision_id "
+        "TEXT REFERENCES policy_decisions(id)"
+    )
 
 
 def _migrate_evidence_profile_manager(conn: sqlite3.Connection) -> None:
