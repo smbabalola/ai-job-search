@@ -14,6 +14,7 @@ from webapp.persistence.migrations import (
     ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
     PAIRING_SECRETS_MIGRATION_ID,
     POLICY_DECISIONS_MIGRATION_ID,
+    SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
 )
 
 
@@ -159,7 +160,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     conn.execute("DROP TABLE extension_credentials")
     conn.execute("DROP TABLE pairing_secrets")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -169,6 +170,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             POLICY_DECISIONS_MIGRATION_ID,
             APPLICATION_BLOCKERS_MIGRATION_ID,
             BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID,
+            SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
         ),
     )
     conn.commit()
