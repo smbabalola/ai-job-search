@@ -31,6 +31,7 @@ def _source_record():
 def _create(client):
     response = client.post("/api/workspaces", json={
         "company": "Acme", "title": "Backend Engineer", "source_record": _source_record(),
+        "source_record_origin": "manual_entry",
     })
     assert response.status_code == 201, response.text
     return response.json()["workspace"]["id"]
@@ -58,7 +59,10 @@ def test_direct_job_creation_blocks_strong_to_weak_identity_ambiguity(tmp_path):
         strong = {**_source_record(), "source_record_id": "vacancy-1"}
         first = client.post(
             "/api/workspaces",
-            json={"company": "Acme", "title": "Backend Engineer", "source_record": strong},
+            json={
+                "company": "Acme", "title": "Backend Engineer", "source_record": strong,
+                "source_record_origin": "manual_entry",
+            },
         )
         assert first.status_code == 201
 
@@ -68,12 +72,128 @@ def test_direct_job_creation_blocks_strong_to_weak_identity_ambiguity(tmp_path):
                 "company": "Acme",
                 "title": "Backend Engineer",
                 "source_record": _source_record(),
+                "source_record_origin": "manual_entry",
             },
         )
 
         assert ambiguous.status_code == 400
         assert "ambiguous" in ambiguous.json()["detail"]
         assert len(client.get("/api/workspaces").json()["workspaces"]) == 1
+
+
+def test_source_record_origin_is_required(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": _source_record(),
+        })
+        assert response.status_code == 422
+
+
+def test_manual_entry_with_valid_url_gets_user_supplied_provenance(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {**_source_record(), "source_url": "https://boards.example.com/acme/42"}
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "manual_entry",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "user_supplied"
+        )
+
+
+def test_imported_json_with_valid_url_gets_imported_source_provenance(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {**_source_record(), "source_url": "https://boards.example.com/acme/42"}
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "imported_json",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "imported_source"
+        )
+
+
+def test_manual_job_with_malformed_url_is_rejected(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {**_source_record(), "source_url": "not a url"}
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "manual_entry",
+        })
+        assert response.status_code == 400
+
+
+def test_manual_job_without_url_remains_valid(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": _source_record(),
+            "source_record_origin": "manual_entry",
+        })
+        assert response.status_code == 201, response.text
+
+
+def test_imported_json_cannot_self_assert_discovery_verified_via_api(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {
+            **_source_record(),
+            "source_url": "https://boards.example.com/acme/42",
+            "metadata": {"ingestion": {"source_url_provenance": "discovery_verified"}},
+        }
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "imported_json",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "imported_source"
+        )
+
+
+def test_imported_json_claiming_a_discovery_adapter_source_cannot_obtain_discovery_verified_via_api(tmp_path):
+    """The exact exploit shape: an import claims source: "freehire-search"
+    (the real discovery adapter's own source value) to try to inherit its
+    trust. record["source"] is caller-controlled data, never proof of
+    origin — only a genuine application_workspace_origins row (written
+    exclusively by promote_discovery_candidate against a real discovery
+    occurrence) can produce discovery_verified."""
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {
+            **_source_record(),
+            "source": "freehire-search",
+            "source_url": "https://attacker.example.com/phish",
+        }
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "imported_json",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "imported_source"
+        )
+
+
+def test_manual_entry_claiming_a_discovery_adapter_source_cannot_obtain_discovery_verified_via_api(tmp_path):
+    with TestClient(create_app(_settings(tmp_path))) as client:
+        record = {
+            **_source_record(),
+            "source": "freehire-search",
+            "source_url": "https://attacker.example.com/phish",
+        }
+        response = client.post("/api/workspaces", json={
+            "company": "Acme", "title": "Backend Engineer", "source_record": record,
+            "source_record_origin": "manual_entry",
+        })
+        assert response.status_code == 201, response.text
+        assert (
+            response.json()["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+            == "user_supplied"
+        )
 
 
 def test_extensions_expose_public_metadata_without_internal_paths(tmp_path):

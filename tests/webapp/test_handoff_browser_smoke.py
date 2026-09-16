@@ -73,6 +73,12 @@ def _build_adapter_bundle():
     subprocess.run(
         [npm, "run", "build:test-bundle"], cwd="extension", check=True,
     )
+    subprocess.run(
+        [npm, "run", "build:probe-test-bundle"], cwd="extension", check=True,
+    )
+    subprocess.run(
+        [npm, "run", "build:attachment-test-bundle"], cwd="extension", check=True,
+    )
 
 
 def test_generic_fixture_page_is_served(tmp_path):
@@ -104,10 +110,9 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
             "/api/handoff/pairing/exchange", json={"one_time_secret": one_time_secret},
         )
         credential = exchanged.json()["durable_secret"]
-        headers = {"X-Handoff-Credential": credential}
 
         started = client.post(
-            "/api/handoff/sessions", headers=headers,
+            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
             json={
                 "workspace_id": workspace["id"], "pack_artifact_id": artifact["id"],
                 "target_url": "http://testserver/test-fixtures/handoff/generic_fixture.html",
@@ -117,6 +122,7 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
         )
         assert started.status_code == 201
         session_id = started.json()["id"]
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
 
         # Simulates what the extension's content script + background
         # worker would report after scanning the real fixture page: only
@@ -233,6 +239,117 @@ def test_real_submit_button_never_clicked_by_classification_pass(page, live_serv
     )
     clicks = page.evaluate("() => window.__submitClicks")
     assert clicks == 0
+
+
+def test_probe_page_detects_real_greenhouse_adapter_with_zero_dom_mutation(page, live_server):
+    """Proves Task 8's probePage() against a real browser DOM (not JSDOM):
+    the correct adapter identity comes from the adapter's own detect()
+    logic against the live page, never from the hostname/URL, and probing
+    performs zero DOM writes — every input's value is unchanged
+    afterward, exactly as it must be for a step that runs before any
+    handoff session or candidate data exists."""
+    page.goto(f"{live_server.base_url}/test-fixtures/handoff/greenhouse_fixture.html")
+    page.add_script_tag(path="extension/dist/probe-bundle.js")
+    page.add_script_tag(path="extension/dist/adapters-bundle.js")
+
+    result = page.evaluate(
+        """() => {
+            const adapters = [HandoffAdapters.greenhouseAdapter, HandoffAdapters.genericAdapter];
+            return HandoffProbe.probePage(document, adapters);
+        }"""
+    )
+
+    assert result["atsAdapterId"] == "greenhouse"
+    assert result["atsAdapterVersion"] == "greenhouse@1"
+    assert "employment[0].employer" in result["normalizedFieldTypes"]
+    assert "name" in result["normalizedFieldTypes"]
+    # years_of_experience is "suggest" (candidate-data-eligible), so it IS
+    # requestable — but the disability field is "ask" and must be excluded.
+    assert "years_of_experience" in result["normalizedFieldTypes"]
+
+    for input_id in [
+        "job_application_first_name", "job_application_email",
+        "job_application_most_recent_employer", "job_application_years_experience",
+    ]:
+        value = page.locator(f"#{input_id}").input_value()
+        assert value == "", f"probePage must never write to #{input_id}, found {value!r}"
+
+
+def test_attempt_attachment_writes_real_file_to_positively_identified_greenhouse_input(page, live_server):
+    """Proves the real file-write path attachment-dom.ts's attemptAttachment
+    relies on (DataTransfer assignment to a real <input type="file">) —
+    something JSDOM cannot exercise at all (no DataTransfer implementation),
+    so this is the only place this behavior is actually proven. Uses the
+    adapter's OWN positively-identified target (Greenhouse's real "Resume/CV"
+    labeled file input added to this fixture), never a guessed input."""
+    page.goto(f"{live_server.base_url}/test-fixtures/handoff/greenhouse_fixture.html")
+    page.add_script_tag(path="extension/dist/attachment-bundle.js")
+    page.add_script_tag(path="extension/dist/adapters-bundle.js")
+
+    result = page.evaluate(
+        """() => {
+            const file = new File(["fake docx bytes"], "Acme_Engineer_CV.docx", {
+                type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            });
+            return HandoffAttachment.attemptAttachment(
+                document, HandoffAdapters.greenhouseAdapter, "cv", file,
+            );
+        }"""
+    )
+
+    assert result["outcome"] == "selected"
+    assert result["pageFieldKey"] == "greenhouse:attachment:job_application_resume"
+
+    written_name = page.evaluate(
+        "() => document.getElementById('job_application_resume').files[0]?.name"
+    )
+    assert written_name == "Acme_Engineer_CV.docx"
+
+
+def test_attempt_attachment_never_submits_the_application_form(page, live_server):
+    page.goto(f"{live_server.base_url}/test-fixtures/handoff/greenhouse_fixture.html")
+    page.add_script_tag(path="extension/dist/attachment-bundle.js")
+    page.add_script_tag(path="extension/dist/adapters-bundle.js")
+    page.evaluate(
+        "() => { window.__submitClicks = 0; "
+        "document.getElementById('submit_app')"
+        ".addEventListener('click', () => { window.__submitClicks += 1; }); }"
+    )
+
+    page.evaluate(
+        """() => {
+            const file = new File(["fake docx bytes"], "Acme_Engineer_CV.docx", {
+                type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            });
+            HandoffAttachment.attemptAttachment(
+                document, HandoffAdapters.greenhouseAdapter, "cv", file,
+            );
+        }"""
+    )
+
+    clicks = page.evaluate("() => window.__submitClicks")
+    assert clicks == 0
+
+
+def test_attempt_attachment_reports_no_compatible_target_honestly_for_an_unmatched_kind(page, live_server):
+    """Confirms a document kind with no verified adapter-known upload
+    field (the generic adapter has no findAttachmentTarget at all) never
+    silently attempts a guessed file input, and never reports success
+    for an attachment that never actually happened."""
+    page.goto(f"{live_server.base_url}/test-fixtures/handoff/generic_fixture.html")
+    page.add_script_tag(path="extension/dist/attachment-bundle.js")
+    page.add_script_tag(path="extension/dist/adapters-bundle.js")
+
+    result = page.evaluate(
+        """() => {
+            const file = new File(["x"], "cv.docx", { type: "application/octet-stream" });
+            return HandoffAttachment.attemptAttachment(
+                document, HandoffAdapters.genericAdapter, "cv", file,
+            );
+        }"""
+    )
+    assert result["outcome"] == "no_compatible_target"
+    assert result["pageFieldKey"] is None
 
 
 def test_no_sensitive_value_or_secret_leakage_in_fixture_page(page, live_server):

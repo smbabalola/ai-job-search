@@ -11,6 +11,8 @@ export async function buildExtension() {
   await mkdir(resolve(outputRoot, "background"), { recursive: true });
   await mkdir(resolve(outputRoot, "content"), { recursive: true });
   await mkdir(resolve(outputRoot, "popup"), { recursive: true });
+  await mkdir(resolve(outputRoot, "content-bridge"), { recursive: true });
+  await mkdir(resolve(outputRoot, "attachment-runner"), { recursive: true });
   await cp(resolve(extensionRoot, "manifest.json"), resolve(outputRoot, "manifest.json"));
   await cp(resolve(extensionRoot, "icons"), resolve(outputRoot, "icons"), { recursive: true });
   await cp(resolve(extensionRoot, "popup.html"), resolve(outputRoot, "popup.html"));
@@ -37,6 +39,22 @@ export async function buildExtension() {
     platform: "browser",
     target: "chrome120",
     outfile: resolve(outputRoot, "popup", "index.js"),
+  });
+  await build({
+    entryPoints: [resolve(extensionRoot, "src", "content-bridge", "index.ts")],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "chrome120",
+    outfile: resolve(outputRoot, "content-bridge", "index.js"),
+  });
+  await build({
+    entryPoints: [resolve(extensionRoot, "src", "content", "attachment-runner.ts")],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "chrome120",
+    outfile: resolve(outputRoot, "attachment-runner", "index.js"),
   });
   const manifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
   if (manifest.background?.service_worker !== "background/index.js") {

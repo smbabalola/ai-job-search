@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -85,12 +86,12 @@ def create_handoff_session(
         "INSERT INTO handoff_sessions "
         "(id, account_id, workspace_id, pack_artifact_id, target_url, "
         "target_domain, ats_adapter_id, ats_adapter_version, started_at, "
-        "status, user_confirmed_submitted_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', NULL)",
+        "status, user_confirmed_submitted_at, last_activity_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', NULL, ?)",
         (
             session_id, account_id, workspace_id, pack_artifact_id,
             target_url, target_domain, ats_adapter_id, ats_adapter_version,
-            now,
+            now, now,
         ),
     )
     if commit:
@@ -201,6 +202,59 @@ def list_handoff_events(
         (handoff_session_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def create_session_token(
+    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+) -> str:
+    token = secrets.token_urlsafe(32)
+    token_id = f"hst_{uuid.uuid4().hex[:20]}"
+    conn.execute(
+        "INSERT INTO handoff_session_tokens "
+        "(id, handoff_session_id, token_hash, created_at, revoked_at) "
+        "VALUES (?, ?, ?, ?, NULL)",
+        (token_id, handoff_session_id, hash_pairing_secret(token), _now()),
+    )
+    if commit:
+        conn.commit()
+    return token
+
+
+def revoke_session_tokens(
+    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+) -> None:
+    conn.execute(
+        "UPDATE handoff_session_tokens SET revoked_at = ? "
+        "WHERE handoff_session_id = ? AND revoked_at IS NULL",
+        (_now(), handoff_session_id),
+    )
+    if commit:
+        conn.commit()
+
+
+def get_session_token_row(
+    conn: sqlite3.Connection, *, token_hash: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT hst.*, hs.account_id, hs.workspace_id, hs.pack_artifact_id, "
+        "hs.status, hs.last_activity_at "
+        "FROM handoff_session_tokens hst "
+        "JOIN handoff_sessions hs ON hs.id = hst.handoff_session_id "
+        "WHERE hst.token_hash = ? AND hst.revoked_at IS NULL",
+        (token_hash,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def refresh_session_activity(
+    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+) -> None:
+    conn.execute(
+        "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
+        (_now(), handoff_session_id),
+    )
+    if commit:
+        conn.commit()
 
 
 def create_submission_confirmation(

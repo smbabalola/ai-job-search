@@ -23,7 +23,8 @@
       "$ref": "#/$defs/nonEmptyString"
     },
     "source_url": {
-      "$ref": "#/$defs/nonEmptyString"
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Must be an absolute http/https URL with a non-empty hostname; enforced by product.job_ingestion.validate_job_source_record at runtime, not by this schema's own type constraint alone."
     },
     "captured_at": {
       "$ref": "#/$defs/nonEmptyString"

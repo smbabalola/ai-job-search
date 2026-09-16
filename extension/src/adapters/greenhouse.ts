@@ -1,4 +1,6 @@
-import type { Adapter, CandidateSnapshot, DetectedField, FieldDecision } from "./types";
+import type {
+  Adapter, AttachmentDocumentKind, CandidateSnapshot, DetectedField, FieldDecision,
+} from "./types";
 import { matchSafeCatalogFieldForAdapter } from "./safe-catalog";
 import { isLegalDeclarationField } from "./legal-patterns";
 
@@ -11,6 +13,29 @@ function labelFor(input: Element, document: Document): string {
     if (label) return label.textContent?.trim() ?? "";
   }
   return "";
+}
+
+// Real, verified Greenhouse application-form convention: a file input
+// labeled "Resume/CV" or "Resume" for cv, and "Cover Letter" for
+// cover_letter, inside #application_form. Returns null (never a guess)
+// when no such labeled file input exists — an ATS variant without this
+// exact convention simply has no positively-identified attachment
+// target, and attachment is skipped rather than attempted against an
+// unverified field.
+const CV_LABEL_PATTERN = /\bresume\b|\bcv\b/i;
+const COVER_LETTER_LABEL_PATTERN = /\bcover\s*letter\b/i;
+
+function findAttachmentTarget(
+  document: Document, kind: AttachmentDocumentKind,
+): HTMLInputElement | null {
+  const fileInputs = Array.from(
+    document.querySelectorAll<HTMLInputElement>('#application_form input[type="file"]'),
+  );
+  const pattern = kind === "cv" ? CV_LABEL_PATTERN : COVER_LETTER_LABEL_PATTERN;
+  for (const input of fileInputs) {
+    if (pattern.test(labelFor(input, document))) return input;
+  }
+  return null;
 }
 
 export const greenhouseAdapter: Adapter = {
@@ -94,4 +119,6 @@ export const greenhouseAdapter: Adapter = {
     }
     return null; // years_of_experience derivation is implemented in Task 15
   },
+
+  findAttachmentTarget,
 };

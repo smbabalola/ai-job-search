@@ -63,6 +63,37 @@ def test_create_job_from_source_record_creates_job_kind_workspace_only(tmp_path)
     conn.close()
 
 
+def test_create_job_from_source_record_threads_origin_into_snapshot_provenance(tmp_path):
+    conn = _conn(tmp_path)
+    result = create_job_from_source_record(
+        conn, company="Acme", title="Backend Engineer",
+        source_record={"schema_version": "job-source-record.v0", "source": "manual",
+                        "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
+                        "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42"},
+        source_record_origin="manual_entry",
+    )
+    assert (
+        result["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+        == "user_supplied"
+    )
+    conn.close()
+
+
+def test_create_job_from_source_record_defaults_origin_to_imported_source(tmp_path):
+    conn = _conn(tmp_path)
+    result = create_job_from_source_record(
+        conn, company="Acme", title="Backend Engineer",
+        source_record={"schema_version": "job-source-record.v0", "source": "manual",
+                        "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
+                        "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42"},
+    )
+    assert (
+        result["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
+        == "imported_source"
+    )
+    conn.close()
+
+
 def test_invalid_source_record_leaves_no_orphan_workspace(tmp_path):
     conn = _conn(tmp_path)
     with pytest.raises(PipelineError, match="job ingestion failed"):

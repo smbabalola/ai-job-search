@@ -2,16 +2,41 @@ import type { QueuedEvent } from "./event-queue";
 
 const BASE_URL = "http://127.0.0.1:8420";
 
+export interface DiscoveredSession {
+  id: string;
+  workspace_id: string;
+  pack_artifact_id: string;
+  target_domain: string;
+  status: string;
+  started_at: string;
+  last_activity_at: string;
+  [key: string]: unknown;
+}
+
 // The ONLY module that makes HTTP calls to the JobSearch server (design
 // spec Section 4 / Section 17 — content scripts never call this
 // directly, only through messages relayed by the background worker).
 export class ServerClient {
   constructor(private readonly getCredential: () => Promise<string | null>) {}
 
+  // Durable-credential authorization — used only for pairing exchange
+  // (implicitly, via no header at all) and the three extension-scoped
+  // routes that are the sole entry points into session identity:
+  // start, discover, resume (design spec Section 3.2 / Section 5.2).
+  // Every other session-scoped call uses sessionHeaders() below instead.
   private async headers(): Promise<Record<string, string>> {
     const credential = await this.getCredential();
     if (!credential) throw new Error("extension is not paired");
     return { "X-Handoff-Credential": credential, "Content-Type": "application/json" };
+  }
+
+  // Session-token authorization — used for every call scoped to a
+  // specific, already-identified handoff session. Never falls back to
+  // the durable credential: a stale/rotated session token must fail
+  // outright rather than silently re-authorizing via a different
+  // credential.
+  private sessionHeaders(sessionToken: string): Record<string, string> {
+    return { "X-Handoff-Session-Token": sessionToken, "Content-Type": "application/json" };
   }
 
   async exchangePairing(
@@ -33,7 +58,7 @@ export class ServerClient {
   async startSession(body: {
     workspaceId: string; packArtifactId: string; targetUrl: string;
     targetDomain: string; atsAdapterId: string; atsAdapterVersion: string;
-  }): Promise<{ id: string }> {
+  }): Promise<{ id: string; sessionToken: string }> {
     const response = await fetch(`${BASE_URL}/api/handoff/sessions`, {
       method: "POST", headers: await this.headers(),
       body: JSON.stringify({
@@ -43,14 +68,41 @@ export class ServerClient {
       }),
     });
     if (!response.ok) throw new Error(`failed to start handoff session: ${response.status}`);
-    return response.json();
+    const result = await response.json();
+    return { id: result.id, sessionToken: result.session_token };
   }
 
-  async sendEvent(event: QueuedEvent): Promise<boolean> {
+  // Metadata-only listing (design spec Section 5.2) — never returns a
+  // session token for any row. The caller is responsible for deciding
+  // which (if any) resumable candidate to actually resume; this method
+  // does no filtering or selection of its own.
+  async discoverSessions(workspaceId: string, targetDomain: string): Promise<DiscoveredSession[]> {
+    const params = new URLSearchParams({ workspace_id: workspaceId, target_domain: targetDomain });
+    const response = await fetch(`${BASE_URL}/api/handoff/sessions/discover?${params}`, {
+      method: "GET", headers: await this.headers(),
+    });
+    if (!response.ok) throw new Error(`failed to discover handoff sessions: ${response.status}`);
+    const result = await response.json();
+    return result.sessions;
+  }
+
+  // The only rotation path for an existing session's token (design spec
+  // Section 3.2) — authorized with the durable credential, exactly like
+  // startSession, never with a prior session token.
+  async resumeSession(sessionId: string): Promise<{ sessionToken: string }> {
+    const response = await fetch(`${BASE_URL}/api/handoff/sessions/${sessionId}/resume`, {
+      method: "POST", headers: await this.headers(),
+    });
+    if (!response.ok) throw new Error(`failed to resume handoff session: ${response.status}`);
+    const result = await response.json();
+    return { sessionToken: result.session_token };
+  }
+
+  async sendEvent(event: QueuedEvent, sessionToken: string): Promise<boolean> {
     const response = await fetch(
       `${BASE_URL}/api/handoff/sessions/${event.handoffSessionId}/events`,
       {
-        method: "POST", headers: await this.headers(),
+        method: "POST", headers: this.sessionHeaders(sessionToken),
         body: JSON.stringify({
           event_id: event.eventId, event_type: event.eventType,
           event_payload: event.eventPayload,
@@ -63,13 +115,34 @@ export class ServerClient {
     return response.ok;
   }
 
+  // Session-scoped, exact-pack-pinned candidate projection (design spec
+  // Section 7). Requests ONLY the given normalized field types — never a
+  // bulk "current profile" fetch — so the employer page only ever
+  // receives the minimum candidate data it actually needs. The server's
+  // own closed mapping (project_session_snapshot) additionally guarantees
+  // an unsupported/unmapped type releases no value even if requested.
+  async fetchSessionSnapshot(
+    handoffSessionId: string, normalizedFieldTypes: string[], sessionToken: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(
+      `${BASE_URL}/api/handoff/sessions/${handoffSessionId}/snapshot`,
+      {
+        method: "POST", headers: this.sessionHeaders(sessionToken),
+        body: JSON.stringify({ normalized_field_types: normalizedFieldTypes }),
+      },
+    );
+    if (!response.ok) throw new Error(`failed to fetch session snapshot: ${response.status}`);
+    const result = await response.json();
+    return result.snapshot;
+  }
+
   async confirmSubmission(
-    handoffSessionId: string, markWorkflowApplied: boolean,
+    handoffSessionId: string, markWorkflowApplied: boolean, sessionToken: string,
   ): Promise<unknown> {
     const response = await fetch(
       `${BASE_URL}/api/handoff/sessions/${handoffSessionId}/confirm-submission`,
       {
-        method: "POST", headers: await this.headers(),
+        method: "POST", headers: this.sessionHeaders(sessionToken),
         body: JSON.stringify({ mark_workflow_applied: markWorkflowApplied }),
       },
     );

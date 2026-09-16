@@ -21,6 +21,7 @@ from product.job_posting import (
     JOB_POSTING_SNAPSHOT_VERSION,
     REQUIREMENT_KINDS,
     JobPostingValidationError,
+    is_trustworthy_job_url,
     validate_job_posting_snapshot,
 )
 
@@ -51,6 +52,35 @@ EVIDENCE_ID_SEMANTICS = (
     "Deterministic content-derived identifiers from collection, exact text, and kind; "
     "not durable database identifiers."
 )
+SOURCE_URL_PROVENANCE_DISCOVERY_VERIFIED = "discovery_verified"
+SOURCE_URL_PROVENANCE_USER_SUPPLIED = "user_supplied"
+SOURCE_URL_PROVENANCE_IMPORTED_SOURCE = "imported_source"
+
+# normalize_job_source_record (this module) is shared by EVERY caller,
+# including the public manual/import intake boundary — so it must NEVER be
+# able to produce SOURCE_URL_PROVENANCE_DISCOVERY_VERIFIED. record["source"]
+# is caller-controlled data (a public JSON import can freely set
+# source: "freehire-search"), not proof of origin, so it is never consulted
+# for provenance here. discovery_verified is granted ONLY by
+# webapp.services.workspace_view.resolve_apply_target's own discovery-origin
+# branch, which requires a genuine application_workspace_origins row (in
+# turn only ever written by promote_discovery_candidate against a real
+# discovery_occurrence) — never by anything stored on a job_posting_snapshot
+# itself. This function's job_posting_snapshot output can therefore only
+# ever carry the two WEAK provenance values below.
+
+# Caller-supplied (server-trusted, never taken from the record body itself)
+# classification of where a source_record came from, used to pick the
+# source_url provenance. "manual_entry" and "manual_paste" are the two
+# Add-Job UI modes; "imported_json" is the supported-JSON-import mode; any
+# other/absent value is treated as the most conservative case
+# (imported_source) rather than assumed trustworthy.
+_ORIGIN_PROVENANCE = {
+    "manual_entry": SOURCE_URL_PROVENANCE_USER_SUPPLIED,
+    "manual_paste": SOURCE_URL_PROVENANCE_USER_SUPPLIED,
+    "imported_json": SOURCE_URL_PROVENANCE_IMPORTED_SOURCE,
+}
+
 FREEHIRE_ADAPTER_VERSION = "freehire-detail.v0"
 FREEHIRE_DESCRIPTION_PROVENANCE = (
     "Saved Freehire detail CLI description preserved exactly as emitted; the CLI may "
@@ -94,7 +124,6 @@ def validate_job_source_record(record: Any) -> None:
         _nonempty_string(record.get(field), f"$.{field}", errors)
     for field in (
         "source_record_id",
-        "source_url",
         "location",
         "employment_type",
         "description",
@@ -102,6 +131,13 @@ def validate_job_source_record(record: Any) -> None:
     ):
         if field in record:
             _nonempty_string(record.get(field), f"$.{field}", errors)
+    if "source_url" in record:
+        raw_url = record.get("source_url")
+        _nonempty_string(raw_url, "$.source_url", errors)
+        if isinstance(raw_url, str) and not is_trustworthy_job_url(raw_url.strip()):
+            errors.append(
+                "$.source_url: must be an absolute http/https URL with a hostname"
+            )
 
     for field in ("compensation", "metadata"):
         if field in record:
@@ -118,11 +154,28 @@ def validate_job_source_record(record: Any) -> None:
         raise JobIngestionValidationError(errors)
 
 
-def normalize_job_source_record(record: Any) -> dict[str, Any]:
-    """Normalize explicit source facts into a validated Job Posting Snapshot v0."""
+def normalize_job_source_record(
+    record: Any, *, source_record_origin: str | None = None,
+) -> dict[str, Any]:
+    """Normalize explicit source facts into a validated Job Posting Snapshot v0.
+
+    `source_record_origin` is a server-trusted classification of who/what
+    called this function (e.g. "manual_entry", "manual_paste",
+    "imported_json") — it is never read from `record` itself, so caller
+    JSON can never claim a stronger provenance than the boundary that
+    actually invoked ingestion granted it. Omit it (or pass an unrecognized
+    value) to get the most conservative default, imported_source. This
+    function can never produce discovery_verified provenance for any
+    caller, including the genuine discovery pipeline — that provenance is
+    granted only by webapp.services.workspace_view.resolve_apply_target's
+    own discovery-origin branch, which requires a real
+    application_workspace_origins row and never trusts anything stored on
+    the job_posting_snapshot itself."""
 
     validate_job_source_record(record)
     source_record = copy.deepcopy(record)
+    if "source_url" in source_record and isinstance(source_record["source_url"], str):
+        source_record["source_url"] = source_record["source_url"].strip()
     snapshot: dict[str, Any] = {
         "schema_version": JOB_POSTING_SNAPSHOT_VERSION,
         "job_id": _job_id(source_record),
@@ -145,7 +198,7 @@ def normalize_job_source_record(record: Any) -> dict[str, Any]:
         "logistics_requirements": _normalize_evidence_collection(
             source_record.get("logistics_requirements", []), "logistics_requirements"
         ),
-        "metadata": _snapshot_metadata(source_record),
+        "metadata": _snapshot_metadata(source_record, source_record_origin=source_record_origin),
     }
     for field in (
         "source_url",
@@ -367,7 +420,16 @@ def _job_id(record: dict[str, Any]) -> str:
     return f"jobsrc_{digest}"
 
 
-def _snapshot_metadata(record: dict[str, Any]) -> dict[str, Any]:
+def _source_url_provenance(source_record_origin: str | None) -> str:
+    # Deliberately ignores record["source"] entirely — see the module-level
+    # comment above _ORIGIN_PROVENANCE for why. Only ever returns a WEAK
+    # provenance value; discovery_verified is never producible here.
+    return _ORIGIN_PROVENANCE.get(source_record_origin, SOURCE_URL_PROVENANCE_IMPORTED_SOURCE)
+
+
+def _snapshot_metadata(
+    record: dict[str, Any], *, source_record_origin: str | None = None,
+) -> dict[str, Any]:
     ingestion = {
         "source_record_schema_version": record["schema_version"],
         "empty_evidence_semantics": EMPTY_EVIDENCE_SEMANTICS,
@@ -379,6 +441,13 @@ def _snapshot_metadata(record: dict[str, Any]) -> dict[str, Any]:
     }
     if "source_record_id" in record:
         ingestion["source_record_id"] = record["source_record_id"]
+    # Computed strictly server-side from the record's own (adapter-owned)
+    # `source` value and the caller-trusted source_record_origin — never
+    # read from record["metadata"], so imported/manual JSON can never
+    # self-assert a stronger provenance than the boundary that actually
+    # invoked ingestion granted it.
+    if "source_url" in record:
+        ingestion["source_url_provenance"] = _source_url_provenance(source_record_origin)
     output = {"ingestion": ingestion}
     if "metadata" in record:
         output["source_metadata"] = copy.deepcopy(record["metadata"])

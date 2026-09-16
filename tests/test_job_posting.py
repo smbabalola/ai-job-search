@@ -13,6 +13,7 @@ from product.job_posting import (
     JOB_POSTING_SNAPSHOT_VERSION,
     REQUIREMENT_KINDS,
     JobPostingValidationError,
+    is_trustworthy_job_url,
     job_snapshot_content_id,
     validate_job_posting_snapshot,
 )
@@ -84,6 +85,53 @@ for name in ('product.job_fit', 'product.profile_snapshot', 'product.extensions'
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+
+class JobPostingSourceUrlTests(unittest.TestCase):
+    def snapshot(self) -> dict:
+        return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    def test_is_trustworthy_job_url_accepts_https(self):
+        self.assertTrue(is_trustworthy_job_url("https://boards.example.com/jobs/42"))
+
+    def test_is_trustworthy_job_url_accepts_http(self):
+        self.assertTrue(is_trustworthy_job_url("http://boards.example.com/jobs/42"))
+
+    def test_is_trustworthy_job_url_rejects_relative_url(self):
+        self.assertFalse(is_trustworthy_job_url("/jobs/42"))
+
+    def test_is_trustworthy_job_url_rejects_hostname_less_url(self):
+        self.assertFalse(is_trustworthy_job_url("https:///jobs/42"))
+
+    def test_is_trustworthy_job_url_rejects_unsupported_scheme(self):
+        self.assertFalse(is_trustworthy_job_url("ftp://boards.example.com/jobs/42"))
+
+    def test_is_trustworthy_job_url_rejects_malformed_url(self):
+        self.assertFalse(is_trustworthy_job_url("not a url"))
+
+    def test_is_trustworthy_job_url_preserves_query_and_fragment(self):
+        url = "https://boards.example.com/jobs/42?ref=abc#section"
+        self.assertTrue(is_trustworthy_job_url(url))
+
+    def test_valid_snapshot_with_source_url_is_accepted(self):
+        snapshot = self.snapshot()
+        snapshot["source_url"] = "https://boards.example.com/jobs/42"
+        validate_job_posting_snapshot(snapshot)
+
+    def test_malformed_snapshot_source_url_is_rejected(self):
+        snapshot = self.snapshot()
+        snapshot["source_url"] = "not a url"
+        with self.assertRaises(JobPostingValidationError) as context:
+            validate_job_posting_snapshot(snapshot)
+        self.assertTrue(
+            any("source_url" in error for error in context.exception.errors)
+        )
+
+    def test_relative_snapshot_source_url_is_rejected(self):
+        snapshot = self.snapshot()
+        snapshot["source_url"] = "/jobs/42"
+        with self.assertRaises(JobPostingValidationError):
+            validate_job_posting_snapshot(snapshot)
 
 
 if __name__ == "__main__":

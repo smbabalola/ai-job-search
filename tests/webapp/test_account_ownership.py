@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from webapp.app import create_app
 from webapp.api.dependencies import get_account_scope
-from webapp.api.handoff import get_extension_scope
+from webapp.api.handoff import get_extension_scope, get_session_scope
 from webapp.config import Settings
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID, create_account
 from webapp.persistence.artifacts import save_artifact
@@ -38,11 +38,15 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
         # real security boundary than account/extension scope.
         "/api/handoff/pairing/exchange",
     }
-    # Two legitimate account-scoping mechanisms exist: get_account_scope
-    # (webapp session) and get_extension_scope (X-Handoff-Credential header,
-    # for routes reached by a browser extension with no webapp session).
-    # Either one satisfies the "resolves account scope" invariant.
-    scoping_dependencies = {get_account_scope, get_extension_scope}
+    # Three legitimate account-scoping mechanisms exist: get_account_scope
+    # (webapp session), get_extension_scope (X-Handoff-Credential header,
+    # for routes reached by a browser extension with no webapp session
+    # before any per-session token exists — session start/discover/
+    # resume), and get_session_scope (X-Handoff-Session-Token, for
+    # in-session traffic once a handoff session exists — events, replay,
+    # confirm-submission). Any one satisfies the "resolves account scope"
+    # invariant.
+    scoping_dependencies = {get_account_scope, get_extension_scope, get_session_scope}
 
     unscoped = []
     for route in app.routes:
@@ -132,6 +136,7 @@ def _create_application(client: TestClient) -> dict:
             "company": "Shared Employer",
             "title": "Platform Engineer",
             "source_record": _source_record(),
+            "source_record_origin": "manual_entry",
         },
     )
     assert response.status_code == 201

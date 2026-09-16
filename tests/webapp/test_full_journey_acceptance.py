@@ -86,6 +86,7 @@ def _create_workspace(client: TestClient) -> str:
             "company": "München Evidence Labs",
             "title": "Data Engineer",
             "source_record": source_record(),
+            "source_record_origin": "manual_entry",
         },
     )
     assert response.status_code == 201, response.text

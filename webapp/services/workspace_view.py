@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from product.job_ingestion import (
+    SOURCE_URL_PROVENANCE_DISCOVERY_VERIFIED,
+    SOURCE_URL_PROVENANCE_IMPORTED_SOURCE,
+    SOURCE_URL_PROVENANCE_USER_SUPPLIED,
+)
+from product.job_posting import is_trustworthy_job_url
 from product.application_material_contract import (
     COMPLETION_CONTRACT_VERSION,
     INSUFFICIENT_COVER_LETTER_PARAGRAPHS,
@@ -534,12 +541,101 @@ def build_profile_view_model(
     }
 
 
+@dataclass(frozen=True)
+class ApplyTarget:
+    """A resolved Apply-with-extension destination plus the trust class it
+    was resolved under. Interactive, user-initiated Apply is fine with any
+    of the three provenance values below (the user explicitly supplied or
+    confirmed the destination and explicitly clicks Apply) — this type
+    exists so a FUTURE unattended/autopilot caller can require a stronger
+    provenance before navigating/acting on its own, without this module
+    losing the information needed to enforce that."""
+
+    url: str
+    provenance: str  # one of SOURCE_URL_PROVENANCE_*
+
+
+def _discovery_origin_url(conn: sqlite3.Connection, *, workspace_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT do.source_url FROM application_workspace_origins awo "
+        "JOIN discovery_occurrences do "
+        "ON do.id = awo.discovery_occurrence_id "
+        "AND do.search_workspace_id = awo.search_workspace_id "
+        "WHERE awo.application_workspace_id = ?",
+        (workspace_id,),
+    ).fetchone()
+    return row["source_url"] if row else None
+
+
+def _snapshot_url_and_provenance(
+    conn: sqlite3.Connection, *, workspace_id: str,
+) -> tuple[str | None, str | None]:
+    artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
+    if artifact is None:
+        return None, None
+    payload = artifact["payload"]
+    url = payload.get("source_url")
+    provenance = payload.get("metadata", {}).get("ingestion", {}).get("source_url_provenance")
+    return url, provenance
+
+
+def resolve_apply_target(
+    conn: sqlite3.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+) -> ApplyTarget | None:
+    """The one trustworthy Apply-with-extension destination for this exact
+    workspace, with the provenance it was resolved under, or None if
+    neither source has a valid one — never derived from company/title/
+    job-description text or any heuristic, and never a fallback to an
+    unrelated candidate's URL (design spec Section 5.1). Requires account
+    ownership of the workspace first, matching every other workspace-scoped
+    read in this module.
+
+    Precedence (never blended, first valid match wins):
+      1. discovery-origin URL via application_workspace_origins —
+         authoritative, server-verified; a manual/imported source_url on
+         the SAME workspace is never consulted once this exists.
+      2. the workspace's own current job_posting_snapshot.source_url,
+         server-classified as user_supplied or imported_source at
+         ingestion time (never trusted from the record body itself — see
+         product.job_ingestion._snapshot_metadata).
+      3. no target.
+    """
+    require_job_workspace(conn, workspace_id, account_id=account_id)
+
+    discovery_url = _discovery_origin_url(conn, workspace_id=workspace_id)
+    if discovery_url and is_trustworthy_job_url(discovery_url):
+        return ApplyTarget(url=discovery_url, provenance=SOURCE_URL_PROVENANCE_DISCOVERY_VERIFIED)
+
+    snapshot_url, provenance = _snapshot_url_and_provenance(conn, workspace_id=workspace_id)
+    if (
+        snapshot_url
+        and is_trustworthy_job_url(snapshot_url)
+        and provenance in (SOURCE_URL_PROVENANCE_USER_SUPPLIED, SOURCE_URL_PROVENANCE_IMPORTED_SOURCE)
+    ):
+        return ApplyTarget(url=snapshot_url, provenance=provenance)
+
+    return None
+
+
+def resolve_apply_target_url(
+    conn: sqlite3.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+) -> str | None:
+    """Bare-URL convenience wrapper over resolve_apply_target, kept for the
+    existing callers (e.g. the workspace_detail.html template's
+    data-target-url attribute) that only ever needed the URL itself."""
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=account_id)
+    return target.url if target else None
+
+
 def build_workspace_view_model(
     conn: sqlite3.Connection, workspace_id: str, *, extensions_dir: Path | None = None,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     workspace = require_job_workspace(
         conn, workspace_id, account_id=account_id
+    )
+    apply_target_url = resolve_apply_target_url(
+        conn, workspace_id=workspace_id, account_id=account_id,
     )
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     artifacts = {
@@ -832,11 +928,25 @@ def build_workspace_view_model(
         "readiness_answer": readiness_answer,
         "readiness_problem": readiness_problem,
         "document_finalization": document_finalization,
+        "apply_target_url": apply_target_url,
         "controls": {
             "can_understand": bool(artifacts["job"]),
             "can_fit": understanding_state == "complete" and profile_ready,
             "can_intelligence": fit_state in {"complete", "needs_review"},
             "can_confirm_pack": review_state == "current" and has_reviewed_usable_material,
+            # "Apply with extension" additionally requires the workspace
+            # not already be past the point of applying (workflow_status
+            # None or "drafted" — the same pre-"applied" boundary the
+            # existing Status panel's own "Mark applied" control already
+            # uses). Not itself a condition in the accepted design spec's
+            # Section 5.1 (which only requires a confirmed pack + a
+            # trustworthy URL); added because presenting an actionable
+            # "apply" launch for a workspace already marked applied would
+            # misrepresent an already-submitted application as still
+            # pending. The template still requires stages.review.artifact
+            # and apply_target_url on top of this for the button to be
+            # enabled.
+            "can_apply_with_extension": workspace["workflow_status"] in (None, "drafted"),
         },
     }
 
