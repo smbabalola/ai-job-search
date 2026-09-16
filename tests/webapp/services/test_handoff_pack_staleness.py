@@ -29,6 +29,8 @@ from webapp.services.handoff import (
     HandoffPackStale,
     HandoffSessionNotActive,
     confirm_handoff_submission,
+    mint_session_token,
+    resolve_session_scope,
     start_handoff_session,
 )
 from webapp.services.ownership import AccountScope, account_profile_root
@@ -47,11 +49,12 @@ def _default_scope(tmp_path):
 
 
 def _start_session_for_pack(conn, tmp_path, workspace_id, pack_artifact_id):
-    # This reconstructed Phase-4C-only candidate predates the session-token
-    # authorization work (excluded, unrelated stream): confirm_handoff_
-    # submission still takes the plain AccountScope every other handoff
-    # entry point uses, not a token-derived SessionScope. Session identity
-    # is therefore just the same scope used to start the session.
+    # confirm_handoff_submission requires a token-derived SessionScope (see
+    # webapp/services/handoff.py::_require_owned_session), not the plain
+    # AccountScope used to start the session — mint and resolve a real
+    # token here, matching how the API layer obtains one via
+    # get_session_scope (tests/webapp/services/test_handoff.py's own
+    # _session_scope helper does the same).
     scope = _default_scope(tmp_path)
     session = start_handoff_session(
         conn, scope, workspace_id=workspace_id, pack_artifact_id=pack_artifact_id,
@@ -59,7 +62,9 @@ def _start_session_for_pack(conn, tmp_path, workspace_id, pack_artifact_id):
         target_domain="boards.greenhouse.io", ats_adapter_id="greenhouse",
         ats_adapter_version="greenhouse@1",
     )
-    return session, scope
+    token = mint_session_token(conn, handoff_session_id=session["id"])
+    session_scope = resolve_session_scope(conn, raw_token=token)
+    return session, session_scope
 
 
 def _row_counts(conn, session_id):
