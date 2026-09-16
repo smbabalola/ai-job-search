@@ -183,6 +183,17 @@ def _seed(conn, workspace_id, *, profile=None, fit=None, units=None, unsupported
             conn, artifact_id=bundle["id"], upstream_artifact_type=upstream_type,
             upstream_content_id=upstream["content_id"],
         )
+    # resolved_blocker_answers (Phase 4C): DEPENDENCY_TYPES["job_fit_request"]
+    # now requires this fingerprint (webapp/services/staleness.py). This
+    # fixture hand-builds artifacts without going through run_job_fit, so it
+    # must save its own (empty-bundle -- this fixture isn't testing blocker-
+    # answer behavior) resolved_blocker_answers artifact and fingerprint it,
+    # exactly like every other artifact type here.
+    resolved_blocker_answers = save_artifact(
+        conn, workspace_id=workspace_id, artifact_type="resolved_blocker_answers",
+        payload={"schema_version": "resolved_blocker_answers.v1", "workspace_id": workspace_id, "answers": []},
+        content_id="blockeranswers_A",
+    )
     fit_request = save_artifact(
         conn, workspace_id=workspace_id, artifact_type="job_fit_request",
         payload={"active_extensions": [], "semantic_proposals": {}}, content_id="jobfitreq_A",
@@ -190,6 +201,7 @@ def _seed(conn, workspace_id, *, profile=None, fit=None, units=None, unsupported
     for upstream_type, upstream_id in (
         ("profile_snapshot", profile_artifact["content_id"]),
         ("resolved_job_evidence", bundle["content_id"]),
+        ("resolved_blocker_answers", resolved_blocker_answers["content_id"]),
         ("server:active_extensions", active_extensions_identity([])),
         ("server:evaluation_policy", evaluation_policy_identity()),
         ("server:semantic_fit_policy", semantic_fit_policy_identity()),
@@ -485,7 +497,14 @@ def test_explicit_omission_is_excluded_and_preserved_in_audit(tmp_path):
     ]
     assert pack["review_record"]["exclusions"][0]["domain_item_id"] == "cv_1"
     assert pack["review_record"]["exclusions"][0]["source_artifact_id"] == intelligence["id"]
-    assert decision in pack["review_record"]["decisions_consulted"]
+    # The pack's decisions_consulted[] entries are projected to the closed
+    # v1 review-decision field set (application_pack_contract.py); a raw
+    # review_decisions row may carry additional columns (e.g. Phase 3's
+    # resolved_by/policy_decision_id) that never appear in the pack, so
+    # compare by id rather than exact dict equality.
+    assert decision["id"] in {
+        entry["id"] for entry in pack["review_record"]["decisions_consulted"]
+    }
 
 
 def test_gate4_does_not_persist_or_draft_an_incomplete_pack(tmp_path):

@@ -23,6 +23,10 @@ APPLICATION_DOCUMENTS_MIGRATION_ID = "004_application_documents"
 HANDOFF_SESSIONS_MIGRATION_ID = "005_handoff_sessions"
 ONBOARDING_WALKTHROUGHS_MIGRATION_ID = "006_onboarding_walkthroughs"
 PAIRING_SECRETS_MIGRATION_ID = "007_pairing_secrets"
+POLICY_DECISIONS_MIGRATION_ID = "010_policy_decisions"
+APPLICATION_BLOCKERS_MIGRATION_ID = "011_application_blockers"
+BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID = "012_blocker_resolution_history"
+SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
 
 
 def _now() -> str:
@@ -51,6 +55,10 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (HANDOFF_SESSIONS_MIGRATION_ID, _migrate_handoff_sessions, False),
         (ONBOARDING_WALKTHROUGHS_MIGRATION_ID, _migrate_onboarding_walkthroughs, False),
         (PAIRING_SECRETS_MIGRATION_ID, _migrate_pairing_secrets, False),
+        (POLICY_DECISIONS_MIGRATION_ID, _migrate_policy_decisions, False),
+        (APPLICATION_BLOCKERS_MIGRATION_ID, _migrate_application_blockers, False),
+        (BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID, _migrate_blocker_resolution_history, False),
+        (SEMANTIC_SUBJECT_KEY_MIGRATION_ID, _migrate_semantic_subject_key, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -316,6 +324,269 @@ def _migrate_pairing_secrets(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX idx_pairing_secrets_hash ON pairing_secrets(secret_hash);
         """,
+    )
+
+
+def _migrate_policy_decisions(conn: sqlite3.Connection) -> None:
+    # Durable, append-only ledger of every automatic (or future human)
+    # classification product/application_decision_policy.py produces for a
+    # review item, keyed to the exact source artifact and policy version
+    # that produced it. Rows are never updated or deleted: when an upstream
+    # artifact reruns, decisions tied to the old artifact_id remain
+    # permanently queryable as audit history -- selecting which decision
+    # currently governs a workspace's workflow state is Phase 4 read
+    # logic, not something this table itself decides.
+    #
+    # subject_key is deliberately NOT NULL (unlike review_decisions.
+    # domain_item_id, which is nullable): a stage-level decision with no
+    # natural per-item identity must still supply a stable literal (e.g.
+    # "stage") rather than NULL, because SQLite's UNIQUE constraint permits
+    # unlimited rows sharing a NULL in an indexed column -- a NULLable
+    # subject_key would silently defeat the idempotency guarantee below.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE policy_decisions (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            stage TEXT NOT NULL CHECK (
+                stage IN ('understanding', 'fit', 'application_intelligence', 'content')
+            ),
+            source_artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+            review_item_type TEXT NOT NULL,
+            subject_key TEXT NOT NULL,
+            domain_item_id TEXT,
+            outcome TEXT NOT NULL CHECK (
+                outcome IN (
+                    'AUTO_PROCEED', 'AUTO_PROCEED_WITH_GAPS', 'AUTO_OMIT',
+                    'AUTO_REJECT', 'REQUIRE_USER', 'NOT_APPLICABLE'
+                )
+            ),
+            policy_version TEXT NOT NULL,
+            policy_fingerprint TEXT NOT NULL,
+            evidence_ids TEXT NOT NULL,
+            supported_facts TEXT NOT NULL,
+            recorded_gaps TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            confidence TEXT,
+            blocking INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+            created_at TEXT NOT NULL,
+            UNIQUE (
+                workspace_id, stage, source_artifact_id, review_item_type,
+                subject_key, policy_fingerprint
+            )
+        );
+
+        CREATE INDEX idx_policy_decisions_workspace_artifact
+            ON policy_decisions(workspace_id, source_artifact_id);
+        """,
+    )
+    conn.execute(
+        "CREATE TRIGGER policy_decisions_immutable_update "
+        "BEFORE UPDATE ON policy_decisions "
+        "BEGIN SELECT RAISE(ABORT, 'policy decisions are immutable, append-only audit history'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER policy_decisions_immutable_delete "
+        "BEFORE DELETE ON policy_decisions "
+        "BEGIN SELECT RAISE(ABORT, 'policy decisions are immutable, append-only audit history'); END"
+    )
+    # Additive-only: existing review_decisions rows remain valid with both
+    # new columns NULL (interpreted as "resolved by a human, before this
+    # column existed" -- no backfill, no reinterpretation of historical
+    # rows).
+    conn.execute("ALTER TABLE review_decisions ADD COLUMN resolved_by TEXT")
+    conn.execute(
+        "ALTER TABLE review_decisions ADD COLUMN policy_decision_id "
+        "TEXT REFERENCES policy_decisions(id)"
+    )
+
+
+def _migrate_application_blockers(conn: sqlite3.Connection) -> None:
+    # A REQUIRE_USER policy decision pauses an application; it is not a
+    # failure. Three separate, deliberately non-overlapping concepts:
+    #   policy_decisions (010)  -- immutable explanation of why policy
+    #                              stopped. Never mutated by this migration
+    #                              or anything built on top of it.
+    #   application_blockers    -- the current actionable question created
+    #                              from a governing REQUIRE_USER decision.
+    #   blocker_resolutions     -- what the user answered, with an explicit,
+    #                              never-silently-widened reuse scope.
+    #
+    # application_blockers.policy_decision_id is UNIQUE: this is the
+    # idempotency key. save_policy_decision is itself idempotent (a retry
+    # returns the same policy_decision id), so a blocker keyed 1:1 on that
+    # id is automatically idempotent too -- no separate applicability
+    # tuple needs reinventing here.
+    #
+    # "Superseded" is deliberately NOT a column value this migration
+    # writes. Whether a blocker still governs is derived at read time by
+    # comparing its source_artifact_id against the workspace's current
+    # artifact for that stage (see
+    # webapp/services/decision_policy.py::current_application_blockers) --
+    # re-running an upstream stage produces a new policy decision, and
+    # therefore a new, separate blocker row, while the old row is left
+    # completely alone as permanent audit history. status only ever
+    # transitions open -> resolved, driven by an actual user answer.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE application_blockers (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            policy_decision_id TEXT NOT NULL UNIQUE REFERENCES policy_decisions(id),
+            source_artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+            stage TEXT NOT NULL CHECK (
+                stage IN ('understanding', 'fit', 'application_intelligence', 'content')
+            ),
+            blocker_type TEXT NOT NULL,
+            subject_key TEXT NOT NULL,
+            question TEXT NOT NULL,
+            context TEXT NOT NULL,
+            resume_stage TEXT NOT NULL CHECK (
+                resume_stage IN ('understanding', 'fit', 'application_intelligence', 'content')
+            ),
+            allowed_scopes TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'superseded')) DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        );
+
+        CREATE INDEX idx_application_blockers_workspace
+            ON application_blockers(workspace_id, status);
+        CREATE INDEX idx_application_blockers_source_artifact
+            ON application_blockers(source_artifact_id);
+
+        CREATE TABLE blocker_resolutions (
+            id TEXT PRIMARY KEY,
+            blocker_id TEXT NOT NULL UNIQUE REFERENCES application_blockers(id),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            policy_decision_id TEXT NOT NULL REFERENCES policy_decisions(id),
+            answer_value TEXT NOT NULL,
+            answer_scope TEXT NOT NULL CHECK (
+                answer_scope IN ('APPLICATION_ONLY', 'SEARCH_WORKSPACE', 'CANDIDATE_FACT')
+            ),
+            resolved_by TEXT NOT NULL,
+            promoted_evidence_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_blocker_resolutions_workspace
+            ON blocker_resolutions(workspace_id);
+        """,
+    )
+    conn.execute(
+        "CREATE TRIGGER application_blockers_status_immutable_once_resolved "
+        "BEFORE UPDATE OF question, context, policy_decision_id, source_artifact_id, "
+        "created_at ON application_blockers "
+        "BEGIN SELECT RAISE(ABORT, 'application blocker identity fields are immutable'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER application_blockers_no_delete "
+        "BEFORE DELETE ON application_blockers "
+        "BEGIN SELECT RAISE(ABORT, 'application blockers are permanent audit history'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER blocker_resolutions_immutable_update "
+        "BEFORE UPDATE ON blocker_resolutions "
+        "BEGIN SELECT RAISE(ABORT, 'blocker resolutions are immutable, append-only audit history'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER blocker_resolutions_no_delete "
+        "BEFORE DELETE ON blocker_resolutions "
+        "BEGIN SELECT RAISE(ABORT, 'blocker resolutions are permanent audit history'); END"
+    )
+
+
+def _migrate_blocker_resolution_history(conn: sqlite3.Connection) -> None:
+    # Corrective pass on 011: blocker_resolutions.blocker_id was UNIQUE,
+    # permitting exactly one lifetime answer per blocker. A user must be
+    # able to correct an answer (e.g. "$55,000" -> "$58,000") before
+    # resuming, without destroying the original answer's audit trail.
+    #
+    # Rebuilt without that UNIQUE constraint: multiple resolution rows may
+    # now exist for one blocker_id, each still fully immutable and
+    # append-only (the existing update/delete triggers are recreated
+    # as-is). A new request_id column plus UNIQUE(blocker_id, request_id)
+    # is the idempotency key instead -- a retried resolve request with the
+    # same request_id is a safe no-op; a genuinely new correction (a new
+    # request_id) always creates a new row. The EFFECTIVE resolution for a
+    # blocker is derived, not stored: the most recently created row for
+    # that blocker_id (see
+    # webapp.persistence.application_blockers.get_effective_resolution).
+    # This mirrors how "governing" is already derived elsewhere in this
+    # design (current_policy_decisions, current_application_blockers)
+    # rather than reinventing a second, stored notion of "current".
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE blocker_resolutions_new (
+            id TEXT PRIMARY KEY,
+            blocker_id TEXT NOT NULL REFERENCES application_blockers(id),
+            request_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            policy_decision_id TEXT NOT NULL REFERENCES policy_decisions(id),
+            answer_value TEXT NOT NULL,
+            answer_scope TEXT NOT NULL CHECK (
+                answer_scope IN ('APPLICATION_ONLY', 'SEARCH_WORKSPACE', 'CANDIDATE_FACT')
+            ),
+            resolved_by TEXT NOT NULL,
+            promoted_evidence_id TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE (blocker_id, request_id)
+        );
+
+        INSERT INTO blocker_resolutions_new
+            (id, blocker_id, request_id, workspace_id, policy_decision_id, answer_value,
+             answer_scope, resolved_by, promoted_evidence_id, created_at)
+        SELECT id, blocker_id, id, workspace_id, policy_decision_id, answer_value,
+               answer_scope, resolved_by, promoted_evidence_id, created_at
+        FROM blocker_resolutions;
+
+        DROP TABLE blocker_resolutions;
+        ALTER TABLE blocker_resolutions_new RENAME TO blocker_resolutions;
+
+        CREATE INDEX idx_blocker_resolutions_workspace
+            ON blocker_resolutions(workspace_id);
+        CREATE INDEX idx_blocker_resolutions_blocker_created
+            ON blocker_resolutions(blocker_id, created_at);
+        """,
+    )
+    conn.execute(
+        "CREATE TRIGGER blocker_resolutions_immutable_update "
+        "BEFORE UPDATE ON blocker_resolutions "
+        "BEGIN SELECT RAISE(ABORT, 'blocker resolutions are immutable, append-only audit history'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER blocker_resolutions_no_delete "
+        "BEFORE DELETE ON blocker_resolutions "
+        "BEGIN SELECT RAISE(ABORT, 'blocker resolutions are permanent audit history'); END"
+    )
+    # application_blockers.status already allows 'superseded' (011's
+    # CHECK constraint); this migration adds no new column there. What
+    # changes is behavioral, at the service layer: a successful upstream
+    # rerun now actively marks prior-artifact open blockers superseded at
+    # the mutation boundary (see
+    # webapp.services.decision_policy.execute_job_fit_policy), rather than
+    # leaving them physically 'open' forever while only being excluded
+    # from governing queries by artifact comparison.
+    conn.execute(
+        "ALTER TABLE application_blockers ADD COLUMN superseded_at TEXT"
+    )
+
+
+def _migrate_semantic_subject_key(conn: sqlite3.Connection) -> None:
+    # Phase 4C spec §3: a nullable classification of WHICH stable,
+    # cross-application-reusable candidate fact a gate blocker is about
+    # (drawn from product/semantic_subject_registry.py's closed
+    # vocabulary), distinct from the existing subject_key (which is
+    # artifact-instance-scoped and never meaningfully comparable across
+    # two different applications' own Job Fit artifacts). NULL means
+    # "never eligible for cross-application reuse via this mechanism" --
+    # legacy rows stay NULL forever; there is no backfill.
+    conn.execute(
+        "ALTER TABLE application_blockers ADD COLUMN semantic_subject_key TEXT"
     )
 
 

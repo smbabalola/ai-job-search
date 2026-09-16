@@ -31,6 +31,11 @@ from webapp.services.extension_registry import (
     list_installed_extensions,
     resolve_active_extensions,
 )
+from webapp.services.decision_policy import (
+    execute_application_intelligence_policy,
+    execute_job_fit_policy,
+    execute_understanding_policy,
+)
 from webapp.services.pipeline import (
     PipelineError,
     create_job_from_source_record,
@@ -38,6 +43,7 @@ from webapp.services.pipeline import (
     run_job_fit,
     run_job_understanding,
 )
+from webapp.services.staleness import check_staleness
 
 
 class JobWorkspaceNotFound(LookupError):
@@ -122,10 +128,20 @@ def understand_job(
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
-    return _preserve_current_artifacts(
+    artifact = _preserve_current_artifacts(
         conn, workspace_id,
         lambda: run_job_understanding(conn, workspace_id, provider, request_id=request_id),
     )
+    # Policy execution runs only after the artifact is durably current --
+    # never from a GET path, never from workspace_view.py. A failure here
+    # must not silently swallow a real product exception, but it also must
+    # never be allowed to leave the newly-current artifact half-classified
+    # without a clear signal; see execute_understanding_policy's own
+    # docstring for why this currently persists nothing.
+    execute_understanding_policy(
+        conn, workspace_id=workspace_id, understanding_artifact=artifact,
+    )
+    return artifact
 
 
 def fit_job(
@@ -138,7 +154,7 @@ def fit_job(
         extensions = resolve_active_extensions(extensions_dir, extension_ids)
     except ExtensionRegistryError as exc:
         raise PipelineError(str(exc)) from exc
-    return _preserve_current_artifacts(
+    artifact = _preserve_current_artifacts(
         conn, workspace_id,
         lambda: run_job_fit(
             conn, workspace_id, semantic_adapter, request_id=request_id,
@@ -146,6 +162,8 @@ def fit_job(
             account_id=account_id,
         ),
     )
+    execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=artifact)
+    return artifact
 
 
 def generate_application_intelligence(
@@ -153,13 +171,17 @@ def generate_application_intelligence(
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
-    return _preserve_current_artifacts(
+    artifact = _preserve_current_artifacts(
         conn, workspace_id,
         lambda: run_application_intelligence(
             conn, workspace_id, provider, request_id=request_id,
             account_id=account_id,
         ),
     )
+    execute_application_intelligence_policy(
+        conn, workspace_id=workspace_id, intelligence_artifact=artifact,
+    )
+    return artifact
 
 
 def record_review_decision(
@@ -305,6 +327,7 @@ def render_job_application_pack_document(
 def change_job_status(
     conn: sqlite3.Connection, workspace_id: str, *, new_status: str,
     effective_date: str, note: str | None,
+    extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     if new_status == "drafted":
@@ -321,6 +344,28 @@ def change_job_status(
         if new_status == "applied":
             current_pack = get_current_artifact(conn, workspace_id, "application_pack")
             submitted_pack_id = current_pack["id"] if current_pack else None
+            # Phase 4C spec §15's required invariant: an already-confirmed
+            # but unsubmitted pack must not remain usable for 'applied' once
+            # its job_fit_result basis has gone stale (e.g. a corrected
+            # blocker answer that changed resolved_blocker_answers/
+            # job_fit_result without a pack reconfirmation). Checked here,
+            # in the services layer, rather than inside
+            # webapp/persistence/workflow.py's record_status_change: no
+            # module under webapp/persistence ever imports from
+            # webapp/services in this codebase (the same layering rule
+            # commit 947f5d7 already enforced one layer up, "product/ must
+            # never depend on webapp/"), and check_staleness is a
+            # webapp.services module.
+            staleness = check_staleness(
+                conn, workspace_id, "application_pack",
+                extensions_dir=extensions_dir, account_id=account_id,
+            )
+            if staleness["stale"]:
+                raise PipelineError(
+                    "cannot mark applied: the confirmed application pack is stale relative "
+                    "to its current basis (" + "; ".join(staleness["reasons"]) + ") — "
+                    "reconfirm a new pack via Gate 4 before submitting"
+                )
         record_status_change(
             conn, workspace_id=workspace_id, new_status=new_status,
             effective_date=effective_date, note=note,

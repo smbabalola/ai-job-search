@@ -5,6 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
+from product.application_decision_policy import evaluate_gate_assessment
 from product.job_understanding import build_job_understanding_request, extract_job_understanding
 from product.job_understanding_providers import DeterministicFakeProvider
 from product.semantic_job_fit import (
@@ -466,6 +467,146 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertEqual(statuses["location_logistics"], "UNVERIFIED")
         self.assertFalse(result["blocked"])
 
+    def test_absent_gate_evidence_has_absent_disposition(self):
+        """No profile evidence at all for a gate -- evidence_disposition
+        must be ABSENT (safe to auto-omit later), not INSUFFICIENT (which
+        is reserved for evidence that was present but never vetted)."""
+        req = semantic_request(profile=profile_snapshot())
+        for gate in req["semantic_proposals"]["gates"]:
+            gate["profile_evidence_ids"] = []
+
+        result = analyze_semantic_job_fit(req)
+
+        by_id = {item["gate_id"]: item for item in result["gate_assessments"]}
+        for gate_id in ("eligibility", "language", "location_logistics"):
+            self.assertEqual(by_id[gate_id]["evidence_disposition"], "ABSENT")
+
+    def test_supportive_gate_evidence_has_supportive_disposition(self):
+        """A gate that reaches PASS with real, validated profile evidence
+        must carry evidence_disposition SUPPORTIVE."""
+        result = analyze_semantic_job_fit(semantic_request())
+
+        eligibility = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "eligibility"
+        )
+        self.assertEqual(eligibility["status"], "PASS")
+        self.assertEqual(eligibility["evidence_disposition"], "SUPPORTIVE")
+
+    def test_gate_materiality_reflects_this_postings_evidence_kind_not_mere_category_presence(self):
+        """materiality is derived from THIS posting's own resolved job
+        evidence -- specifically from each item's kind (required/preferred/
+        informational/unknown), never from mere category presence and
+        never from a static per-gate-type default. The default fixture's
+        job posting states eligibility ("must already have the right to
+        work", kind=required) and location_logistics ("Hybrid role...",
+        kind=required) as MATERIAL, but its language requirement is
+        literally "German would be an advantage" with kind=preferred --
+        an explicitly optional/nice-to-have requirement, which must
+        resolve NON_MATERIAL. Category presence alone (the pre-fix
+        behavior) would have wrongly marked all three MATERIAL, silently
+        collapsing "required" and "preferred" into the same outcome."""
+        result = analyze_semantic_job_fit(semantic_request())
+
+        materialities = {
+            item["gate_id"]: item["materiality"] for item in result["gate_assessments"]
+        }
+        self.assertEqual(materialities["eligibility"], "MATERIAL")
+        self.assertEqual(materialities["language"], "NON_MATERIAL")
+        self.assertEqual(materialities["location_logistics"], "MATERIAL")
+
+    def test_required_language_requirement_is_material_not_the_gate_type(self):
+        """Proves materiality is not secretly keyed off gate_id=="language":
+        when the posting's own extracted language-requirement item has its
+        kind changed from "preferred" to "required" (same quote text,
+        "German would be an advantage" -- only the extracted kind
+        differs), the language gate must resolve MATERIAL. If the
+        implementation depended on gate_id rather than the item's own
+        kind, this would incorrectly still read NON_MATERIAL regardless
+        of what kind Understanding actually extracted."""
+        job = job_snapshot()
+        candidate = ready_candidate()
+        for item in candidate["items"]:
+            if item["category"] == "language_requirements":
+                item["kind"] = "required"
+        understanding_request, understanding_result = understanding_pair(job, candidate)
+        bundle = build_resolved_job_evidence_bundle(job, understanding_request, understanding_result)
+        proposals = proposals_for_full_fit(bundle)
+
+        result = analyze_semantic_job_fit(
+            semantic_request(job=job, bundle=bundle, proposals=proposals)
+        )
+
+        language = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "language"
+        )
+        self.assertEqual(language["materiality"], "MATERIAL")
+
+    def test_preferred_language_with_no_candidate_evidence_auto_omits_end_to_end(self):
+        """Closes the loop the materiality audit was concerned about:
+        semantic_job_fit.py's real (kind=preferred) language requirement,
+        with no candidate language evidence supplied at all, must flow
+        through application_decision_policy.evaluate_gate_assessment to
+        AUTO_OMIT -- proving the full pipeline, not just each module in
+        isolation, treats a genuinely optional posting requirement as safe
+        to omit rather than escalating it needlessly to the candidate."""
+        req = semantic_request()
+        for gate in req["semantic_proposals"]["gates"]:
+            if gate["gate_id"] == "language":
+                gate["profile_evidence_ids"] = []
+
+        result = analyze_semantic_job_fit(req)
+
+        language = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "language"
+        )
+        self.assertEqual(language["materiality"], "NON_MATERIAL")
+        self.assertEqual(language["evidence_disposition"], "ABSENT")
+
+        decision = evaluate_gate_assessment(language)
+        self.assertEqual(decision.outcome, "AUTO_OMIT")
+
+    def test_gate_materiality_is_not_applicable_when_posting_has_no_category_evidence(self):
+        """A posting whose resolved job evidence never mentions a given
+        gate's category (here: no eligibility_requirements items at all)
+        must resolve that gate's materiality to NOT_APPLICABLE, regardless
+        of the gate's own status. Evidence is removed at the resolved
+        job-evidence-bundle level (after building the base proposals,
+        which key off the unmodified bundle) rather than from the
+        Understanding candidate, since removing it earlier would break
+        the shared proposals_for_full_fit() helper's own lookups."""
+        job = job_snapshot()
+        understanding_request, understanding_result = understanding_pair(job)
+        bundle = build_resolved_job_evidence_bundle(job, understanding_request, understanding_result)
+        proposals = proposals_for_full_fit(bundle)
+
+        bundle_without_eligibility = copy.deepcopy(bundle)
+        bundle_without_eligibility["evidence"] = [
+            item for item in bundle_without_eligibility["evidence"]
+            if item["category"] != "eligibility_requirements"
+        ]
+        bundle_without_eligibility["summary"]["evidence_count"] = len(
+            bundle_without_eligibility["evidence"]
+        )
+        proposals_without_eligibility = copy.deepcopy(proposals)
+        proposals_without_eligibility["gates"] = [
+            gate for gate in proposals_without_eligibility["gates"]
+            if gate["gate_id"] != "eligibility"
+        ]
+
+        result = analyze_semantic_job_fit(
+            semantic_request(
+                job=job,
+                bundle=bundle_without_eligibility,
+                proposals=proposals_without_eligibility,
+            )
+        )
+
+        eligibility = next(
+            item for item in result["gate_assessments"] if item["gate_id"] == "eligibility"
+        )
+        self.assertEqual(eligibility["materiality"], "NOT_APPLICABLE")
+        self.assertEqual(eligibility["evidence_disposition"], "ABSENT")
+
     def test_gate_provenance_preserves_only_the_adjudicated_job_refs(self):
         job = job_snapshot()
         candidate = ready_candidate()
@@ -539,6 +680,16 @@ class SemanticJobFitTests(unittest.TestCase):
         eligibility = next(item for item in result["gate_assessments"] if item["gate_id"] == "eligibility")
         self.assertEqual(eligibility["status"], "FAIL")
         self.assertEqual(eligibility["profile_evidence_ids"], ["clm_4444444444444444"])
+        # Phase 4C ENGINE_VERSION v2 fix: a FAIL supported by profile
+        # evidence ALONE (no resolved-answer citation) is SUPPORTIVE, not
+        # CONFLICTING -- CONFLICTING is reserved for a genuine cross-
+        # source disagreement the semantic adapter explicitly asserts via
+        # cross_source_relation="CONFLICTING" (see
+        # tests/product/test_cross_source_relation_integration.py). This
+        # test predates that field entirely and never cites a resolved
+        # answer, so there is nothing here for profile evidence to
+        # disagree with.
+        self.assertEqual(eligibility["evidence_disposition"], "SUPPORTIVE")
         self.assertTrue(result["blocked"])
         self.assertEqual(result["blocking_gate_ids"], ["eligibility"])
         self.assertIsNone(result["overall_score"])
@@ -642,6 +793,45 @@ class SemanticJobFitTests(unittest.TestCase):
         self.assertIsNone(technical["score"])
         self.assertEqual(len(technical["job_evidence_ids"]), 2)
         self.assertNotIn("technical_skills", result["dimension_scores"])
+        # job_evidence_ids keeps its pre-existing meaning: all relevant
+        # job ids, matched or not (both the matched and the unmatched
+        # requirement land in it). It must NOT be repurposed to mean only
+        # the matched subset -- existing consumers depend on that.
+        self.assertEqual(len(technical["job_evidence_ids"]), 2)
+        self.assertEqual(len(technical["matched_job_requirement_ids"]), 1)
+        self.assertEqual(len(technical["unmatched_job_requirement_ids"]), 1)
+        # matched + unmatched must together reconstruct job_evidence_ids,
+        # and the two id sets must never overlap.
+        self.assertEqual(
+            set(technical["matched_job_requirement_ids"])
+            | set(technical["unmatched_job_requirement_ids"]),
+            set(technical["job_evidence_ids"]),
+        )
+        self.assertFalse(
+            set(technical["matched_job_requirement_ids"])
+            & set(technical["unmatched_job_requirement_ids"])
+        )
+        self.assertTrue(technical["supporting_profile_evidence_ids"])
+        # The unmatched requirement id must never appear among the
+        # supporting profile evidence -- these are different identifier
+        # namespaces (job requirement ids vs. profile claim ids) and are
+        # never compared against one another.
+        for unmatched_id in technical["unmatched_job_requirement_ids"]:
+            self.assertNotIn(unmatched_id, technical["supporting_profile_evidence_ids"])
+
+    def test_behavioral_and_career_dimensions_have_no_matched_or_unmatched_ids(self):
+        """behavioral_fit / career_alignment have no job_categories wired
+        in the semantic fit policy, so relevant_job_ids is always empty --
+        matched and unmatched must both be empty lists, not fabricated."""
+        result = analyze_semantic_job_fit(semantic_request())
+
+        by_id = {item["dimension_id"]: item for item in result["dimension_assessments"]}
+        for dimension_id in ("behavioral_fit", "career_alignment"):
+            item = by_id[dimension_id]
+            self.assertEqual(item["job_evidence_ids"], [])
+            self.assertEqual(item["matched_job_requirement_ids"], [])
+            self.assertEqual(item["unmatched_job_requirement_ids"], [])
+            self.assertEqual(item["supporting_profile_evidence_ids"], [])
 
     def test_fully_resolved_case_produces_deterministic_weighted_score_and_verdict(self):
         req = semantic_request(semantic_policy=fully_scoring_policy())

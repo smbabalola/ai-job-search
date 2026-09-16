@@ -47,8 +47,10 @@ from product.profile_snapshot import SnapshotValidationError, validate_snapshot
 
 MODULE_DIR = Path(__file__).parent
 SCHEMA_PATH = MODULE_DIR / "schemas" / "job-fit-contract.v1.schema.json"
+SCHEMA_V2_PATH = MODULE_DIR / "schemas" / "job-fit-contract.v2.schema.json"
 POLICY_PATH = MODULE_DIR / "semantic_fit_policy.v0.json"
 SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+SCHEMA_V2 = json.loads(SCHEMA_V2_PATH.read_text(encoding="utf-8"))
 DEFAULT_SEMANTIC_POLICY = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
 RESOLVED_JOB_EVIDENCE_BUNDLE_VERSION = SCHEMA["$defs"][
@@ -56,6 +58,8 @@ RESOLVED_JOB_EVIDENCE_BUNDLE_VERSION = SCHEMA["$defs"][
 ]["const"]
 JOB_FIT_REQUEST_VERSION_V1 = SCHEMA["$defs"]["jobFitRequestVersion"]["const"]
 JOB_FIT_RESULT_VERSION_V1 = SCHEMA["$defs"]["jobFitResultVersion"]["const"]
+JOB_FIT_REQUEST_VERSION_V2 = SCHEMA_V2["$defs"]["jobFitRequestVersionV2"]["const"]
+JOB_FIT_RESULT_VERSION_V2 = SCHEMA_V2["$defs"]["jobFitResultVersionV2"]["const"]
 SEMANTIC_FIT_POLICY_VERSION = SCHEMA["$defs"]["semanticFitPolicyVersion"]["const"]
 ID_RE = re.compile(SCHEMA["$defs"]["id"]["pattern"])
 MATCH_CLASSIFICATIONS = tuple(SCHEMA["$defs"]["matchClassification"]["enum"])
@@ -317,11 +321,22 @@ def build_semantic_job_fit_request(
     semantic_fit_policy: dict[str, Any] | None = None,
     user_intent: dict[str, Any] | None = None,
     semantic_proposals: dict[str, Any] | None = None,
+    resolved_blocker_answers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build and validate one Job Fit v1 request."""
+    """Build and validate one Job Fit request. job-fit-contract.v2 is used
+    whenever resolved_blocker_answers is supplied; v1 (job-fit-request.v1)
+    otherwise, byte-for-byte unchanged from before Phase 4C (Phase 4C spec
+    §6). All NEW callers (webapp/services/pipeline.py's run_job_fit)
+    always pass resolved_blocker_answers, even an empty bundle -- v1
+    remains reachable only for historical-artifact reading, never for a
+    newly constructed request.
+    """
 
     request = {
-        "schema_version": JOB_FIT_REQUEST_VERSION_V1,
+        "schema_version": (
+            JOB_FIT_REQUEST_VERSION_V2 if resolved_blocker_answers is not None
+            else JOB_FIT_REQUEST_VERSION_V1
+        ),
         "request_id": request_id,
         "profile_snapshot": copy.deepcopy(profile_snapshot),
         "job_snapshot": copy.deepcopy(job_snapshot),
@@ -332,12 +347,16 @@ def build_semantic_job_fit_request(
         "user_intent": copy.deepcopy(user_intent or {"intent": "evaluate_with_transferability"}),
         "semantic_proposals": copy.deepcopy(semantic_proposals or {"matches": [], "gates": []}),
     }
+    if resolved_blocker_answers is not None:
+        request["resolved_blocker_answers"] = copy.deepcopy(resolved_blocker_answers)
     validate_semantic_job_fit_request(request)
     return request
 
 
 def validate_semantic_job_fit_request(request: Any) -> None:
     errors: list[str] = []
+    schema_version = request.get("schema_version") if isinstance(request, dict) else None
+    is_v2 = schema_version == JOB_FIT_REQUEST_VERSION_V2
     required = {
         "schema_version",
         "request_id",
@@ -350,14 +369,18 @@ def validate_semantic_job_fit_request(request: Any) -> None:
         "user_intent",
         "semantic_proposals",
     }
+    if is_v2:
+        required = required | {"resolved_blocker_answers"}
     if not _object_shape(request, required, required, "$", errors):
         raise SemanticJobFitValidationError(errors)
-    if request.get("schema_version") != JOB_FIT_REQUEST_VERSION_V1:
+    if request.get("schema_version") not in (JOB_FIT_REQUEST_VERSION_V1, JOB_FIT_REQUEST_VERSION_V2):
         errors.append("$.schema_version: unsupported job fit request version")
     _id(request.get("request_id"), "$.request_id", errors)
     _validate_embedded_contracts(request, errors)
     _validate_user_intent(request.get("user_intent"), errors)
     _validate_semantic_proposals_shape(request.get("semantic_proposals"), errors)
+    if is_v2:
+        _validate_resolved_blocker_answers_shape(request.get("resolved_blocker_answers"), errors)
     if errors:
         raise SemanticJobFitValidationError(errors)
 
@@ -412,7 +435,10 @@ def analyze_semantic_job_fit(request: dict[str, Any]) -> dict[str, Any]:
             ) from exc
 
     result = {
-        "schema_version": JOB_FIT_RESULT_VERSION_V1,
+        "schema_version": (
+            JOB_FIT_RESULT_VERSION_V2 if request["schema_version"] == JOB_FIT_REQUEST_VERSION_V2
+            else JOB_FIT_RESULT_VERSION_V1
+        ),
         "request_id": request["request_id"],
         "profile_snapshot": _profile_identity(request["profile_snapshot"]),
         "job_snapshot": _job_identity(request["job_snapshot"]),
@@ -474,7 +500,11 @@ def validate_semantic_job_fit_result(request: dict[str, Any], result: Any) -> No
     }
     if not _object_shape(result, required, required, "$.result", errors):
         raise SemanticJobFitValidationError(errors)
-    if result.get("schema_version") != JOB_FIT_RESULT_VERSION_V1:
+    expected_result_version = (
+        JOB_FIT_RESULT_VERSION_V2 if request["schema_version"] == JOB_FIT_REQUEST_VERSION_V2
+        else JOB_FIT_RESULT_VERSION_V1
+    )
+    if result.get("schema_version") != expected_result_version:
         errors.append("$.result.schema_version: unsupported job fit result version")
     if result.get("request_id") != request["request_id"]:
         errors.append("$.result.request_id: must match request")
@@ -610,6 +640,48 @@ def _adjudicate_one_match(
     return base
 
 
+GATE_EVIDENCE_DISPOSITIONS = ("SUPPORTIVE", "CONFLICTING", "ABSENT", "INSUFFICIENT")
+GATE_MATERIALITY_VALUES = ("MATERIAL", "NON_MATERIAL", "NOT_APPLICABLE")
+
+# Phase 4C: the explicit semantic judgment a gate proposal supplies about
+# whether its cited profile_evidence_ids and resolved_answer_ids agree or
+# disagree. This is the semantic adapter's OWN call (spec Sec9: "the actual
+# agree/disagree call... is made by the semantic adapter's proposal") --
+# the deterministic layer (_build_gate_assessments) only reads this value,
+# never infers it from citation-list shape, evidence_disposition, or reason
+# text. ALIGNED/CONFLICTING apply only when both source types are cited;
+# NOT_APPLICABLE is the correct value whenever at most one source type is
+# cited (nothing to compare), and is also the field's absence-equivalent
+# for a proposal that predates this field entirely.
+CROSS_SOURCE_RELATIONS = ("ALIGNED", "CONFLICTING", "NOT_APPLICABLE")
+
+
+def _target_semantic_subject_key(category_items: list[dict[str, Any]]) -> str | None:
+    """Classify THIS gate's own requirement text into a
+    product/semantic_subject_registry.py key, or None (Phase 4C spec §8
+    point 4). category_items is the same job-evidence-filtered-by-category
+    list _build_gate_assessments already computes for materiality -- reused
+    here rather than re-derived, so this helper adds no new resolution path.
+
+    Imports product.semantic_subject_registry.classify_semantic_subject --
+    a same-layer, product-to-product import. product/semantic_job_fit.py
+    must never import webapp/ (product/ is the domain layer, webapp/ is
+    the orchestration layer; dependencies flow only webapp -> product,
+    never the reverse) -- classify_semantic_subject previously lived in
+    webapp/services/decision_policy.py and was reached via a
+    function-local import, which avoided a circular *import error* but
+    was still an architectural layering violation. It now lives in
+    product/semantic_subject_registry.py (a corrective follow-up fix),
+    the shared product-level module both this module and
+    webapp/services/decision_policy.py depend on.
+    """
+
+    from product.semantic_subject_registry import classify_semantic_subject
+
+    texts = [item["text"] for item in category_items]
+    return classify_semantic_subject("gate_flag", texts)
+
+
 def _build_gate_assessments(
     request: dict[str, Any],
     context: dict[str, Any],
@@ -626,38 +698,138 @@ def _build_gate_assessments(
         reason = "No affirmative candidate evidence was supplied for this gate."
         adjudicated_job_ids: list[str] = []
         profile_ids: list[str] = []
+        validated_resolved_answer_ids: list[str] = []
+        # evidence_disposition records, for downstream policy, whether the
+        # profile_evidence_ids on this assessment were actually validated
+        # as supporting (or disqualifying) a verdict, or merely survived
+        # _supportive_profile_claims while the surrounding proposal never
+        # reached a proceed/fail conclusion. profile_ids being non-empty
+        # is NOT sufficient evidence of support on its own -- see each
+        # branch below for the specific reason.
+        disposition = "ABSENT"
+        # materiality distinguishes three states this posting can be in
+        # for this gate's evidence category -- derived per assessment from
+        # the posting's own resolved job evidence, never from a static
+        # per-gate-type default (a posting can make "language" material
+        # just as easily as "eligibility", and vice versa):
+        #
+        #   MATERIAL      -- an item in this category has kind "required"
+        #                     (e.g. "German required"), OR the category
+        #                     has items but none with kind "required" or
+        #                     "preferred" (e.g. only "informational"/
+        #                     "unknown" -- an explicit applicable mention
+        #                     whose optionality cannot be established).
+        #                     Conservative per design: never assume
+        #                     something applicable is safe to treat as
+        #                     optional without an explicit signal.
+        #   NON_MATERIAL  -- every item in this category has kind
+        #                     "preferred" and none has kind "required"
+        #                     (e.g. "French preferred") -- upstream data
+        #                     explicitly establishes optional status.
+        #   NOT_APPLICABLE -- zero items in this category at all (e.g. no
+        #                     language requirement anywhere in the posting).
+        category_items = [
+            item for item in context["job_evidence"].values()
+            if item.get("category") == category
+        ]
+        category_kinds = {item.get("kind") for item in category_items}
+        if not category_items:
+            materiality = "NOT_APPLICABLE"
+        elif "required" in category_kinds:
+            materiality = "MATERIAL"
+        elif category_kinds and category_kinds <= {"preferred"}:
+            materiality = "NON_MATERIAL"
+        else:
+            # Only "informational"/"unknown" kinds present (or a mix that
+            # never includes "required") -- applicable, but optionality is
+            # not established. Conservative default: MATERIAL.
+            materiality = "MATERIAL"
         if proposal is not None:
             adjudicated_job_ids, invalid_job_refs = _adjudicate_gate_job_refs(
                 proposal["job_evidence_ids"], category, context
             )
             supportive, rejected = _supportive_profile_claims(proposal.get("profile_evidence_ids", []), context)
             profile_ids = [claim["id"] for claim in supportive]
+            # Resolved-answer citations are a NEW SOURCE of supporting
+            # evidence, validated independently of profile_evidence_ids
+            # (Phase 4C spec §7/§8) -- never merged into profile_ids, never
+            # a new evidence_disposition value. `has_supporting_evidence`
+            # extends the existing supportive-profile-claims check
+            # additively: a validated resolved answer is sufficient on its
+            # own to support a PASS/FAIL/FLAG conclusion, exactly like
+            # spec §9's table requires, without needing corroborating
+            # profile evidence.
+            target_semantic_subject_key = _target_semantic_subject_key(category_items)
+            raw_resolved_answer_ids = proposal.get("resolved_answer_ids", [])
+            validated_resolved_answer_ids = [
+                resolution_id for resolution_id in raw_resolved_answer_ids
+                if validate_resolved_answer_citation(
+                    resolution_id,
+                    request.get("resolved_blocker_answers") or {"answers": []},
+                    blocker_type="gate_flag",
+                    subject_key=f"gate:{gate_id}",
+                    target_semantic_subject_key=target_semantic_subject_key,
+                    target_job_evidence_ids=proposal["job_evidence_ids"],
+                )
+            ]
+            has_supporting_evidence = bool(supportive) or bool(validated_resolved_answer_ids)
             if invalid_job_refs or not adjudicated_job_ids:
                 status = "UNVERIFIED"
                 reason = (
                     "Gate evidence is missing, unknown, or outside the configured "
                     f"{category} category."
                 )
+                # The job-side link was never established, so any
+                # profile_ids present here were never vetted toward a
+                # verdict -- present-but-unvetted, not proof of support.
+                disposition = "INSUFFICIENT" if profile_ids else "ABSENT"
             elif proposal["status"] == "FAIL":
-                if supportive:
+                if has_supporting_evidence:
                     status = "FAIL"
                     reason = proposal["reason"]
+                    # Phase 4C (ENGINE_VERSION v2 fix): CONFLICTING is set
+                    # ONLY when the adapter's own cross_source_relation
+                    # explicitly says the two source types disagree -- read
+                    # verbatim, never inferred from which citation lists
+                    # happen to be non-empty (spec Sec9: the agree/disagree
+                    # call belongs to the adapter). A FAIL supported by
+                    # resolved-answer evidence alone, profile evidence
+                    # alone, or both sources explicitly ALIGNED is an
+                    # ordinary trustworthy FAIL -- SUPPORTIVE, same as
+                    # before Phase 4C touched this branch at all. Only a
+                    # proposal that explicitly asserts CONFLICTING (which
+                    # _validate_semantic_proposals_shape only accepts
+                    # alongside both citation types actually being present)
+                    # produces the genuine cross-source-disagreement
+                    # disposition.
+                    disposition = (
+                        "CONFLICTING"
+                        if proposal.get("cross_source_relation") == "CONFLICTING"
+                        else "SUPPORTIVE"
+                    )
                 else:
                     status = "UNVERIFIED"
                     reason = "FAIL requires affirmative job and profile incompatibility evidence."
+                    disposition = "ABSENT"
             elif proposal["status"] in {"PASS", "FLAG"}:
-                if supportive:
+                if has_supporting_evidence:
                     status = proposal["status"]
                     reason = proposal["reason"]
+                    disposition = "SUPPORTIVE"
                 else:
                     status = "UNVERIFIED"
                     reason = f"{proposal['status']} requires non-placeholder, non-conflicted profile evidence."
+                    disposition = "ABSENT"
             elif proposal["status"] == "NOT_APPLICABLE":
                 status = "UNVERIFIED"
                 reason = "NOT_APPLICABLE is not inferred automatically in Ticket 7."
+                # The proposal explicitly declined to assert proceed/fail,
+                # so any profile_ids present were never vetted either way.
+                disposition = "INSUFFICIENT" if profile_ids else "ABSENT"
             else:
                 status = "UNVERIFIED"
                 reason = proposal["reason"]
+                disposition = "INSUFFICIENT" if profile_ids else "ABSENT"
             if rejected:
                 reason = f"{reason} Some supplied profile evidence is placeholder or conflicted."
         assessments.append(
@@ -667,6 +839,9 @@ def _build_gate_assessments(
                 "reason": reason,
                 "job_evidence_ids": adjudicated_job_ids,
                 "profile_evidence_ids": profile_ids,
+                "resolved_answer_ids": validated_resolved_answer_ids,
+                "evidence_disposition": disposition,
+                "materiality": materiality,
             }
         )
     return assessments
@@ -679,12 +854,14 @@ def _build_dimension_assessments(
     gate_assessments: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     positive_by_job: dict[str, str] = {}
+    profile_evidence_by_job: dict[str, list[str]] = {}
     for collection in ("direct_matches", "functionally_equivalent_matches", "transferable_matches"):
         for match in accepted[collection]:
             if match["status"] != "READY":
                 continue
             for job_id in match["job_requirement_ids"]:
                 positive_by_job[job_id] = match["classification"]
+                profile_evidence_by_job[job_id] = match["profile_evidence_ids"]
     assessments: list[dict[str, Any]] = []
     scores: dict[str, float] = {}
     for rule in request["semantic_fit_policy"]["dimension_rules"]:
@@ -706,10 +883,23 @@ def _build_dimension_assessments(
                     None,
                     [],
                     [],
+                    matched_job_ids=[],
+                    unmatched_job_ids=[],
+                    supporting_profile_evidence_ids=[],
                 )
             )
             continue
         matched_job_ids = [job_id for job_id in relevant_job_ids if job_id in positive_by_job]
+        unmatched_job_ids = [
+            job_id for job_id in relevant_job_ids if job_id not in positive_by_job
+        ]
+        supporting_profile_evidence_ids = sorted(
+            {
+                profile_id
+                for job_id in matched_job_ids
+                for profile_id in profile_evidence_by_job.get(job_id, [])
+            }
+        )
         coverage_ratio = Decimal(len(matched_job_ids)) / Decimal(len(relevant_job_ids))
         minimum_ratio = Decimal(str(coverage["minimum_ratio_for_ready"]))
         classifications = [positive_by_job[job_id] for job_id in matched_job_ids]
@@ -732,6 +922,9 @@ def _build_dimension_assessments(
                     None,
                     sorted(set(classifications), key=_precedence),
                     relevant_job_ids,
+                    matched_job_ids=matched_job_ids,
+                    unmatched_job_ids=unmatched_job_ids,
+                    supporting_profile_evidence_ids=supporting_profile_evidence_ids,
                 )
             )
             continue
@@ -746,6 +939,9 @@ def _build_dimension_assessments(
                 score,
                 sorted(set(classifications), key=_precedence),
                 relevant_job_ids,
+                matched_job_ids=matched_job_ids,
+                unmatched_job_ids=unmatched_job_ids,
+                supporting_profile_evidence_ids=supporting_profile_evidence_ids,
             )
         )
         scores[dimension_id] = score
@@ -818,13 +1014,61 @@ def _validate_semantic_proposals_shape(value: Any, errors: list[str]) -> None:
             _validate_extension_ref_shape(match.get("extension_ref"), f"{path}.extension_ref", errors)
     for index, gate in enumerate(_list(value.get("gates"), "$.semantic_proposals.gates", errors)):
         path = f"$.semantic_proposals.gates[{index}]"
-        if not _object_shape(gate, {"gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids"}, {"gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids"}, path, errors):
+        required_gate_fields = {"gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids"}
+        allowed_gate_fields = required_gate_fields | {"resolved_answer_ids", "cross_source_relation"}
+        if not _object_shape(gate, required_gate_fields, allowed_gate_fields, path, errors):
             continue
         _enum(gate.get("gate_id"), set(GATE_IDS), f"{path}.gate_id", errors)
         _enum(gate.get("status"), GATE_STATUSES, f"{path}.status", errors)
         _nonempty_string(gate.get("reason"), f"{path}.reason", errors)
         _string_list(gate.get("job_evidence_ids"), f"{path}.job_evidence_ids", errors)
-        _string_list(gate.get("profile_evidence_ids"), f"{path}.profile_evidence_ids", errors)
+        profile_evidence_ids = _string_list(gate.get("profile_evidence_ids"), f"{path}.profile_evidence_ids", errors)
+        resolved_answer_ids = []
+        if "resolved_answer_ids" in gate:
+            resolved_answer_ids = _string_list(gate.get("resolved_answer_ids"), f"{path}.resolved_answer_ids", errors)
+        if "cross_source_relation" in gate:
+            _enum(gate.get("cross_source_relation"), set(CROSS_SOURCE_RELATIONS), f"{path}.cross_source_relation", errors)
+        # Phase 4C: when a FAIL proposal cites evidence from BOTH sources,
+        # it must explicitly state whether they agree or disagree --
+        # cross_source_relation may not be silently absent in that case.
+        # Fails safely here, before _build_gate_assessments ever runs,
+        # rather than letting the deterministic layer guess from citation
+        # shape alone (spec Sec9's agree/disagree call belongs to the
+        # adapter, not to an inferred default). Scoped to status=="FAIL"
+        # only: _build_gate_assessments' PASS/FLAG branch never consults
+        # cross_source_relation at all (a PASS/FLAG proposal citing both
+        # sources has nothing ambiguous to resolve -- both are simply
+        # additional supporting evidence for the same non-FAIL verdict),
+        # so requiring the field there would reject long-standing,
+        # pre-Phase-4C-fix proposal shapes for no behavioral reason.
+        if (
+            gate.get("status") == "FAIL"
+            and profile_evidence_ids and resolved_answer_ids
+            and "cross_source_relation" not in gate
+        ):
+            errors.append(
+                f"{path}.cross_source_relation: required on a FAIL proposal when both "
+                "profile_evidence_ids and resolved_answer_ids are cited"
+            )
+
+
+def _validate_resolved_blocker_answers_shape(value: Any, errors: list[str]) -> None:
+    # Phase 4C spec §6/§18: strict-shape validation of the
+    # resolved_blocker_answers.v1 payload embedded inline in a v2 request,
+    # analogous to the existing request-shape validators. This checks
+    # shape only (the three required keys) -- it is not a re-derivation of
+    # webapp/services/resolved_blocker_answers.py's bundle-construction
+    # rules, which remain the sole authority on bundle *content*.
+    if not _object_shape(
+        value,
+        {"schema_version", "workspace_id", "answers"},
+        {"schema_version", "workspace_id", "answers"},
+        "$.resolved_blocker_answers",
+        errors,
+    ):
+        return
+    _nonempty_string(value.get("workspace_id"), "$.resolved_blocker_answers.workspace_id", errors)
+    _list(value.get("answers"), "$.resolved_blocker_answers.answers", errors)
 
 
 def _context(request: dict[str, Any]) -> dict[str, Any]:
@@ -852,6 +1096,100 @@ def _context(request: dict[str, Any]) -> dict[str, Any]:
         ),
         "user_intent": request["user_intent"]["intent"],
     }
+
+
+def validate_resolved_answer_citation(
+    resolution_id: str,
+    bundle: dict[str, Any],
+    *,
+    blocker_type: str,
+    subject_key: str,
+    target_semantic_subject_key: str | None,
+    target_job_evidence_ids: list[str],
+) -> bool:
+    """Whether a proposal's cited resolved_answer_ids entry is trustworthy
+    for THIS gate assessment (Phase 4C spec §8). Pure dict/string logic --
+    no I/O, no sqlite, no webapp import. Never raises; an invalid citation
+    is discarded by the caller (_build_gate_assessments), not a validation
+    error that fails the run.
+
+    Rules (corrective refinement -- see the note on matched_scope_source
+    below for why this no longer branches on that field alone):
+      1. resolution_id must be present in bundle["answers"]. Presence IS
+         the effectiveness/applicability guarantee -- Task 6's bundle
+         builder already only ever includes the single effective,
+         applicable resolution per subject, so there is no separate
+         staleness/effectiveness check to perform here.
+      2. Own-workspace answers are valid only if the bundle entry's
+         subject_key exactly string-equals the citing gate's own
+         subject_key. No semantic-subject check is needed or performed.
+         An entry is "own-workspace" when entry["source_workspace_id"]
+         equals bundle["workspace_id"] -- NOT when matched_scope_source is
+         APPLICATION_ONLY/CANDIDATE_FACT. matched_scope_source alone is an
+         unreliable discriminator: webapp/services/resolved_blocker_answers
+         .py's tier 1 (this workspace's own effective answer, spec §5
+         point 3's correction) echoes the resolution's own answer_scope
+         verbatim into matched_scope_source, and answer_scope legitimately
+         can be "SEARCH_WORKSPACE" for an own-workspace answer (the user is
+         free to choose that scope even though tier 1, not tier 2,
+         supplies it for this workspace's own bundle). So
+         matched_scope_source == "SEARCH_WORKSPACE" does NOT reliably mean
+         "a genuine sibling's answer" -- source_workspace_id vs.
+         bundle["workspace_id"] is the only unambiguous signal.
+      3. Cross-workspace answers (source_workspace_id != bundle's own
+         workspace_id -- in practice always tier 2's SEARCH_WORKSPACE
+         lookup, the only cross-workspace source Task 5/6 ever produce)
+         are valid only if the bundle entry's semantic_subject_key is
+         non-None, the target's own classified semantic_subject_key is
+         non-None, and the two are exactly equal. No fallback if the
+         citing gate itself doesn't classify to any semantic subject.
+      4. A CANDIDATE_FACT- or SEARCH_WORKSPACE-scoped answer_scope on an
+         own-workspace (tier-1) entry is handled entirely by rule 2, never
+         rule 3 -- find_semantic_subject_match's own workspace-exclusion
+         guard (webapp/services/decision_policy.py) guarantees a
+         cross-workspace entry is always a genuine sibling's row, never
+         this workspace's own, so only a genuinely different
+         source_workspace_id ever reaches the semantic-subject branch.
+      5. target_job_evidence_ids is accepted for interface completeness
+         (spec §8 point 4's "cited job evidence carries the same semantic
+         subject" requirement); the caller is responsible for deriving
+         target_semantic_subject_key from that same job evidence before
+         calling this function, so this function's own check is purely
+         the subject-key/semantic-subject comparison above, not a second
+         independent re-derivation from target_job_evidence_ids.
+
+    Backward compatibility: a bundle entry lacking "source_workspace_id"
+    (e.g. a hand-built test fixture, or in principle an old bundle payload
+    predating this field) falls back to the pre-existing matched_scope_source
+    heuristic (APPLICATION_ONLY/CANDIDATE_FACT => own-workspace), preserving
+    prior behavior for callers that don't supply the new field.
+    """
+
+    entry = next(
+        (answer for answer in bundle.get("answers", []) if answer.get("resolution_id") == resolution_id),
+        None,
+    )
+    if entry is None:
+        return False  # not in the supplied bundle at all -- rule 1
+
+    if "source_workspace_id" in entry:
+        is_own_workspace = entry.get("source_workspace_id") == bundle.get("workspace_id")
+    else:
+        # Backward-compat fallback for bundles/fixtures without the field.
+        is_own_workspace = entry.get("matched_scope_source") in ("APPLICATION_ONLY", "CANDIDATE_FACT")
+
+    if is_own_workspace:
+        # Own-application answers: strict, exact subject_key match only.
+        return entry.get("subject_key") == subject_key
+
+    # Cross-application: SEARCH_WORKSPACE only in Phase 4C. Semantic-subject
+    # equality only -- subject_key is not meaningful across applications.
+    if target_semantic_subject_key is None:
+        return False
+    entry_semantic_subject_key = entry.get("semantic_subject_key")
+    if entry_semantic_subject_key is None:
+        return False
+    return entry_semantic_subject_key == target_semantic_subject_key
 
 
 def _supportive_profile_claims(
@@ -992,7 +1330,17 @@ def _dimension(
     score: Any,
     classifications: list[str],
     job_ids: list[str],
+    *,
+    matched_job_ids: list[str],
+    unmatched_job_ids: list[str],
+    supporting_profile_evidence_ids: list[str],
 ) -> dict[str, Any]:
+    # job_evidence_ids keeps its existing, unchanged meaning: every
+    # relevant job requirement/responsibility id for this dimension,
+    # matched or not. Existing consumers must not see that meaning
+    # change. matched_job_requirement_ids / unmatched_job_requirement_ids
+    # / supporting_profile_evidence_ids are new, additive fields carrying
+    # the finer-grained split that job_evidence_ids alone cannot express.
     record = {
         "dimension_id": dimension_id,
         "status": status,
@@ -1000,6 +1348,9 @@ def _dimension(
         "score": None if score is None else float(score),
         "supporting_classifications": classifications,
         "job_evidence_ids": sorted(job_ids),
+        "matched_job_requirement_ids": sorted(matched_job_ids),
+        "unmatched_job_requirement_ids": sorted(unmatched_job_ids),
+        "supporting_profile_evidence_ids": sorted(supporting_profile_evidence_ids),
     }
     if status != "READY":
         record["reason"] = "Required semantic evidence remains unresolved."
@@ -1097,9 +1448,13 @@ def _validate_result_matches(result: dict[str, Any], context: dict[str, Any], er
 
 def _validate_gate_assessments(value: Any, context: dict[str, Any], errors: list[str]) -> None:
     seen: set[str] = set()
+    required_fields = {
+        "gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids",
+        "resolved_answer_ids", "evidence_disposition", "materiality",
+    }
     for index, assessment in enumerate(_list(value, "$.result.gate_assessments", errors)):
         path = f"$.result.gate_assessments[{index}]"
-        if not _object_shape(assessment, {"gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids"}, {"gate_id", "status", "reason", "job_evidence_ids", "profile_evidence_ids"}, path, errors):
+        if not _object_shape(assessment, required_fields, required_fields, path, errors):
             continue
         gate_id = assessment.get("gate_id")
         _enum(gate_id, set(GATE_IDS), f"{path}.gate_id", errors)
@@ -1109,8 +1464,21 @@ def _validate_gate_assessments(value: Any, context: dict[str, Any], errors: list
             seen.add(gate_id)
         _enum(assessment.get("status"), GATE_STATUSES, f"{path}.status", errors)
         _nonempty_string(assessment.get("reason"), f"{path}.reason", errors)
+        _enum(
+            assessment.get("evidence_disposition"),
+            set(GATE_EVIDENCE_DISPOSITIONS),
+            f"{path}.evidence_disposition", errors,
+        )
+        _enum(
+            assessment.get("materiality"),
+            set(GATE_MATERIALITY_VALUES),
+            f"{path}.materiality", errors,
+        )
         job_ids = _string_list(assessment.get("job_evidence_ids"), f"{path}.job_evidence_ids", errors)
         profile_ids = _string_list(assessment.get("profile_evidence_ids"), f"{path}.profile_evidence_ids", errors)
+        resolved_answer_ids = _string_list(
+            assessment.get("resolved_answer_ids"), f"{path}.resolved_answer_ids", errors,
+        )
         for job_id in job_ids:
             evidence = context["job_evidence"].get(job_id)
             if evidence is None:
@@ -1123,7 +1491,14 @@ def _validate_gate_assessments(value: Any, context: dict[str, Any], errors: list
                 errors.append(f"{path}.profile_evidence_ids: unknown profile evidence id {profile_id!r}")
             elif claim.get("placeholder") or claim.get("concept_id") in context["conflicted_concepts"]:
                 errors.append(f"{path}.profile_evidence_ids: cannot use placeholder or conflicted profile evidence")
-        if assessment.get("status") == "FAIL" and (not job_ids or not profile_ids):
+        # FAIL requires affirmative job evidence plus SOME affirmative
+        # candidate-side evidence of incompatibility -- profile evidence OR
+        # a validated resolved-answer citation (Phase 4C spec §9: a
+        # validated resolved answer is sufficient on its own, exactly like
+        # profile evidence already is). This is additive to the pre-4C
+        # check, never a relaxation of it: a FAIL with neither is still
+        # rejected.
+        if assessment.get("status") == "FAIL" and (not job_ids or not (profile_ids or resolved_answer_ids)):
             errors.append(f"{path}: FAIL requires affirmative job and profile evidence")
     if seen != set(GATE_IDS):
         errors.append("$.result.gate_assessments: must contain every required gate")
@@ -1206,9 +1581,21 @@ def _validate_question_records(value: Any, context: dict[str, Any], errors: list
 def _validate_dimension_assessments(value: Any, request: dict[str, Any], errors: list[str]) -> None:
     expected = {dimension["id"] for dimension in request["evaluation_policy"]["dimensions"]}
     seen: set[str] = set()
+    # job_evidence_ids keeps its pre-existing meaning (all relevant job
+    # ids, matched or not) and stays required for backward compatibility.
+    # matched_job_requirement_ids / unmatched_job_requirement_ids /
+    # supporting_profile_evidence_ids are new, additive, and always
+    # present (as possibly-empty lists) rather than optional, so a
+    # consumer never has to distinguish "not computed" from "empty".
+    required_fields = {
+        "dimension_id", "status", "required", "score", "supporting_classifications",
+        "job_evidence_ids", "matched_job_requirement_ids", "unmatched_job_requirement_ids",
+        "supporting_profile_evidence_ids",
+    }
+    allowed_fields = required_fields | {"reason"}
     for index, item in enumerate(_list(value, "$.result.dimension_assessments", errors)):
         path = f"$.result.dimension_assessments[{index}]"
-        if not _object_shape(item, {"dimension_id", "status", "required", "score", "supporting_classifications", "job_evidence_ids"}, {"dimension_id", "status", "required", "score", "supporting_classifications", "job_evidence_ids", "reason"}, path, errors):
+        if not _object_shape(item, required_fields, allowed_fields, path, errors):
             continue
         dimension_id = item.get("dimension_id")
         _enum(dimension_id, expected, f"{path}.dimension_id", errors)
@@ -1219,6 +1606,29 @@ def _validate_dimension_assessments(value: Any, request: dict[str, Any], errors:
             _score_or_error(item.get("score"), f"{path}.score", errors)
         elif item.get("score") is not None:
             errors.append(f"{path}.score: unresolved dimensions must not have scores")
+        job_ids = _string_list(item.get("job_evidence_ids"), f"{path}.job_evidence_ids", errors)
+        matched_ids = _string_list(
+            item.get("matched_job_requirement_ids"),
+            f"{path}.matched_job_requirement_ids", errors,
+        )
+        unmatched_ids = _string_list(
+            item.get("unmatched_job_requirement_ids"),
+            f"{path}.unmatched_job_requirement_ids", errors,
+        )
+        _string_list(
+            item.get("supporting_profile_evidence_ids"),
+            f"{path}.supporting_profile_evidence_ids", errors,
+        )
+        if set(matched_ids) & set(unmatched_ids):
+            errors.append(
+                f"{path}: matched_job_requirement_ids and unmatched_job_requirement_ids "
+                "must not overlap"
+            )
+        if set(matched_ids) | set(unmatched_ids) != set(job_ids):
+            errors.append(
+                f"{path}: matched_job_requirement_ids plus unmatched_job_requirement_ids "
+                "must together equal job_evidence_ids"
+            )
     if seen != expected:
         errors.append("$.result.dimension_assessments: must cover every evaluation dimension")
 
