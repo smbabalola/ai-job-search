@@ -1,9 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { runSearch } from "../src/commands/search"
 import { listingCard, listingPage } from "./fixtures"
+import { resetCrawlDelayState } from "../src/helpers"
 
 const originalFetch = globalThis.fetch
 const originalStdoutWrite = process.stdout.write
+
+// Bun runs all test files in one process, so the module-level crawl-delay
+// clock (helpers.ts) persists across files. Without this reset, a real
+// elapsed-time window left behind by crawl-delay.test.ts (or an earlier
+// test here) makes the next fetch call here wait out the remainder of that
+// window — a fixture-driven test has no network latency of its own to
+// blame that on, so it just times out against Bun's 5s per-test default.
+beforeEach(() => {
+  resetCrawlDelayState()
+})
 
 afterEach(() => {
   globalThis.fetch = originalFetch

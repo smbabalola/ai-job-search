@@ -19,15 +19,33 @@ const UA = "energy-jobline-search-skill/1.0"
 // between the start of one request and the start of the next from this
 // process — not a per-call sleep, so a single request pays no tax.
 const CRAWL_DELAY_MS = 10_000
-let lastRequestAt = 0
+
+// Mutable holder (not a bare module-level `let`) so tests can reset it
+// between cases via resetCrawlDelayState(). Without this, `lastRequestAt`
+// is shared process-wide state: Bun runs every test file in one process, so
+// a real 10s wait in one test (crawl-delay.test.ts) leaves a recent
+// timestamp behind that a later, unrelated test (e.g. in search.test.ts)
+// inherits — making it wait out the remainder of a window it never
+// triggered, past Bun's 5s per-test default and into a false failure. This
+// is a test-isolation fix, not a change to the production delay behavior:
+// a real CLI invocation is a fresh process every time and never observes
+// this state across "requests" in the way a test run does.
+const crawlDelayState = { lastRequestAt: 0 }
+
+/** Test-only: reset crawl-delay state so fixture-driven tests don't inherit
+ * a real elapsed-time window left behind by an earlier test in the same
+ * Bun process. Never called from production code paths. */
+export function resetCrawlDelayState(): void {
+  crawlDelayState.lastRequestAt = 0
+}
 
 async function respectCrawlDelay(): Promise<void> {
   const now = Date.now()
-  const elapsed = now - lastRequestAt
-  if (lastRequestAt !== 0 && elapsed < CRAWL_DELAY_MS) {
+  const elapsed = now - crawlDelayState.lastRequestAt
+  if (crawlDelayState.lastRequestAt !== 0 && elapsed < CRAWL_DELAY_MS) {
     await sleep(CRAWL_DELAY_MS - elapsed)
   }
-  lastRequestAt = Date.now()
+  crawlDelayState.lastRequestAt = Date.now()
 }
 
 /** Fetch HTML with exponential backoff on 429/5xx and the site's crawl-delay

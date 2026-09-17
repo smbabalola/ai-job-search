@@ -82,9 +82,14 @@ async function main(): Promise<number> {
   const flags = parseFlags(argv)
   const cmd = (flags._ as string[])[0]
 
-  if (!cmd || flags.help || flags.h) {
+  const helpRequested = Boolean(flags.help || flags.h)
+  if (!cmd || helpRequested) {
     process.stdout.write(HELP)
-    return cmd ? 0 : 1
+    // Explicit --help/-h is always success (exit 0), independent of whether
+    // a command happened to precede it. Only the true "no arguments at all"
+    // usage-error case exits 1. The prior `cmd ? 0 : 1` conflated these —
+    // bare `--help` (no positional command) incorrectly returned 1.
+    return helpRequested || cmd ? 0 : 1
   }
 
   if (cmd === "search") {
