@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from product.discovery_search import DiscoveryPortalRunner, SUPPORTED_DISCOVERY_SOURCES
+from product.discovery_search import DiscoveryPortalRunner, available_discovery_source_ids
 from product.discovery_sources import portal_result_to_source_record
 from product.evaluation_policy import load_evaluation_policy
 from product.job_fit import profile_snapshot_content_id
@@ -35,6 +35,7 @@ from webapp.persistence.discovery import (
     list_discovery_candidates,
     save_discovery_fit,
 )
+from webapp.persistence.discovery_sources import list_enabled_discovery_source_ids
 from webapp.persistence.user_profile import get_current_user_profile
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
@@ -94,14 +95,39 @@ def run_discovery_search(
     if profile is None:
         raise DiscoveryServiceError("set up User Profile before searching for jobs")
     preferences = profile["payload"]
-    selected_sources = sources if sources is not None else preferences["source_preferences"]
-    if not selected_sources:
-        selected_sources = list(SUPPORTED_DISCOVERY_SOURCES)
-    if len(set(selected_sources)) != len(selected_sources):
-        raise DiscoveryServiceError("discovery sources must not contain duplicates")
-    unsupported = sorted(set(selected_sources) - set(SUPPORTED_DISCOVERY_SOURCES))
-    if unsupported:
-        raise DiscoveryServiceError("unsupported discovery sources: " + ", ".join(unsupported))
+    available_sources = available_discovery_source_ids(list_enabled_discovery_source_ids(conn))
+    if sources is not None:
+        # An explicit request names exactly what it wants -- a disabled or
+        # unimplemented source here is a real error, not something to
+        # silently drop, since the caller asked for it directly.
+        selected_sources = sources
+        if len(set(selected_sources)) != len(selected_sources):
+            raise DiscoveryServiceError("discovery sources must not contain duplicates")
+        unsupported = sorted(set(selected_sources) - set(available_sources))
+        if unsupported:
+            raise DiscoveryServiceError("unsupported discovery sources: " + ", ".join(unsupported))
+    elif not preferences["source_preferences"]:
+        # No saved preference at all -- nothing to narrow, so use every
+        # currently available (implemented + enabled) source. This is the
+        # only case that defaults to "all available"; it never applies once
+        # the user has an explicit saved selection, however stale.
+        selected_sources = list(available_sources)
+    else:
+        # An explicit saved preference exists. Intersecting it with what's
+        # currently available handles the ordinary case where a source was
+        # disabled or renamed after the preference was saved -- but the
+        # intersection must never silently broaden back out to "all
+        # available" if it comes up empty. A user who deliberately selected
+        # only Energy Jobline, which an admin then disabled, must be told
+        # their selection is unavailable, not quietly redirected to
+        # Freehire/LinkedIn without having asked for that.
+        saved_sources = preferences["source_preferences"]
+        selected_sources = [s for s in saved_sources if s in available_sources]
+        if not selected_sources:
+            raise DiscoveryServiceError(
+                "your saved discovery sources are currently unavailable: "
+                + ", ".join(sorted(saved_sources))
+            )
     selected_queries = queries if queries is not None else (
         preferences["search_terms"] or preferences["target_roles"]
     )

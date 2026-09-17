@@ -22,7 +22,7 @@
     <label>Locations, one per line<textarea name="locations" rows="4">{{ preferences.locations | join('\n') }}</textarea></label>
   </div>
   <fieldset class="extension-picker"><legend>Sources</legend>
-    {% for source in sources %}<label><input type="checkbox" name="sources" value="{{ source }}" {% if not preferences.source_preferences or source in preferences.source_preferences %}checked{% endif %}> {{ source }}</label>{% endfor %}
+    {% for source in sources %}<label><input type="checkbox" name="sources" value="{{ source.source_id }}" {% if not preferences.source_preferences or source.source_id in preferences.source_preferences %}checked{% endif %}> {{ source.display_name }}</label>{% endfor %}
   </fieldset>
   <label>Maximum results per source<input type="number" name="limit_per_source" min="1" max="50" value="20"></label>
   <button class="button" type="submit">Search jobs</button>

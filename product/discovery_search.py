@@ -7,17 +7,38 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
-SUPPORTED_DISCOVERY_SOURCES = ("freehire-search", "linkedin-search", "energy-jobline-search")
 SOURCE_CLI_PATHS = {
     "freehire-search": Path(".agents/skills/freehire-search/cli/src/cli.ts"),
     "linkedin-search": Path(".agents/skills/linkedin-search/cli/src/cli.ts"),
     "energy-jobline-search": Path(".agents/skills/energy-jobline-search/cli/src/cli.ts"),
 }
+# Every source this process can actually invoke -- derived from
+# SOURCE_CLI_PATHS rather than listed by hand a second time, so the two can
+# never drift. This is the code-implemented side of availability; whether a
+# source is *offered* to users is the separate, backend-registry-controlled
+# concern handled by available_discovery_source_ids below.
+SUPPORTED_DISCOVERY_SOURCES = tuple(SOURCE_CLI_PATHS.keys())
 # Sources whose search listing carries only a preview (no full description) —
 # each accepted search hit is followed by a `detail` call to fetch the full
 # posting before it reaches discovery persistence. Freehire's search endpoint
 # already hydrates the full description inline, so it is not in this set.
 SOURCES_REQUIRING_DETAIL_FETCH = frozenset({"linkedin-search", "energy-jobline-search"})
+
+
+def available_discovery_source_ids(enabled_source_ids: list[str] | frozenset[str] | set[str]) -> list[str]:
+    """Runtime-available discovery sources: the intersection of what is
+    actually implemented in this process (SOURCE_CLI_PATHS.keys()) and
+    what the backend registry marks enabled. A registry row for a source
+    with no matching code-level adapter (e.g. someone inserts
+    "rigzone-search" before that adapter exists) is deliberately inert here
+    — this function is the one place that intersection is enforced, so no
+    caller can make an unimplemented source runnable by database edit
+    alone. Order follows SOURCE_CLI_PATHS's own (insertion) order, not the
+    caller's enabled-list order, for deterministic output regardless of how
+    the registry query happened to sort.
+    """
+    enabled = set(enabled_source_ids)
+    return [source_id for source_id in SOURCE_CLI_PATHS if source_id in enabled]
 
 
 class DiscoverySourceError(RuntimeError):

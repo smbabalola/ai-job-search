@@ -29,6 +29,7 @@ POLICY_DECISIONS_MIGRATION_ID = "010_policy_decisions"
 APPLICATION_BLOCKERS_MIGRATION_ID = "011_application_blockers"
 BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID = "012_blocker_resolution_history"
 SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
+DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
 
 
 def _now() -> str:
@@ -63,6 +64,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (APPLICATION_BLOCKERS_MIGRATION_ID, _migrate_application_blockers, False),
         (BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID, _migrate_blocker_resolution_history, False),
         (SEMANTIC_SUBJECT_KEY_MIGRATION_ID, _migrate_semantic_subject_key, False),
+        (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, _migrate_discovery_source_registry, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -592,6 +594,38 @@ def _migrate_semantic_subject_key(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE application_blockers ADD COLUMN semantic_subject_key TEXT"
     )
+
+
+def _migrate_discovery_source_registry(conn: sqlite3.Connection) -> None:
+    # Backend-controlled enable/disable for discovery sources that are
+    # already implemented in code (product/discovery_search.py's
+    # SOURCE_CLI_PATHS). This table is never, by itself, sufficient to make
+    # a source runnable -- runtime availability is always the intersection
+    # of SOURCE_CLI_PATHS.keys() and the enabled rows here (see
+    # product/discovery_search.py's available_discovery_source_ids). A row
+    # for a source with no matching code-level adapter is inert.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE discovery_source_settings (
+            source_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            updated_at TEXT NOT NULL
+        );
+        """,
+    )
+    now = _now()
+    for source_id, display_name in (
+        ("freehire-search", "Freehire"),
+        ("linkedin-search", "LinkedIn"),
+        ("energy-jobline-search", "Energy Jobline"),
+    ):
+        conn.execute(
+            "INSERT INTO discovery_source_settings "
+            "(source_id, display_name, enabled, updated_at) VALUES (?, ?, 1, ?)",
+            (source_id, display_name, now),
+        )
 
 
 def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:

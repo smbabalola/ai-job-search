@@ -7,9 +7,10 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from product.discovery_search import CliDiscoveryPortalRunner, SUPPORTED_DISCOVERY_SOURCES
+from product.discovery_search import CliDiscoveryPortalRunner, available_discovery_source_ids
 from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_dir
 from webapp.persistence.discovery import set_discovery_candidate_status
+from webapp.persistence.discovery_sources import list_discovery_source_settings
 from webapp.services.discovery import (
     DiscoveryServiceError,
     evaluate_discovery_candidate,
@@ -67,7 +68,16 @@ def get_sources(
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
-    return {"sources": list(SUPPORTED_DISCOVERY_SOURCES)}
+    registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
+    available = available_discovery_source_ids(
+        [source_id for source_id, row in registry.items() if row["enabled"]]
+    )
+    return {
+        "sources": [
+            {"source_id": source_id, "display_name": registry[source_id]["display_name"]}
+            for source_id in available
+        ]
+    }
 
 
 @router.post("/api/search-workspaces/{search_workspace_id}/discovery/search")

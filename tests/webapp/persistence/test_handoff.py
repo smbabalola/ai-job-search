@@ -15,6 +15,7 @@ from webapp.persistence.migrations import (
     PAIRING_SECRETS_MIGRATION_ID,
     POLICY_DECISIONS_MIGRATION_ID,
     SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
+    DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
 )
 
 
@@ -159,8 +160,9 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     conn.execute("DROP TABLE handoff_sessions")
     conn.execute("DROP TABLE extension_credentials")
     conn.execute("DROP TABLE pairing_secrets")
+    conn.execute("DROP TABLE discovery_source_settings")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -171,6 +173,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             APPLICATION_BLOCKERS_MIGRATION_ID,
             BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID,
             SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
+            DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
         ),
     )
     conn.commit()
@@ -206,6 +209,13 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
         "SELECT 1 FROM schema_migrations WHERE id = ?",
         (HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,),
     ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM discovery_source_settings WHERE enabled = 1"
+    ).fetchone()[0] == 3
     columns = {
         row["name"]
         for row in conn.execute("PRAGMA table_info(handoff_sessions)").fetchall()

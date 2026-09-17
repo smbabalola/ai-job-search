@@ -89,6 +89,7 @@ def test_new_database_has_one_deterministic_default_search_workspace(tmp_path):
         "011_application_blockers",
         "012_blocker_resolution_history",
         "013_semantic_subject_key",
+        "014_discovery_source_registry",
     }
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -120,6 +121,7 @@ def test_profile_manager_and_account_migrations_are_idempotent(tmp_path):
         "011_application_blockers",
         "012_blocker_resolution_history",
         "013_semantic_subject_key",
+        "014_discovery_source_registry",
     }
     assert upgraded.execute("PRAGMA foreign_key_check").fetchall() == []
 
