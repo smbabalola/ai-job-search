@@ -84,6 +84,47 @@ def test_deduplicates_source_id_then_url_then_normalized_fallback(tmp_path):
     assert conn.execute("select count(*) from discovery_occurrences").fetchone()[0] == 4
 
 
+def test_energy_jobline_record_dedupes_against_other_sources_via_existing_persistence_path(tmp_path):
+    # Energy Jobline introduces no new dedup logic — this proves its records
+    # flow through the same source-id -> url -> normalized-fallback matching
+    # already exercised above for freehire/linkedin/manual-import.
+    conn = _connection(tmp_path)
+    first = ingest_discovery_record(
+        conn,
+        _record(
+            source="energy-jobline-search",
+            source_record_id="31512381",
+            source_url="https://www.energyjobline.com/job/senior-drilling-engineer-aberdeen-31512381",
+            title="Senior Drilling Engineer",
+        ),
+    )
+
+    same_job_repeated = ingest_discovery_record(
+        conn,
+        _record(
+            source="energy-jobline-search",
+            source_record_id="31512381",
+            source_url="https://www.energyjobline.com/job/senior-drilling-engineer-aberdeen-31512381",
+            title="Senior Drilling Engineer",
+            captured_at="2026-08-21T10:00:00+00:00",
+        ),
+    )
+
+    assert first["candidate"]["id"] == same_job_repeated["candidate"]["id"]
+    assert conn.execute("select count(*) from discovery_occurrences").fetchone()[0] == 2
+
+    different_job = ingest_discovery_record(
+        conn,
+        _record(
+            source="energy-jobline-search",
+            source_record_id="999",
+            source_url="https://www.energyjobline.com/job/well-engineer-999",
+            title="Well Engineer",
+        ),
+    )
+    assert different_job["candidate"]["id"] != first["candidate"]["id"]
+
+
 def test_repeat_discovery_preserves_decision_until_explicit_resurface(tmp_path):
     conn = _connection(tmp_path)
     candidate_id = ingest_discovery_record(conn, _record())["candidate"]["id"]

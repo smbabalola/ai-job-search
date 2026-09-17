@@ -7,11 +7,17 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
-SUPPORTED_DISCOVERY_SOURCES = ("freehire-search", "linkedin-search")
+SUPPORTED_DISCOVERY_SOURCES = ("freehire-search", "linkedin-search", "energy-jobline-search")
 SOURCE_CLI_PATHS = {
     "freehire-search": Path(".agents/skills/freehire-search/cli/src/cli.ts"),
     "linkedin-search": Path(".agents/skills/linkedin-search/cli/src/cli.ts"),
+    "energy-jobline-search": Path(".agents/skills/energy-jobline-search/cli/src/cli.ts"),
 }
+# Sources whose search listing carries only a preview (no full description) —
+# each accepted search hit is followed by a `detail` call to fetch the full
+# posting before it reaches discovery persistence. Freehire's search endpoint
+# already hydrates the full description inline, so it is not in this set.
+SOURCES_REQUIRING_DETAIL_FETCH = frozenset({"linkedin-search", "energy-jobline-search"})
 
 
 class DiscoverySourceError(RuntimeError):
@@ -50,10 +56,12 @@ class CliDiscoveryPortalRunner:
             raise DiscoverySourceError(f"unsupported discovery source {source!r}")
         if source == "linkedin-search" and not locations:
             raise DiscoverySourceError("LinkedIn search requires at least one location")
+        if source == "energy-jobline-search" and not locations:
+            raise DiscoverySourceError("Energy Jobline search requires at least one location")
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         query_values = queries or [""]
-        location_values = locations if source == "linkedin-search" else [""]
+        location_values = locations if source in ("linkedin-search", "energy-jobline-search") else [""]
         for query in query_values:
             for location in location_values:
                 remaining = limit - len(results)
@@ -72,7 +80,7 @@ class CliDiscoveryPortalRunner:
                     if not identity or identity in seen:
                         continue
                     seen.add(identity)
-                    if source == "linkedin-search":
+                    if source in SOURCES_REQUIRING_DETAIL_FETCH:
                         item = self._detail(source, identity)
                     results.append(item)
                     if len(results) >= limit:
@@ -89,7 +97,12 @@ class CliDiscoveryPortalRunner:
         if remote_mode is not None:
             if remote_mode not in {"remote", "hybrid", "onsite"}:
                 raise DiscoverySourceError("remote mode must be remote, hybrid, or onsite")
-            args.extend(["--remote", remote_mode])
+            # Only freehire-search and linkedin-search expose a --remote/work-mode
+            # filter; energy-jobline-search's CLI has no such flag (its listing
+            # pages carry no work-mode facet), so a caller-requested remote_mode
+            # is silently inapplicable there rather than passed to an unknown flag.
+            if source != "energy-jobline-search":
+                args.extend(["--remote", remote_mode])
         if source == "linkedin-search":
             args.extend(["--location", location])
             # LinkedIn exposes a controlled recency set; round outward so the
@@ -97,6 +110,11 @@ class CliDiscoveryPortalRunner:
             allowed = next((days for days in (1, 7, 14, 30) if days >= recency_days), None)
             if allowed is not None:
                 args.extend(["--jobage", str(allowed)])
+        elif source == "energy-jobline-search":
+            args.extend(["--location", location])
+            # No recency filter exists in energy-jobline-search's CLI (the
+            # listing page carries no posted-date facet) — recency_days is
+            # inapplicable here, matching the remote_mode omission above.
         else:
             args.extend(["--jobage", str(recency_days), "--description-format", "markdown"])
         payload = self._run(source, args)

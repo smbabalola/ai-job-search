@@ -25,6 +25,27 @@ class FakeRunner:
         }]
 
 
+class FakeRunnerWithFailingEnergyJobline:
+    """Proves a failure isolated to energy-jobline-search never blocks the
+    other configured sources from completing in the same run — the same
+    per-source isolation contract already proven for linkedin-search above,
+    now proven for the new source specifically."""
+
+    def __init__(self):
+        self.calls = []
+
+    def search(self, source, **kwargs):
+        self.calls.append((source, kwargs))
+        if source == "energy-jobline-search":
+            raise RuntimeError("energy jobline unreachable")
+        return [{
+            "id": "planner-1", "title": "Project Planner", "company": "Energy Co",
+            "location": "Aberdeen", "date": "2026-08-20",
+            "url": "https://freehire.me/jobs/planner-1", "description": "Plan work.",
+            "work_mode": "hybrid", "regions": ["eu"], "countries": ["GB"], "skills": [],
+        }]
+
+
 def _connection(tmp_path):
     path = tmp_path / "search.db"
     init_db(path)
@@ -57,6 +78,24 @@ def test_search_fingerprints_preferences_and_isolates_source_failure(tmp_path):
     assert discovery_run_is_stale(conn, result["run"]) is False
     save_user_profile(conn, {"target_roles": ["Changed role"]})
     assert discovery_run_is_stale(conn, result["run"]) is True
+
+
+def test_energy_jobline_source_failure_is_isolated_from_other_sources(tmp_path):
+    conn = _connection(tmp_path)
+    save_user_profile(conn, {
+        "target_roles": ["Drilling Engineer"], "locations": ["Aberdeen"],
+        "search_terms": ["drilling"],
+        "source_preferences": ["freehire-search", "energy-jobline-search"],
+        "recency_days": 7,
+    })
+    runner = FakeRunnerWithFailingEnergyJobline()
+
+    result = run_discovery_search(conn, runner, limit_per_source=10)
+
+    assert result["run"]["status"] == "partial"
+    assert result["run"]["source_status"]["freehire-search"]["accepted"] == 1
+    assert result["run"]["source_status"]["energy-jobline-search"]["status"] == "failed"
+    assert len(result["candidate_ids"]) == 1
 
 
 def test_preference_staleness_is_derived_and_isolated_by_search_workspace(tmp_path):

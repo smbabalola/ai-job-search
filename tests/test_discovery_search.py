@@ -47,3 +47,79 @@ def test_cli_runner_rejects_unknown_source_and_linkedin_without_location(tmp_pat
         runner.search("invented", queries=[], locations=[], recency_days=7, limit=10)
     with pytest.raises(DiscoverySourceError, match="requires at least one location"):
         runner.search("linkedin-search", queries=["planner"], locations=[], recency_days=7, limit=10)
+
+
+def test_cli_runner_rejects_energy_jobline_without_location(tmp_path):
+    runner = CliDiscoveryPortalRunner(tmp_path)
+    with pytest.raises(DiscoverySourceError, match="Energy Jobline search requires at least one location"):
+        runner.search(
+            "energy-jobline-search", queries=["drilling engineer"], locations=[],
+            recency_days=7, limit=10,
+        )
+
+
+def test_cli_runner_energy_jobline_fetches_detail_per_result_and_omits_unsupported_flags(tmp_path, monkeypatch):
+    cli = tmp_path / ".agents/skills/energy-jobline-search/cli/src/cli.ts"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("// fixture", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if "detail" in argv:
+            payload = {
+                "id": argv[argv.index("detail") + 1], "title": "Senior Drilling Engineer",
+                "company": "Cammach", "url": "https://www.energyjobline.com/job/x-31512381",
+                "description": "Lead well planning.", "jsonLdFound": True,
+            }
+        else:
+            payload = {"meta": {"count": 1}, "results": [{"id": "31512381"}]}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("product.discovery_search.subprocess.run", fake_run)
+    runner = CliDiscoveryPortalRunner(tmp_path)
+
+    results = runner.search(
+        "energy-jobline-search", queries=["drilling engineer"], locations=["Aberdeen"],
+        recency_days=7, limit=1,
+    )
+
+    assert results[0]["description"] == "Lead well planning."
+    assert len(calls) == 2
+    search_argv = calls[0][0]
+    detail_argv = calls[1][0]
+    assert "--location" in search_argv and "Aberdeen" in search_argv
+    # No --jobage or --description-format for this source: its CLI accepts neither.
+    assert "--jobage" not in search_argv
+    assert "--description-format" not in search_argv
+    assert detail_argv[-3:] == ["31512381", "--format", "json"]
+
+
+def test_cli_runner_energy_jobline_omits_remote_flag_even_when_requested(tmp_path, monkeypatch):
+    cli = tmp_path / ".agents/skills/energy-jobline-search/cli/src/cli.ts"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("// fixture", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if "detail" in argv:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "id": "1", "title": "Engineer", "company": "Co",
+                    "url": "https://www.energyjobline.com/job/x-1",
+                }),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"results": [{"id": "1"}]}), stderr="")
+
+    monkeypatch.setattr("product.discovery_search.subprocess.run", fake_run)
+    runner = CliDiscoveryPortalRunner(tmp_path)
+
+    runner.search(
+        "energy-jobline-search", queries=["engineer"], locations=["Aberdeen"],
+        recency_days=7, limit=1, remote_mode="remote",
+    )
+
+    assert "--remote" not in calls[0]
