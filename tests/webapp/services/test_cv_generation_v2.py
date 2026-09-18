@@ -21,7 +21,11 @@ from webapp.persistence.workspaces import (
     create_workspace,
     ensure_profile_workspace,
 )
-from webapp.services.cv_generation_v2 import plan_and_persist_cv_generation_v2
+from webapp.services.cv_generation_v2 import (
+    CV_CONTENT_PLAN_ARTIFACT_VERSION,
+    CV_STATEMENT_PLAN_ARTIFACT_VERSION,
+    plan_and_persist_cv_generation_v2,
+)
 from webapp.services.pipeline import PipelineError
 
 
@@ -305,8 +309,12 @@ class TestServicePersistence:
 
         content_plan_artifact = result["content_plan_artifact"]
         statement_plan_artifact = result["statement_plan_artifact"]
-        assert content_plan_artifact["payload"]["schema_version"] == CV_CONTENT_PLAN_VERSION
-        assert statement_plan_artifact["payload"]["schema_version"] == CV_STATEMENT_PLAN_VERSION
+        # Envelope schema version at the top level; the exact untouched Task
+        # 1/2 output lives unmodified under content_plan/statement_plan.
+        assert content_plan_artifact["payload"]["schema_version"] == CV_CONTENT_PLAN_ARTIFACT_VERSION
+        assert content_plan_artifact["payload"]["content_plan"]["schema_version"] == CV_CONTENT_PLAN_VERSION
+        assert statement_plan_artifact["payload"]["schema_version"] == CV_STATEMENT_PLAN_ARTIFACT_VERSION
+        assert statement_plan_artifact["payload"]["statement_plan"]["schema_version"] == CV_STATEMENT_PLAN_VERSION
 
         persisted_content_plan = get_current_artifact(conn, workspace_id, "cv_content_plan")
         assert persisted_content_plan is not None
@@ -315,6 +323,40 @@ class TestServicePersistence:
         persisted_statement_plan = get_current_artifact(conn, workspace_id, "cv_statement_plan")
         assert persisted_statement_plan is not None
         assert persisted_statement_plan["payload"] == statement_plan_artifact["payload"]
+
+    def test_envelope_source_artifact_refs_point_to_the_exact_artifacts_used(self, tmp_path):
+        conn, workspace_id = _workspace(tmp_path)
+        profile_artifact, resolved_job_evidence_artifact, job_fit_artifact = _seed_upstream_artifacts(
+            conn, workspace_id
+        )
+
+        result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        content_plan_artifact = result["content_plan_artifact"]
+        statement_plan_artifact = result["statement_plan_artifact"]
+
+        content_plan_refs = content_plan_artifact["payload"]["source_artifacts"]
+        assert content_plan_refs["profile_snapshot"] == {
+            "artifact_id": profile_artifact["id"],
+            "artifact_type": "profile_snapshot",
+            "content_id": profile_artifact["content_id"],
+        }
+        assert content_plan_refs["job_fit_result"] == {
+            "artifact_id": job_fit_artifact["id"],
+            "artifact_type": "job_fit_result",
+            "content_id": job_fit_artifact["content_id"],
+        }
+        assert content_plan_refs["resolved_job_evidence"] == {
+            "artifact_id": resolved_job_evidence_artifact["id"],
+            "artifact_type": "resolved_job_evidence",
+            "content_id": resolved_job_evidence_artifact["content_id"],
+        }
+
+        statement_plan_refs = statement_plan_artifact["payload"]["source_artifacts"]
+        assert statement_plan_refs["cv_content_plan"] == {
+            "artifact_id": content_plan_artifact["id"],
+            "artifact_type": "cv_content_plan",
+            "content_id": content_plan_artifact["content_id"],
+        }
 
     def test_statement_plan_is_built_from_the_persisted_content_plan_not_a_fixture(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -325,8 +367,8 @@ class TestServicePersistence:
         persisted_content_plan = get_current_artifact(conn, workspace_id, "cv_content_plan")
         from product.cv_statement_plan import build_cv_statement_plan
 
-        expected_statement_plan = build_cv_statement_plan(persisted_content_plan["payload"])
-        assert result["statement_plan_artifact"]["payload"] == expected_statement_plan
+        expected_statement_plan = build_cv_statement_plan(persisted_content_plan["payload"]["content_plan"])
+        assert result["statement_plan_artifact"]["payload"]["statement_plan"] == expected_statement_plan
 
     def test_dependency_fingerprints_trace_to_exact_upstream_artifacts(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -361,20 +403,82 @@ class TestServicePersistence:
         assert statement_fingerprints["cv_content_plan"] == content_plan_artifact["content_id"]
 
     def test_deterministic_content_across_repeated_runs(self, tmp_path):
+        """Determinism means: same exact inputs + same exact lineage -> same
+        payload/content_id. It does NOT mean "same inner plan -> same
+        artifact identity regardless of lineage": since content_plan is a
+        fresh immutable row each run (even given byte-identical upstream
+        inputs), the second run's statement_plan legitimately references a
+        DIFFERENT cv_content_plan artifact_id, so its envelope -- and
+        therefore its content_id -- is correctly not identical to the
+        first run's. What must remain invariant is the inner Task 1/2
+        domain output, and the content_plan envelope itself (whose lineage
+        genuinely was identical both runs, since no new upstream artifacts
+        were created between them)."""
         conn, workspace_id = _workspace(tmp_path)
         _seed_upstream_artifacts(conn, workspace_id)
 
         first = plan_and_persist_cv_generation_v2(conn, workspace_id)
         second = plan_and_persist_cv_generation_v2(conn, workspace_id)
 
-        # New immutable artifact rows are expected each run (new artifact_id),
-        # but the logical Task 1/2 *content* must be identical given identical
-        # upstream inputs -- exclude the self-referential document_id/hash-free
-        # payload comparison from artifact bookkeeping (id/created_at) fields.
+        # content_plan's own lineage (Profile/JobFit/resolved-evidence) was
+        # identical across both runs -- no new upstream rows were created --
+        # so its full envelope, including content_id, is exactly reproduced.
         assert first["content_plan_artifact"]["payload"] == second["content_plan_artifact"]["payload"]
-        assert first["statement_plan_artifact"]["payload"] == second["statement_plan_artifact"]["payload"]
         assert first["content_plan_artifact"]["content_id"] == second["content_plan_artifact"]["content_id"]
-        assert first["statement_plan_artifact"]["content_id"] == second["statement_plan_artifact"]["content_id"]
+
+        # statement_plan's inner Task 2 domain output is identical...
+        assert (
+            first["statement_plan_artifact"]["payload"]["statement_plan"]
+            == second["statement_plan_artifact"]["payload"]["statement_plan"]
+        )
+        # ...and its cv_content_plan lineage ref points at content whose
+        # content_id is identical both runs (same content_plan content)...
+        assert (
+            first["statement_plan_artifact"]["payload"]["source_artifacts"]["cv_content_plan"]["content_id"]
+            == second["statement_plan_artifact"]["payload"]["source_artifacts"]["cv_content_plan"]["content_id"]
+        )
+        # ...but each run's content_plan is a distinct new immutable row, so
+        # the statement_plan envelope's referenced artifact_id, and therefore
+        # its own content_id, correctly differ between the two runs.
+        assert (
+            first["statement_plan_artifact"]["payload"]["source_artifacts"]["cv_content_plan"]["artifact_id"]
+            != second["statement_plan_artifact"]["payload"]["source_artifacts"]["cv_content_plan"]["artifact_id"]
+        )
+        assert (
+            first["statement_plan_artifact"]["content_id"]
+            != second["statement_plan_artifact"]["content_id"]
+        )
+
+    def test_identical_inner_plan_but_different_upstream_lineage_yields_different_content_id(self, tmp_path):
+        """Provenance is part of the immutable artifact content: two runs whose
+        Task 1/2 domain output is logically identical but whose exact upstream
+        artifact identity differs must NOT collapse to the same content_id."""
+        conn_a, workspace_a = _workspace(tmp_path)
+        _seed_upstream_artifacts(conn_a, workspace_a)
+        result_a = plan_and_persist_cv_generation_v2(conn_a, workspace_a)
+
+        conn_b, workspace_b = _workspace(tmp_path)
+        _seed_upstream_artifacts(conn_b, workspace_b)
+        # Re-save an upstream artifact with byte-identical payload but under a
+        # different content_id -- as if it were a distinct artifact row with
+        # the same domain content (e.g. regenerated, not truly re-derived).
+        save_artifact(
+            conn_b, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
+            payload=_profile_payload(), content_id="profilesnap_DIFFERENT",
+        )
+        result_b = plan_and_persist_cv_generation_v2(conn_b, workspace_b)
+
+        # Inner Task 1 domain output is logically identical...
+        assert (
+            result_a["content_plan_artifact"]["payload"]["content_plan"]
+            == result_b["content_plan_artifact"]["payload"]["content_plan"]
+        )
+        # ...but exact upstream lineage differs, so the persisted envelope
+        # content_id must differ too.
+        assert (
+            result_a["content_plan_artifact"]["content_id"]
+            != result_b["content_plan_artifact"]["content_id"]
+        )
 
     def test_never_calls_application_intelligence_or_touches_application_pack(self, tmp_path):
         """This service must not construct/require an application_intelligence_*

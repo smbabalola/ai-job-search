@@ -26,10 +26,10 @@ from product.cv_review_projection import (
     project_review_authorized_statement_plan,
     reviewable_cv_statements,
 )
-from product.cv_statement_plan import CV_STATEMENT_PLAN_VERSION
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.artifacts import get_artifact
 from webapp.persistence.review import DISPOSITIONS, list_review_decisions, save_review_decision
+from webapp.services.cv_generation_v2 import CV_STATEMENT_PLAN_ARTIFACT_VERSION
 from webapp.services.pipeline import PipelineError
 
 
@@ -37,7 +37,14 @@ class CvStatementReviewError(PipelineError):
     pass
 
 
-def _load_statement_plan_artifact(conn: sqlite3.Connection, statement_plan_artifact_id: str) -> dict[str, Any]:
+def _load_statement_plan(conn: sqlite3.Connection, statement_plan_artifact_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load and validate the exact pinned envelope; return (artifact, inner statement_plan).
+
+    The review binding identity (source_artifact_id for every decision) is
+    always the outer artifact's own id -- never anything from the inner,
+    unwrapped Task 2 payload.
+    """
+
     artifact = get_artifact(conn, statement_plan_artifact_id)
     if artifact is None:
         raise CvStatementReviewError(f"cv_statement_plan artifact {statement_plan_artifact_id!r} not found")
@@ -46,12 +53,17 @@ def _load_statement_plan_artifact(conn: sqlite3.Connection, statement_plan_artif
             f"artifact {statement_plan_artifact_id!r} is not a cv_statement_plan "
             f"(got {artifact['artifact_type']!r})"
         )
-    payload = artifact["payload"]
-    if not isinstance(payload, dict) or payload.get("schema_version") != CV_STATEMENT_PLAN_VERSION:
+    envelope = artifact["payload"]
+    if not isinstance(envelope, dict) or envelope.get("schema_version") != CV_STATEMENT_PLAN_ARTIFACT_VERSION:
         raise CvStatementReviewError(
             f"cv_statement_plan artifact {statement_plan_artifact_id!r} is malformed"
         )
-    return artifact
+    statement_plan = envelope.get("statement_plan")
+    if not isinstance(statement_plan, dict):
+        raise CvStatementReviewError(
+            f"cv_statement_plan artifact {statement_plan_artifact_id!r} is malformed"
+        )
+    return artifact, statement_plan
 
 
 def _effective_decisions(
@@ -83,8 +95,8 @@ def list_cv_statement_review_items(
     candidate-facing text -- not internal evidence/provenance metadata.
     """
 
-    artifact = _load_statement_plan_artifact(conn, statement_plan_artifact_id)
-    statements = reviewable_cv_statements(artifact["payload"])
+    _artifact, statement_plan = _load_statement_plan(conn, statement_plan_artifact_id)
+    statements = reviewable_cv_statements(statement_plan)
     return [
         {"statement_id": statement["statement_id"], "statement_text": statement.get("statement_text")}
         for statement in statements
@@ -104,9 +116,9 @@ def save_cv_statement_review_decision(
     layer unchanged.
     """
 
-    artifact = _load_statement_plan_artifact(conn, statement_plan_artifact_id)
+    _artifact, statement_plan = _load_statement_plan(conn, statement_plan_artifact_id)
     reviewable_ids = {
-        statement["statement_id"] for statement in reviewable_cv_statements(artifact["payload"])
+        statement["statement_id"] for statement in reviewable_cv_statements(statement_plan)
     }
     if statement_id not in reviewable_ids:
         raise CvStatementReviewError(
@@ -128,9 +140,9 @@ def resolve_cv_statement_review_state(
 ) -> dict[str, list[str]]:
     """Return {authorized, omitted, pending} exact statement_id sets for this artifact."""
 
-    artifact = _load_statement_plan_artifact(conn, statement_plan_artifact_id)
+    _artifact, statement_plan = _load_statement_plan(conn, statement_plan_artifact_id)
     reviewable_ids = [
-        statement["statement_id"] for statement in reviewable_cv_statements(artifact["payload"])
+        statement["statement_id"] for statement in reviewable_cv_statements(statement_plan)
     ]
     effective = _effective_decisions(conn, workspace_id, statement_plan_artifact_id)
 
@@ -163,11 +175,11 @@ def get_review_authorized_cv_statement_plan(
     artifact lacks an effective decision (fails closed on incomplete review).
     """
 
-    artifact = _load_statement_plan_artifact(conn, statement_plan_artifact_id)
+    _artifact, statement_plan = _load_statement_plan(conn, statement_plan_artifact_id)
     effective = _effective_decisions(conn, workspace_id, statement_plan_artifact_id)
 
     projected_plan = project_review_authorized_statement_plan(
-        artifact["payload"], effective, source_artifact_id=statement_plan_artifact_id,
+        statement_plan, effective, source_artifact_id=statement_plan_artifact_id,
     )
     authorized_statement_ids = sorted(
         statement["statement_id"] for statement in projected_plan["statements"]

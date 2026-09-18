@@ -16,6 +16,7 @@ from product.cv_review_projection import AUTHORIZED_DISPOSITION, CvReviewProject
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
+from webapp.services.cv_generation_v2 import CV_STATEMENT_PLAN_ARTIFACT_VERSION
 from webapp.services.cv_statement_review import (
     CvStatementReviewError,
     get_review_authorized_cv_statement_plan,
@@ -58,10 +59,24 @@ def _statement_plan_payload(statements: list[dict]) -> dict:
     }
 
 
+def _statement_plan_envelope(statements: list[dict], *, content_plan_artifact_id: str = "art_content_plan_A") -> dict:
+    return {
+        "schema_version": CV_STATEMENT_PLAN_ARTIFACT_VERSION,
+        "source_artifacts": {
+            "cv_content_plan": {
+                "artifact_id": content_plan_artifact_id,
+                "artifact_type": "cv_content_plan",
+                "content_id": "cvcontentplan_A",
+            },
+        },
+        "statement_plan": _statement_plan_payload(statements),
+    }
+
+
 def _seed_statement_plan(conn, workspace_id, statements: list[dict], *, content_id: str = "cvstatementplan_A"):
     return save_artifact(
         conn, workspace_id=workspace_id, artifact_type="cv_statement_plan",
-        payload=_statement_plan_payload(statements), content_id=content_id,
+        payload=_statement_plan_envelope(statements), content_id=content_id,
     )
 
 
@@ -104,15 +119,39 @@ class TestEnumerateReviewItems:
         with pytest.raises(CvStatementReviewError, match="not a cv_statement_plan"):
             list_cv_statement_review_items(conn, wrong["id"])
 
-    def test_rejects_malformed_statement_plan(self, tmp_path):
+    def test_rejects_malformed_inner_statement_plan(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
+        envelope = _statement_plan_envelope([])
+        envelope["statement_plan"]["statements"] = "not-a-list"
         malformed = save_artifact(
             conn, workspace_id=workspace_id, artifact_type="cv_statement_plan",
-            payload={"schema_version": "cv-statement-plan.v0", "statements": "not-a-list"},
-            content_id="cvstatementplan_bad",
+            payload=envelope, content_id="cvstatementplan_bad",
         )
         with pytest.raises((CvStatementReviewError, Exception)):
             list_cv_statement_review_items(conn, malformed["id"])
+
+    def test_rejects_malformed_envelope_missing_statement_plan(self, tmp_path):
+        conn, workspace_id = _workspace(tmp_path)
+        malformed = save_artifact(
+            conn, workspace_id=workspace_id, artifact_type="cv_statement_plan",
+            payload={"schema_version": CV_STATEMENT_PLAN_ARTIFACT_VERSION, "source_artifacts": {}},
+            content_id="cvstatementplan_bad_envelope",
+        )
+        with pytest.raises(CvStatementReviewError, match="malformed"):
+            list_cv_statement_review_items(conn, malformed["id"])
+
+    def test_rejects_old_bare_shape_without_envelope(self, tmp_path):
+        """No backward-compatibility shim: the pre-2B-1A bare Task 2 payload
+        shape (no envelope, no source_artifacts) must fail clearly, not be
+        silently accepted as if it were the new envelope shape."""
+        conn, workspace_id = _workspace(tmp_path)
+        old_shape = save_artifact(
+            conn, workspace_id=workspace_id, artifact_type="cv_statement_plan",
+            payload=_statement_plan_payload([_statement("stmt_a", "professional_summary", "A")]),
+            content_id="cvstatementplan_old_shape",
+        )
+        with pytest.raises(CvStatementReviewError, match="malformed"):
+            list_cv_statement_review_items(conn, old_shape["id"])
 
 
 class TestSaveReviewDecision:
