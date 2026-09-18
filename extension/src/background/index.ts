@@ -39,17 +39,30 @@ const serverClient = new ServerClient(() => credentialStore.get());
 const pendingContextStore = new PendingContextStore();
 const sequenceStore = new SessionSequenceStore();
 
+// Named rather than constructed anonymously inline: the real background
+// orchestration below needs to call eventQueue.flush() directly at
+// several trigger points (after routing a content-script event, after
+// routing an attachment outcome, and after a session is newly
+// associated/bound), not merely hand the queue to SessionRegistry and
+// never touch it again.
+const eventQueue = new DurableEventQueue(eventStore, (event) => {
+  // Resolved strictly by the event's OWN handoffSessionId, never
+  // "current tab" or "last used" -- an event for a session whose token
+  // isn't currently available (e.g. a stale/torn-down session) simply
+  // fails this send and stays durably queued; never manufactured or
+  // silently dropped.
+  const token = sessionRegistry.tokenForSession(event.handoffSessionId);
+  if (!token) return Promise.resolve(false);
+  return serverClient.sendEvent(event, token);
+});
+
 // Per-tab and per-session runtime state (Task 12): replaces the
 // Task-9-era single module-level `boundSession`/`router` slots, which
 // would silently corrupt one tab's session the moment a second tab
 // associated a different one. See session-registry.ts for the full
 // isolation contract this is required to uphold.
 const sessionRegistry = new SessionRegistry(
-  new DurableEventQueue(eventStore, (event) => {
-    const token = sessionRegistry.tokenForSession(event.handoffSessionId);
-    if (!token) return Promise.resolve(false);
-    return serverClient.sendEvent(event, token);
-  }),
+  eventQueue,
   (handoffSessionId) => sequenceStore.get(handoffSessionId),
 );
 
@@ -178,6 +191,13 @@ async function attachDocuments(
       attempt_outcome: outcome,
     };
     await router.routeEvent(`attachment_${outcome}`, payload, pageFieldKey);
+    // Flush after each background-originated attachment event is routed
+    // -- not merely durably enqueued -- so it reaches the server as soon
+    // as a valid session token is available, per the same trigger
+    // contract as content-script events below.
+    void eventQueue.flush().catch((err) => {
+      console.warn("[JobSearch Handoff] event flush failed", err);
+    });
   }
 
   await persistSequenceForSession(session.sessionId, router.clientSequence);
@@ -246,6 +266,13 @@ export async function runAutofillOnTab(tabId: number): Promise<void> {
   await pendingContextStore.clear();
   sessionRegistry.bindTab(tabId, session);
   await sessionRegistry.ensureRouterForSession(session.sessionId);
+  // A valid session token is now available for this session (bindTab
+  // just registered it in SessionRegistry's tokenBySessionId map), so any
+  // event durably queued earlier for this same session -- e.g. from
+  // before a service-worker restart -- can now retry delivery.
+  void eventQueue.flush().catch((err) => {
+    console.warn("[JobSearch Handoff] event flush failed", err);
+  });
 
   let snapshot: CandidateSnapshot;
   try {
@@ -359,16 +386,26 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
   // Fire-and-forget: chrome.runtime.onMessage listeners that return
   // synchronously (no sendResponse used) don't block the content script's
-  // sendMessage call on this promise. Enqueue-then-flush ordering is
-  // handled inside DurableEventQueue/the router; a failed flush leaves the
-  // event durably queued for the next flush trigger, per event-queue.ts's
-  // existing retry contract.
+  // sendMessage call on this promise. router.route() only durably
+  // enqueues (event-queue.ts's EventStore.add) -- it never sends over the
+  // network itself, keeping that persistence step's contract simple and
+  // synchronous-feeling from the router's perspective. The explicit
+  // eventQueue.flush() call below is what actually attempts delivery
+  // after this specific event is routed; DurableEventQueue.flush() is
+  // itself safe to call concurrently from multiple trigger points (this
+  // relay, attachDocuments, and session association) -- each call is
+  // chained behind the previous one and always takes a fresh snapshot of
+  // the queue when its turn arrives, so a flush requested here can never
+  // miss an event enqueued moments earlier by a different trigger. A
+  // failed send leaves the event durably queued (same eventId) for the
+  // next flush trigger.
   void sessionRegistry.ensureRouterForSession(boundSession.sessionId)
     .then((router) =>
       router.route(message).then(() =>
         persistSequenceForSession(boundSession.sessionId, router.clientSequence),
       ),
     )
+    .then(() => eventQueue.flush())
     .catch((err) => {
       console.warn("[JobSearch Handoff] relay failed", err);
     });
