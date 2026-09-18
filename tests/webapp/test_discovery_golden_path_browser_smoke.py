@@ -26,11 +26,13 @@ import socket
 import sqlite3
 import threading
 import time
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import uvicorn
+from docx import Document
 
 from webapp.app import create_app
 from webapp.config import Settings
@@ -44,8 +46,10 @@ from tests.webapp.test_browser_smoke import (
     _SemanticAdapter,
     _UnderstandingProvider,
     _click_reload,
+    _confirm_pack,
     _free_port,
     _refresh_profile,
+    _resolve_all_pending_reviews,
     _write_profile_root,
 )
 
@@ -228,6 +232,112 @@ def _fetch_job_posting_source_url(server, workspace_id: str) -> str | None:
         conn.close()
     assert artifact is not None, "promotion must create a job_posting_snapshot artifact"
     return artifact["payload"].get("source_url")
+
+
+def _run_promoted_candidate_to_intelligence(page, workspace_url: str) -> None:
+    """Same post-creation sequence as test_browser_smoke.py's
+    _run_to_intelligence (Run Understanding -> Run Job Fit -> Run
+    Application Intelligence), but starting from an already-existing
+    workspace produced by discovery promotion rather than _create_job's
+    manual-paste entry. run_job_understanding and run_job_fit both read the
+    workspace's current job_posting_snapshot artifact directly -- the one
+    promotion already created from the discovery candidate's
+    canonical_source_record -- so no separate "attach job" step exists or
+    is needed here.
+    """
+    page.goto(workspace_url, wait_until="networkidle")
+    _click_reload(page, page.get_by_role("button", name="Run Understanding"))
+    assert page.get_by_text("Accepted job evidence", exact=True).count() == 6
+    page.locator('input[name="extension_ids"][value="data-transfer"]').check()
+    _click_reload(page, page.get_by_role("button", name="Run Job Fit"))
+    _click_reload(page, page.get_by_role("button", name="Run Application Intelligence"))
+
+
+def test_promoted_discovery_candidate_reaches_application_pack_with_provenance_intact(
+    page, discovery_server,
+):
+    source_url = "https://airswift.com/jobs/senior-drilling-engineer-98765"
+    runner = _ScriptedDiscoveryRunner(
+        results={
+            AIRSWIFT: [
+                _record(
+                    source=AIRSWIFT, source_record_id="as-continuity-1", source_url=source_url,
+                    company="Provenance Energy Co", title="Senior Drilling Engineer",
+                ),
+            ],
+        }
+    )
+    server = discovery_server(runner)
+
+    _select_all_sources(page, server)
+
+    page.goto(f"{server.base_url}/discover", wait_until="networkidle")
+    _click_reload(page, page.get_by_role("button", name="Search jobs"))
+
+    card = page.locator('[data-candidate-id]').filter(has_text="Provenance Energy Co")
+    assert card.count() == 1
+    card.locator(".candidate-select").check()
+    _click_reload(page, page.get_by_role("button", name="Evaluate selected").first)
+
+    card = page.locator('[data-candidate-id]').filter(has_text="Provenance Energy Co")
+    assert card.get_by_text("No invented score").is_visible()
+    _click_reload(page, card.get_by_role("button", name="Save"))
+
+    card = page.locator('[data-candidate-id]').filter(has_text="Provenance Energy Co")
+    with page.expect_navigation(wait_until="networkidle"):
+        card.get_by_role("button", name="Create application").click()
+    assert "/workspaces/" in page.url
+    workspace_url = page.url
+    workspace_id = workspace_url.rsplit("/workspaces/", 1)[1].split("/")[0]
+    assert page.get_by_text("Provenance Energy Co", exact=True).is_visible()
+    assert page.get_by_role("heading", name="Senior Drilling Engineer").is_visible()
+
+    # --- identity continuity, checkpoint 1: immediately after promotion ---
+    origin_after_promotion = _fetch_application_origin(server, workspace_id)
+    assert origin_after_promotion["discovery_candidate_id"]
+    assert origin_after_promotion["discovery_occurrence_id"]
+    assert _fetch_job_posting_source_url(server, workspace_id) == source_url
+
+    _run_promoted_candidate_to_intelligence(page, workspace_url)
+    _resolve_all_pending_reviews(page, "acknowledged_and_proceed")
+    _confirm_pack(page)
+
+    # --- identity continuity, checkpoint 2: after the full pipeline ---
+    assert page.url == workspace_url, "pack confirmation must not navigate away from the promoted workspace"
+    assert page.get_by_text("Provenance Energy Co", exact=True).is_visible()
+    assert page.get_by_role("heading", name="Senior Drilling Engineer").is_visible()
+
+    origin_after_pack = _fetch_application_origin(server, workspace_id)
+    assert origin_after_pack["discovery_candidate_id"] == origin_after_promotion["discovery_candidate_id"]
+    assert origin_after_pack["discovery_occurrence_id"] == origin_after_promotion["discovery_occurrence_id"]
+    assert origin_after_pack["search_workspace_id"] == origin_after_promotion["search_workspace_id"]
+
+    # The job_posting_snapshot is the same artifact run_job_understanding
+    # and run_job_fit read from (webapp/services/pipeline.py) -- so this
+    # re-check after Understanding/Fit/Intelligence/Pack all ran proves
+    # none of those stages replaced or lost the discovery-sourced snapshot,
+    # not merely that promotion once created it correctly.
+    assert _fetch_job_posting_source_url(server, workspace_id) == source_url
+
+    applications = page.request.get(f"{server.base_url}/api/workspaces").json()["workspaces"]
+    matching = [item for item in applications if item["company"] == "Provenance Energy Co"]
+    assert len(matching) == 1, "no second Application Workspace was created for this candidate"
+    assert matching[0]["id"] == workspace_id
+
+    cv_link = page.get_by_role("link", name="Download CV")
+    cover_link = page.get_by_role("link", name="Download Cover Letter")
+    cv_response = page.request.get(f"{server.base_url}{cv_link.get_attribute('href')}")
+    cover_response = page.request.get(f"{server.base_url}{cover_link.get_attribute('href')}")
+    assert cv_response.status == 200
+    assert cover_response.status == 200
+
+    cv_texts = [paragraph.text for paragraph in Document(BytesIO(cv_response.body())).paragraphs]
+    cover_text = "\n".join(
+        paragraph.text for paragraph in Document(BytesIO(cover_response.body())).paragraphs
+    )
+    assert cv_texts[0] == "Ada Lovelace"
+    assert "Built production data pipelines" in cv_texts
+    assert "Ada Lovelace" in cover_text
 
 
 def test_four_provider_golden_path_dedups_evaluates_and_promotes(page, discovery_server):
