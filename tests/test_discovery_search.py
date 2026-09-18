@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from product.discovery_search import CliDiscoveryPortalRunner, DiscoverySourceError
+from product.discovery_search import (
+    CliDiscoveryPortalRunner,
+    DiscoverySourceError,
+    SOURCE_CLI_PATHS,
+    SUPPORTED_DISCOVERY_SOURCES,
+    available_discovery_source_ids,
+)
 
 
 def test_cli_runner_uses_allowlisted_argv_without_shell_and_bounds_linkedin_detail(tmp_path, monkeypatch):
@@ -123,3 +129,45 @@ def test_cli_runner_energy_jobline_omits_remote_flag_even_when_requested(tmp_pat
     )
 
     assert "--remote" not in calls[0]
+
+
+def test_supported_discovery_sources_is_derived_from_source_cli_paths():
+    # SUPPORTED_DISCOVERY_SOURCES must never be hand-listed a second time
+    # separately from SOURCE_CLI_PATHS -- that duplication is exactly what
+    # let the two silently drift before. This pins the derivation.
+    assert set(SUPPORTED_DISCOVERY_SOURCES) == set(SOURCE_CLI_PATHS.keys())
+
+
+def test_available_discovery_source_ids_is_the_intersection():
+    available = available_discovery_source_ids(
+        ["freehire-search", "energy-jobline-search"]
+    )
+    assert set(available) == {"freehire-search", "energy-jobline-search"}
+    assert "linkedin-search" not in available
+
+
+def test_available_discovery_source_ids_ignores_all_currently_enabled():
+    available = available_discovery_source_ids(list(SOURCE_CLI_PATHS.keys()))
+    assert set(available) == set(SOURCE_CLI_PATHS.keys())
+
+
+def test_available_discovery_source_ids_rejects_unknown_source_even_when_enabled():
+    # The core registry invariant: a database row for a source with no
+    # matching code-level adapter must never become runnable. Simulates a
+    # registry that (incorrectly, or ahead of the adapter landing) marks
+    # "rigzone-search" enabled -- it must not appear in the result because
+    # SOURCE_CLI_PATHS has no entry for it.
+    available = available_discovery_source_ids(
+        ["freehire-search", "rigzone-search"]
+    )
+    assert set(available) == {"freehire-search"}
+    assert "rigzone-search" not in available
+
+
+def test_available_discovery_source_ids_empty_enabled_set_yields_nothing():
+    assert available_discovery_source_ids([]) == []
+
+
+def test_available_discovery_source_ids_accepts_set_or_frozenset_input():
+    assert set(available_discovery_source_ids({"linkedin-search"})) == {"linkedin-search"}
+    assert set(available_discovery_source_ids(frozenset({"linkedin-search"}))) == {"linkedin-search"}
