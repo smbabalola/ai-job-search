@@ -28,6 +28,8 @@ DEPENDENCY_TYPES: dict[str, tuple[str, ...]] = {
     ),
     "application_intelligence_result": ("profile_snapshot", "job_fit_result", "application_intelligence_request"),
     "application_pack": ("job_fit_result", "application_intelligence_result"),
+    "cv_content_plan": ("profile_snapshot", "job_fit_result", "resolved_job_evidence"),
+    "cv_statement_plan": ("cv_content_plan",),
 }
 
 
