@@ -125,6 +125,49 @@ def test_energy_jobline_record_dedupes_against_other_sources_via_existing_persis
     assert different_job["candidate"]["id"] != first["candidate"]["id"]
 
 
+def test_airswift_record_dedupes_against_other_sources_via_existing_persistence_path(tmp_path):
+    # Airswift introduces no new dedup logic -- this proves its records flow
+    # through the same source-id -> url -> normalized-fallback matching
+    # already exercised above, using source_record_id (the numeric job
+    # reference re-derived by the CLI, never the URL the search-result "id"
+    # field carries en route to the detail command).
+    conn = _connection(tmp_path)
+    first = ingest_discovery_record(
+        conn,
+        _record(
+            source="airswift-search",
+            source_record_id="1280556",
+            source_url="https://www.airswift.com/jobs/fpso-piping-integration-coordinator-1280556",
+            title="FPSO Piping Integration Coordinator",
+        ),
+    )
+
+    same_job_repeated = ingest_discovery_record(
+        conn,
+        _record(
+            source="airswift-search",
+            source_record_id="1280556",
+            source_url="https://www.airswift.com/jobs/fpso-piping-integration-coordinator-1280556",
+            title="FPSO Piping Integration Coordinator",
+            captured_at="2026-09-18T11:00:00+00:00",
+        ),
+    )
+
+    assert first["candidate"]["id"] == same_job_repeated["candidate"]["id"]
+    assert conn.execute("select count(*) from discovery_occurrences").fetchone()[0] == 2
+
+    different_job = ingest_discovery_record(
+        conn,
+        _record(
+            source="airswift-search",
+            source_record_id="999999",
+            source_url="https://www.airswift.com/jobs/well-engineer-999999",
+            title="Well Engineer",
+        ),
+    )
+    assert different_job["candidate"]["id"] != first["candidate"]["id"]
+
+
 def test_repeat_discovery_preserves_decision_until_explicit_resurface(tmp_path):
     conn = _connection(tmp_path)
     candidate_id = ingest_discovery_record(conn, _record())["candidate"]["id"]

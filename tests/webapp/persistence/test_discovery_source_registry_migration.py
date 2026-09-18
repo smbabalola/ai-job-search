@@ -41,14 +41,18 @@ def test_migration_014_is_idempotent(tmp_path):
         (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,),
     ).fetchone()[0]
     assert count == 1
+    # Row count reflects every source registered up to and including the
+    # latest migration that inserts into this table (currently 015 adds a
+    # 4th row for airswift-search) -- not migration 014's own seed count in
+    # isolation, since apply_migrations always runs the full chain.
     row_count = conn.execute(
         "SELECT COUNT(*) FROM discovery_source_settings"
     ).fetchone()[0]
-    assert row_count == 3
+    assert row_count == 4
     conn.close()
 
 
-def test_all_three_current_sources_are_enabled_after_migration(tmp_path):
+def test_all_current_sources_are_enabled_after_migration(tmp_path):
     conn = _connection(tmp_path)
     rows = {
         row["source_id"]: (row["display_name"], row["enabled"])
@@ -60,6 +64,7 @@ def test_all_three_current_sources_are_enabled_after_migration(tmp_path):
         "freehire-search": ("Freehire", 1),
         "linkedin-search": ("LinkedIn", 1),
         "energy-jobline-search": ("Energy Jobline", 1),
+        "airswift-search": ("Airswift", 1),
     }
     conn.close()
 

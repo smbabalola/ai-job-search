@@ -65,6 +65,27 @@ class FakeRunnerWithFailingEnergyJobline:
         }]
 
 
+class FakeRunnerWithFailingAirswift:
+    """Proves a failure isolated to airswift-search never blocks the other
+    configured sources from completing in the same run -- the same
+    per-source isolation contract already proven for linkedin-search and
+    energy-jobline-search above, now proven for the fourth source."""
+
+    def __init__(self):
+        self.calls = []
+
+    def search(self, source, **kwargs):
+        self.calls.append((source, kwargs))
+        if source == "airswift-search":
+            raise RuntimeError("airswift unreachable")
+        return [{
+            "id": "planner-1", "title": "Project Planner", "company": "Energy Co",
+            "location": "Aberdeen", "date": "2026-08-20",
+            "url": "https://freehire.me/jobs/planner-1", "description": "Plan work.",
+            "work_mode": "hybrid", "regions": ["eu"], "countries": ["GB"], "skills": [],
+        }]
+
+
 def _connection(tmp_path):
     path = tmp_path / "search.db"
     init_db(path)
@@ -114,6 +135,24 @@ def test_energy_jobline_source_failure_is_isolated_from_other_sources(tmp_path):
     assert result["run"]["status"] == "partial"
     assert result["run"]["source_status"]["freehire-search"]["accepted"] == 1
     assert result["run"]["source_status"]["energy-jobline-search"]["status"] == "failed"
+    assert len(result["candidate_ids"]) == 1
+
+
+def test_airswift_source_failure_is_isolated_from_other_sources(tmp_path):
+    conn = _connection(tmp_path)
+    save_user_profile(conn, {
+        "target_roles": ["Drilling Engineer"], "locations": ["Aberdeen"],
+        "search_terms": ["drilling"],
+        "source_preferences": ["freehire-search", "airswift-search"],
+        "recency_days": 7,
+    })
+    runner = FakeRunnerWithFailingAirswift()
+
+    result = run_discovery_search(conn, runner, limit_per_source=10)
+
+    assert result["run"]["status"] == "partial"
+    assert result["run"]["source_status"]["freehire-search"]["accepted"] == 1
+    assert result["run"]["source_status"]["airswift-search"]["status"] == "failed"
     assert len(result["candidate_ids"]) == 1
 
 
@@ -197,7 +236,12 @@ def test_empty_preferences_default_to_all_enabled_sources_only(tmp_path):
     run_discovery_search(conn, runner, limit_per_source=10)
 
     called_sources = {source for source, _ in runner.calls}
-    assert called_sources == {"freehire-search", "linkedin-search", "energy-jobline-search"}
+    assert called_sources == {
+        "freehire-search",
+        "linkedin-search",
+        "energy-jobline-search",
+        "airswift-search",
+    }
 
 
 def test_disabling_energy_jobline_removes_it_from_default_discovery(tmp_path):
@@ -212,7 +256,7 @@ def test_disabling_energy_jobline_removes_it_from_default_discovery(tmp_path):
     run_discovery_search(conn, runner, limit_per_source=10)
 
     called_sources = {source for source, _ in runner.calls}
-    assert called_sources == {"freehire-search", "linkedin-search"}
+    assert called_sources == {"freehire-search", "linkedin-search", "airswift-search"}
     assert "energy-jobline-search" not in called_sources
 
 
@@ -339,4 +383,4 @@ def test_account_and_workspace_scoping_is_unaffected_by_the_registry(tmp_path):
     for runner in (runner_default, runner_other):
         called_sources = {source for source, _ in runner.calls}
         assert "energy-jobline-search" not in called_sources
-        assert called_sources == {"freehire-search", "linkedin-search"}
+        assert called_sources == {"freehire-search", "linkedin-search", "airswift-search"}

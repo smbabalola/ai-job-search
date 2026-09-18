@@ -30,6 +30,7 @@ APPLICATION_BLOCKERS_MIGRATION_ID = "011_application_blockers"
 BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID = "012_blocker_resolution_history"
 SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
 DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
+AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
 
 
 def _now() -> str:
@@ -65,6 +66,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID, _migrate_blocker_resolution_history, False),
         (SEMANTIC_SUBJECT_KEY_MIGRATION_ID, _migrate_semantic_subject_key, False),
         (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, _migrate_discovery_source_registry, False),
+        (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID, _migrate_airswift_discovery_source, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -626,6 +628,19 @@ def _migrate_discovery_source_registry(conn: sqlite3.Connection) -> None:
             "(source_id, display_name, enabled, updated_at) VALUES (?, ?, 1, ?)",
             (source_id, display_name, now),
         )
+
+
+def _migrate_airswift_discovery_source(conn: sqlite3.Connection) -> None:
+    # Registers airswift-search in the discovery_source_settings table
+    # created by migration 014, enabled by default. Deliberately a new,
+    # sequential migration rather than an edit to 014 -- existing databases
+    # that already applied 014 must pick this row up as an additive change
+    # on upgrade, not depend on an edited historical migration.
+    conn.execute(
+        "INSERT INTO discovery_source_settings "
+        "(source_id, display_name, enabled, updated_at) VALUES (?, ?, 1, ?)",
+        ("airswift-search", "Airswift", _now()),
+    )
 
 
 def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:

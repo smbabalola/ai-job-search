@@ -72,6 +72,7 @@ def test_get_sources_returns_display_names_and_reflects_registry_disable(tmp_pat
             "freehire-search": "Freehire",
             "linkedin-search": "LinkedIn",
             "energy-jobline-search": "Energy Jobline",
+            "airswift-search": "Airswift",
         }
 
         conn = connect(db_path)
@@ -80,7 +81,27 @@ def test_get_sources_returns_display_names_and_reflects_registry_disable(tmp_pat
 
         response = client.get(f"{base}/discovery/sources")
         source_ids = {s["source_id"] for s in response.json()["sources"]}
-        assert source_ids == {"freehire-search", "linkedin-search"}
+        assert source_ids == {"freehire-search", "linkedin-search", "airswift-search"}
+
+
+def test_airswift_disabled_via_registry_disappears_from_available_sources(tmp_path):
+    db_path = tmp_path / "discovery.sqlite3"
+    app = create_app(Settings(db_path=db_path))
+    app.state.discovery_portal_runner = Runner()
+    with TestClient(app) as client:
+        base = "/api/search-workspaces/search_default"
+
+        response = client.get(f"{base}/discovery/sources")
+        source_ids = {s["source_id"] for s in response.json()["sources"]}
+        assert "airswift-search" in source_ids
+
+        conn = connect(db_path)
+        set_discovery_source_enabled(conn, "airswift-search", False)
+        conn.close()
+
+        response = client.get(f"{base}/discovery/sources")
+        source_ids = {s["source_id"] for s in response.json()["sources"]}
+        assert "airswift-search" not in source_ids
 
 
 def test_discovery_page_renders_display_names_not_raw_source_ids(tmp_path):
