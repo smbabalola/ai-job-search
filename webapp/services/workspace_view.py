@@ -75,6 +75,7 @@ _ARTIFACT_TYPE_NOUNS: dict[str, str] = {
     "application_intelligence_request": "the Application Intelligence request",
     "application_intelligence_result": "Application Intelligence",
     "cv_content_plan": "the CV content plan",
+    "cv_statement_plan": "the CV statement plan",
     "server:active_extensions": "your active professional-knowledge extensions",
     "server:evaluation_policy": "the evaluation policy",
     "server:semantic_fit_policy": "the fit-matching policy",

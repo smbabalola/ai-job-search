@@ -21,6 +21,7 @@ ARTIFACT_TYPES = (
     "application_document_generation",
     "cv_content_plan",
     "cv_statement_plan",
+    "cv_generation_basis",
 )
 
 
