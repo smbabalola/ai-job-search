@@ -79,6 +79,7 @@ documents/diplomas/**
 documents/references/**
 documents/applications/**
 documents/postings/**
+documents/document_blobs/
 # Interview prep and experience records: these name the employers applied to,
 # quote what was submitted, and set out the candidate's weak points.
 documents/interview/**
