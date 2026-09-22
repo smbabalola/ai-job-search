@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from product.cv_review_projection import CV_STATEMENT_REVIEW_ITEM_TYPE
 from webapp.api.dependencies import (
     get_account_scope,
     get_conn,
@@ -51,6 +52,16 @@ class ApplicationPackBody(StrictBody):
     document_selection_revisions: dict[str, int] | None = None
 
 
+def _reject_dedicated_item_types(decisions: list[ReviewDecisionBody]) -> None:
+    # CV statement decisions must go through the dedicated CV-v2 endpoint,
+    # which validates the exact statement against its pinned plan.
+    if any(item.review_item_type == CV_STATEMENT_REVIEW_ITEM_TYPE for item in decisions):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{CV_STATEMENT_REVIEW_ITEM_TYPE} decisions must use the CV Quality v2 review endpoint",
+        )
+
+
 def _translate(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=404 if isinstance(exc, JobWorkspaceNotFound) else 400,
@@ -78,6 +89,7 @@ def post_review_decision(
     conn: sqlite3.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
+    _reject_dedicated_item_types([body])
     try:
         return record_review_decision(
             conn, workspace_id, review_item_type=body.review_item_type,
@@ -98,6 +110,7 @@ def post_review_decisions_batch(
 ):
     if not 1 <= len(body.decisions) <= 100:
         raise HTTPException(status_code=400, detail="batch must contain from 1 to 100 decisions")
+    _reject_dedicated_item_types(body.decisions)
     try:
         decisions = record_review_decisions(
             conn, workspace_id, [item.model_dump() for item in body.decisions],

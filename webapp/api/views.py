@@ -5,6 +5,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from webapp.api.cv_generation_v2 import build_cv_v2_review_view, require_owned_artifact
 from webapp.api.dependencies import get_account_scope, get_conn
 from product.user_profile import normalize_user_profile
 from webapp.persistence.user_profile import get_current_user_profile
@@ -255,6 +256,35 @@ def search_workspaces_page(
         request,
         "search_workspaces.html",
         _search_context(conn, scope.account_id, selected),
+    )
+
+
+@router.get("/workspaces/{workspace_id}/cv-v2/{plan_id}", response_class=HTMLResponse)
+def cv_v2_review_page(
+    workspace_id: str, plan_id: str, request: Request,
+    conn: sqlite3.Connection = Depends(get_conn),
+    scope: AccountScope = Depends(get_account_scope),
+):
+    try:
+        view = build_workspace_view_model(
+            conn, workspace_id,
+            extensions_dir=request.app.state.settings.extensions_dir,
+            account_id=scope.account_id,
+        )
+    except JobWorkspaceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    require_owned_artifact(conn, workspace_id, plan_id, artifact_type="cv_statement_plan")
+    finalization = view["document_finalization"]
+    return request.app.state.templates.TemplateResponse(
+        request, "cv_v2_review.html",
+        {
+            "workspace": view["workspace"],
+            "review": build_cv_v2_review_view(conn, workspace_id, plan_id),
+            "can_mutate": finalization["can_upload"],
+            "can_generate": finalization["can_generate"],
+            "review_completion_friendly_issues": view["review_completion_friendly_issues"],
+            **_search_context(conn, scope.account_id),
+        },
     )
 
 

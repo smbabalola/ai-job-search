@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}CV Quality v2 review · {{ workspace.company }} · {{ workspace.title }}{% endblock %}
+{% block content %}
+{% set pending_count = review.state.pending | length %}
+<section class="workspace-header"><div><a class="back-link" href="/workspaces/{{ workspace.id }}#documents">← Back to documents</a><p class="eyebrow">{{ workspace.company }} · {{ workspace.title }}</p><h1>CV Quality v2 review</h1>
+<p>Decide on each CV statement. Only statements you choose to use can appear in the CV.</p></div>
+<div class="trust-callout"><strong>Evidence first</strong><span>Every statement comes from your Evidence Profile. Reviewing or generating never submits an application.</span></div></section>
+
+<section class="panel review-panel cv-v2-review" data-workspace-id="{{ workspace.id }}" data-plan-id="{{ review.statement_plan_artifact_id }}">
+<div class="panel-heading"><div><p class="eyebrow">Your decisions</p><h2>CV statements</h2><p><strong>{{ pending_count }} pending</strong> · {{ review.state.authorized | length }} used · {{ review.state.omitted | length }} left out</p></div></div>
+{% if not can_mutate %}<p class="blocked-note">This application has been submitted, so its CV review can no longer change.</p>{% endif %}
+{% for item in review["items"] %}<article class="review-item cv-v2-statement" data-statement-id="{{ item.statement_id }}"><div>{% if item.decision == "authorized" %}<span class="badge complete">Use</span>{% elif item.decision == "omitted" %}<span class="badge neutral">Leave out</span>{% else %}<span class="badge review">Pending</span>{% endif %}<p>{{ item.statement_text }}</p><small>{{ item.statement_id }}</small></div>
+{% if can_mutate %}<div class="review-actions"><button class="button button-small cv-v2-decision" data-statement-id="{{ item.statement_id }}" data-disposition="acknowledged_and_proceed">Use</button> <button class="button button-small secondary cv-v2-decision" data-statement-id="{{ item.statement_id }}" data-disposition="omit_from_positioning">Leave out</button></div>{% endif %}</article>
+{% else %}<p class="muted">No CV statements could be grounded in your evidence for this job.</p>{% endfor %}
+{% if can_mutate %}<button class="button cv-v2-build" {% if pending_count or not review["items"] %}disabled{% endif %}>Build reviewed CV basis</button>{% if pending_count %} <small class="muted">Decide on every statement first.</small>{% endif %}{% endif %}
+</section>
+
+<section class="panel cv-v2-bases"><div class="panel-heading"><div><p class="eyebrow">From this review</p><h2>Reviewed CV bases</h2></div></div>
+{% if can_mutate and not can_generate %}<p class="blocked-note">Reviewed application material must be completion-ready before AI documents can be generated.</p><ul class="completion-issues-friendly">{% for message in review_completion_friendly_issues %}<li>{{ message }}</li>{% endfor %}</ul>{% endif %}
+{% for basis in review.bases %}<article class="document-version"><div><strong>Basis built {{ basis.created_at[:19] | replace("T", " ") }} UTC</strong><small>{{ basis.authorized_statement_ids | length }} used · {{ basis.omitted_statement_ids | length }} left out · <code>{{ basis.basis_artifact_id }}</code></small></div>
+{% if can_mutate %}<button class="button button-small cv-v2-generate" data-basis-id="{{ basis.basis_artifact_id }}" {% if not can_generate %}disabled{% endif %}>Generate documents from this basis</button>{% endif %}</article>
+{% else %}<p class="muted">No basis built yet.</p>{% endfor %}
+</section>
+{% endblock %}
