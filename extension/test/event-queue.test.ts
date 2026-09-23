@@ -76,4 +76,54 @@ describe("DurableEventQueue", () => {
     const sentEventIds = sender.mock.calls.map(([event]) => event.eventId);
     expect(new Set(sentEventIds)).toEqual(new Set(["evt_1"]));
   });
+
+  // Guards specifically against the wrong fix for overlapping flush()
+  // calls: simply returning the same already-in-flight flush Promise to
+  // every concurrent caller. That would strand a newly enqueued event --
+  // if flush A already took its snapshot of the queue before event B is
+  // enqueued, and flush B's caller just joins A's Promise instead of
+  // running its own pass, B is never delivered by either call and no
+  // later trigger exists to pick it up.
+  it("a flush requested while another is in flight still delivers an event enqueued in between", async () => {
+    const store = new InMemoryStore();
+    const firstEventReceived = deferred<void>();
+    const releaseFirstSend = deferred<void>();
+    const delivered: string[] = [];
+
+    const sender = vi.fn().mockImplementation(async (event: QueuedEvent) => {
+      if (event.eventId === "evt_1") {
+        // Signal that flush A has started sending evt_1 (i.e. it has
+        // already taken its snapshot and is mid-send), then block until
+        // the test explicitly releases it -- this is the window during
+        // which event B is enqueued and flush B is requested.
+        firstEventReceived.resolve();
+        await releaseFirstSend.promise;
+      }
+      delivered.push(event.eventId);
+      return true;
+    });
+
+    const queue = new DurableEventQueue(store, sender);
+    await queue.enqueue(makeEvent({ eventId: "evt_1", clientSequence: 1 }));
+
+    const flushA = queue.flush();
+    await firstEventReceived.promise;
+
+    // Event B is durably enqueued WHILE flush A is still in flight and
+    // has already snapshotted the queue without B in it.
+    await queue.enqueue(makeEvent({ eventId: "evt_2", clientSequence: 2 }));
+    const flushB = queue.flush();
+
+    releaseFirstSend.resolve();
+    await Promise.all([flushA, flushB]);
+
+    expect(delivered).toEqual(["evt_1", "evt_2"]);
+    expect(await store.getAll()).toHaveLength(0);
+  });
 });
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}

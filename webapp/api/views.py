@@ -9,8 +9,9 @@ from webapp.api.cv_generation_v2 import build_cv_v2_review_view, require_owned_a
 from webapp.api.dependencies import get_account_scope, get_conn
 from product.user_profile import normalize_user_profile
 from webapp.persistence.user_profile import get_current_user_profile
-from product.discovery_search import SUPPORTED_DISCOVERY_SOURCES
+from product.discovery_search import available_discovery_source_ids
 from webapp.persistence.discovery import get_latest_discovery_run
+from webapp.persistence.discovery_sources import list_discovery_source_settings
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
     get_search_workspace,
@@ -184,13 +185,20 @@ def scoped_discovery_page(
     )
     preferences = profile["payload"] if profile else normalize_user_profile({})
     latest_run = get_latest_discovery_run(conn, search_workspace_id)
+    registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
+    available_sources = available_discovery_source_ids(
+        [source_id for source_id, row in registry.items() if row["enabled"]]
+    )
     response = request.app.state.templates.TemplateResponse(
         request,
         "discovery.html",
         {
             "user_profile": profile,
             "preferences": preferences,
-            "sources": SUPPORTED_DISCOVERY_SOURCES,
+            "sources": [
+                {"source_id": source_id, "display_name": registry[source_id]["display_name"]}
+                for source_id in available_sources
+            ],
             "groups": grouped_discovery_candidates(
                 conn,
                 search_workspace_id=search_workspace_id,

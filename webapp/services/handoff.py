@@ -5,6 +5,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from pathlib import Path
@@ -28,6 +29,7 @@ from webapp.persistence.handoff import (
 )
 from webapp.persistence.workflow import record_status_change
 from webapp.services.ownership import AccountScope, account_profile_root
+from webapp.services.staleness import check_staleness
 
 
 class HandoffError(RuntimeError):
@@ -175,6 +177,21 @@ class HandoffSessionNotFound(HandoffError):
 
 
 class HandoffSessionNotActive(HandoffError):
+    pass
+
+
+class HandoffPackStale(HandoffError):
+    """Raised by confirm_handoff_submission when mark_workflow_applied=True
+    and the session's pinned application pack has gone stale relative to
+    its current basis. This is the handoff-feature equivalent of
+    webapp.services.pipeline.PipelineError raised by
+    webapp.services.http_api.change_job_status for the same invariant
+    (Phase 4C spec Sec15) — kept as a HandoffError subclass, rather than
+    reusing PipelineError directly, so it is caught by this module's own
+    HandoffError-based error translation (webapp/api/handoff.py's
+    _translate) exactly like every other rejection this function and its
+    siblings raise."""
+
     pass
 
 
@@ -455,6 +472,7 @@ def confirm_handoff_submission(
     handoff_session_id: str,
     mark_workflow_applied: bool = False,
     effective_date: str | None = None,
+    extensions_dir: Path | str = Path("extensions"),
 ) -> dict[str, Any]:
     # This is the ONLY function in this module that may call
     # record_status_change or create a submission_confirmations row — it is
@@ -473,6 +491,29 @@ def confirm_handoff_submission(
     now_iso = datetime.now(timezone.utc).isoformat()
     workflow_event = None
     if mark_workflow_applied:
+        # Phase 4C spec Sec15's required invariant, enforced here too: this
+        # function is a SECOND production entry point (alongside
+        # webapp/services/http_api.py::change_job_status) that can
+        # transition a workspace to 'applied', and it calls
+        # record_status_change directly rather than going through
+        # change_job_status — so change_job_status's own staleness gate
+        # (commit 0431ec5) never runs on this path. Checked here, before
+        # any of this function's side effects (record_status_change,
+        # set_handoff_session_status, create_submission_confirmation,
+        # conn.commit()), for the same reason change_job_status checks it
+        # before its own record_status_change call: a stale application
+        # pack must not be allowed to proceed to 'applied' merely because
+        # this alternate entry point bypasses the primary gate.
+        staleness = check_staleness(
+            conn, session["workspace_id"], "application_pack",
+            extensions_dir=extensions_dir, account_id=scope.account_id,
+        )
+        if staleness["stale"]:
+            raise HandoffPackStale(
+                "cannot mark applied: the confirmed application pack is stale "
+                "relative to its current basis (" + "; ".join(staleness["reasons"]) + ") — "
+                "reconfirm a new pack via Gate 4 before submitting"
+            )
         # Reused exactly as-is; this module adds no new path to "applied"
         # and no automatic transition (design spec Section 12, Section 18).
         workflow_event = record_status_change(

@@ -8,13 +8,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from webapp.api.dependencies import get_account_scope, get_conn, get_documents_root
+from webapp.api.dependencies import (
+    get_account_scope,
+    get_conn,
+    get_documents_root,
+    get_extensions_dir,
+)
 from webapp.services.handoff import (
     HandoffDocumentKindUnsupported,
     HandoffError,
     HandoffEventRejected,
     HandoffPackArtifactInvalid,
     HandoffPackNotFound,
+    HandoffPackStale,
     HandoffSessionExpired,
     HandoffSessionNotActive,
     HandoffSessionNotFound,
@@ -111,8 +117,14 @@ def _translate(exc: Exception) -> HTTPException:
         return HTTPException(status_code=401, detail=str(exc))
     if isinstance(
         exc,
-        (HandoffPackNotFound, HandoffSessionNotActive, HandoffEventRejected,
-         HandoffPackArtifactInvalid, HandoffDocumentKindUnsupported),
+        (
+            HandoffPackNotFound,
+            HandoffSessionNotActive,
+            HandoffEventRejected,
+            HandoffPackStale,
+            HandoffPackArtifactInvalid,
+            HandoffDocumentKindUnsupported,
+        ),
     ):
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
@@ -279,12 +291,14 @@ def post_confirm_submission(
     session_id: str, body: ConfirmSubmissionBody,
     scope: SessionScope = Depends(get_session_scope),
     conn: sqlite3.Connection = Depends(get_conn),
+    extensions_dir: Path = Depends(get_extensions_dir),
 ):
     try:
         return confirm_handoff_submission(
             conn, scope, handoff_session_id=session_id,
             mark_workflow_applied=body.mark_workflow_applied,
             effective_date=body.effective_date,
+            extensions_dir=extensions_dir,
         )
     except HandoffError as exc:
         raise _translate(exc) from exc

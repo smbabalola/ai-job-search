@@ -29,6 +29,8 @@ POLICY_DECISIONS_MIGRATION_ID = "010_policy_decisions"
 APPLICATION_BLOCKERS_MIGRATION_ID = "011_application_blockers"
 BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID = "012_blocker_resolution_history"
 SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
+DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
+AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
 
 
 def _now() -> str:
@@ -63,6 +65,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (APPLICATION_BLOCKERS_MIGRATION_ID, _migrate_application_blockers, False),
         (BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID, _migrate_blocker_resolution_history, False),
         (SEMANTIC_SUBJECT_KEY_MIGRATION_ID, _migrate_semantic_subject_key, False),
+        (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, _migrate_discovery_source_registry, False),
+        (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID, _migrate_airswift_discovery_source, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -331,29 +335,6 @@ def _migrate_pairing_secrets(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
-    _execute_statements(
-        conn,
-        """
-        CREATE TABLE handoff_session_tokens (
-            id TEXT PRIMARY KEY,
-            handoff_session_id TEXT NOT NULL REFERENCES handoff_sessions(id),
-            token_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            revoked_at TEXT
-        );
-
-        CREATE INDEX idx_handoff_session_tokens_hash ON handoff_session_tokens(token_hash);
-        CREATE INDEX idx_handoff_session_tokens_session ON handoff_session_tokens(handoff_session_id);
-        """,
-    )
-
-
-def _migrate_handoff_session_activity(conn: sqlite3.Connection) -> None:
-    conn.execute("ALTER TABLE handoff_sessions ADD COLUMN last_activity_at TEXT")
-    conn.execute("UPDATE handoff_sessions SET last_activity_at = started_at")
-
-
 def _migrate_policy_decisions(conn: sqlite3.Connection) -> None:
     # Durable, append-only ledger of every automatic (or future human)
     # classification product/application_decision_policy.py produces for a
@@ -615,6 +596,74 @@ def _migrate_semantic_subject_key(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE application_blockers ADD COLUMN semantic_subject_key TEXT"
     )
+
+
+def _migrate_discovery_source_registry(conn: sqlite3.Connection) -> None:
+    # Backend-controlled enable/disable for discovery sources that are
+    # already implemented in code (product/discovery_search.py's
+    # SOURCE_CLI_PATHS). This table is never, by itself, sufficient to make
+    # a source runnable -- runtime availability is always the intersection
+    # of SOURCE_CLI_PATHS.keys() and the enabled rows here (see
+    # product/discovery_search.py's available_discovery_source_ids). A row
+    # for a source with no matching code-level adapter is inert.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE discovery_source_settings (
+            source_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            updated_at TEXT NOT NULL
+        );
+        """,
+    )
+    now = _now()
+    for source_id, display_name in (
+        ("freehire-search", "Freehire"),
+        ("linkedin-search", "LinkedIn"),
+        ("energy-jobline-search", "Energy Jobline"),
+    ):
+        conn.execute(
+            "INSERT INTO discovery_source_settings "
+            "(source_id, display_name, enabled, updated_at) VALUES (?, ?, 1, ?)",
+            (source_id, display_name, now),
+        )
+
+
+def _migrate_airswift_discovery_source(conn: sqlite3.Connection) -> None:
+    # Registers airswift-search in the discovery_source_settings table
+    # created by migration 014, enabled by default. Deliberately a new,
+    # sequential migration rather than an edit to 014 -- existing databases
+    # that already applied 014 must pick this row up as an additive change
+    # on upgrade, not depend on an edited historical migration.
+    conn.execute(
+        "INSERT INTO discovery_source_settings "
+        "(source_id, display_name, enabled, updated_at) VALUES (?, ?, 1, ?)",
+        ("airswift-search", "Airswift", _now()),
+    )
+
+
+def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE handoff_session_tokens (
+            id TEXT PRIMARY KEY,
+            handoff_session_id TEXT NOT NULL REFERENCES handoff_sessions(id),
+            token_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+
+        CREATE INDEX idx_handoff_session_tokens_hash ON handoff_session_tokens(token_hash);
+        CREATE INDEX idx_handoff_session_tokens_session ON handoff_session_tokens(handoff_session_id);
+        """,
+    )
+
+
+def _migrate_handoff_session_activity(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE handoff_sessions ADD COLUMN last_activity_at TEXT")
+    conn.execute("UPDATE handoff_sessions SET last_activity_at = started_at")
 
 
 def _migrate_evidence_profile_manager(conn: sqlite3.Connection) -> None:
