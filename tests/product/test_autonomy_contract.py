@@ -25,7 +25,7 @@ def test_ttls_are_stage_specific():
 
 def test_hash_ignores_key_order_and_whitespace():
     a = canonical_hash("s", "v1", {"b": 1, "a": {"y": [1, 2], "x": "é"}})
-    b = canonical_hash("s", "v1", {"a": {"x": "é", "y": [1, 2]}, "b": 1})
+    b = canonical_hash("s", "v1", {"a": {"x": "é", "y": [1, 2]}, "b": 1})
     assert a == b
     assert a.startswith("sha256:")
 
