@@ -47,3 +47,53 @@ def test_whitespace_normalize_preserves_value(text):
     except TransformError:
         return
     assert out.split() == text.split()
+
+
+def test_canonical_not_same_object_as_apply():
+    """Fix 1: Verify phone_e164 and whitespace_normalize have independent canonical oracles."""
+    from product.representation_transforms import _TRANSFORMS
+
+    # phone_e164: canonical should be _phone_digits, not _phone_canonical (different objects)
+    phone_transform = _TRANSFORMS["phone_e164"]
+    assert phone_transform.apply is not phone_transform.canonical, \
+        "phone_e164: apply and canonical must be different function objects"
+
+    # whitespace_normalize: canonical should not be the same lambda as apply
+    ws_transform = _TRANSFORMS["whitespace_normalize"]
+    assert ws_transform.apply is not ws_transform.canonical, \
+        "whitespace_normalize: apply and canonical must be different function objects"
+
+
+@pytest.mark.parametrize("tid, value", [
+    ("date_iso_to_dmy", "2026-13-01"),   # Invalid month
+    ("date_iso_to_dmy", "2026-02-30"),   # Invalid day for February
+    ("date_iso_to_mdy", "2026-13-01"),   # Invalid month
+    ("date_iso_to_mdy", "2026-02-30"),   # Invalid day for February
+])
+def test_invalid_calendar_dates(tid, value):
+    """Fix 2: Invalid calendar dates must raise TransformError."""
+    with pytest.raises(TransformError):
+        apply_transform(tid, value)
+
+
+def test_phone_non_ascii_digits():
+    """Fix 3: Non-ASCII digits must be rejected."""
+    with pytest.raises(TransformError):
+        apply_transform("phone_e164", "+44٧٧٠٠٩٠٠١٢٣")
+
+
+@pytest.mark.parametrize("value, should_raise", [
+    ("United Kingdom", True),   # Country name, not ISO2 code
+    ("gb", False),              # Valid ISO2 code (lowercase)
+    ("GB", False),              # Valid ISO2 code (uppercase)
+    ("US", False),              # Valid ISO2 code
+])
+def test_country_iso2_to_name_validates_code(value, should_raise):
+    """Fix 4: country_iso2_to_name must require ISO2 input, not country name."""
+    if should_raise:
+        with pytest.raises(TransformError):
+            apply_transform("country_iso2_to_name", value)
+    else:
+        result = apply_transform("country_iso2_to_name", value)
+        assert isinstance(result, str)
+        assert result in ["United Kingdom", "United States"]
