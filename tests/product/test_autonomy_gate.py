@@ -225,3 +225,151 @@ def test_deterministic_and_fingerprint_tracks_inputs():
     a, b = evaluate_authorization(make_ctx()), evaluate_authorization(make_ctx())
     assert a == b
     assert evaluate_authorization(make_ctx(run_id="run_2")).input_fingerprint != a.input_fingerprint
+
+
+# --- Fix round 1: fail-closed coverage for unrecognised/malformed input -----
+# The brief's original implementation fails OPEN on several malformed inputs
+# (e.g. a truthy UNKNOWN sentinel on a strict-bool field is falsy-checked and
+# silently treated as satisfied; a non-enum value skips the intended branch
+# entirely). Every case below must resolve to DENY(invalid_input) instead.
+
+_FUTURE = NOW + timedelta(days=1)
+
+_ROUND1_INVALID_CASES = [
+    pytest.param(dict(mode="LIVE"), id="mode-not-enum"),
+    pytest.param(dict(requested_stage=3), id="requested_stage-not-enum"),
+    pytest.param(dict(deployment_ceiling="SUBMIT"), id="deployment_ceiling-not-enum"),
+    pytest.param(dict(account_max=3), id="account_max-not-enum"),
+    pytest.param(dict(workspace_ceiling=None), id="workspace_ceiling-not-enum"),
+    pytest.param(dict(identity_strength="WEAK"), id="identity_strength-not-enum"),
+    pytest.param(dict(employer_key_strength="ATS_TENANT"), id="employer_key_strength-not-enum"),
+    pytest.param(dict(apply_target=good_target(provenance="discovery_verified")), id="provenance-not-enum"),
+    pytest.param(dict(kill_switch_engaged=1), id="kill_switch_engaged-not-bool"),
+    pytest.param(dict(sentinel_present="yes"), id="sentinel_present-not-bool"),
+    pytest.param(dict(governing_auto_reject=0), id="governing_auto_reject-not-bool"),
+    pytest.param(dict(pack_auto_confirmable=UNKNOWN), id="pack_auto_confirmable-not-bool"),
+    pytest.param(dict(identity_conflict=1), id="identity_conflict-not-bool"),
+    pytest.param(dict(intent_overridden="no"), id="intent_overridden-not-bool"),
+    pytest.param(dict(apply_target=good_target(adapter_submit_capable=UNKNOWN)), id="adapter_submit_capable-unknown"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject=None, required=1, evidence_available=True),)), id="requirement-required-not-bool"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject=None, required=True, evidence_available="no"),)), id="requirement-evidence_available-not-bool"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", contradicted=1),)),)), id="candidate-contradicted-not-bool"),
+    pytest.param(dict(apply_target=good_target(landing_within_redirect_set="yes")), id="landing_within_redirect_set-bad-type"),
+    pytest.param(dict(apply_target=good_target(tenant_matches_employer=1)), id="tenant_matches_employer-bad-type"),
+    pytest.param(dict(apply_target=good_target(unexplained_redirect="no")), id="unexplained_redirect-bad-type"),
+    pytest.param(dict(apply_target=good_target(ats_job_id_matches="yes")), id="ats_job_id_matches-bad-type"),
+    pytest.param(dict(existing_intent_state="confirmed"), id="existing_intent_state-bad-value"),
+    pytest.param(dict(rule_acknowledgements=(_ack(make_policy(PERMANENT_ONLY),
+                                                   {"job.employment_type": "CONTRACT"}, disposition="do_not_proceed"),)),
+                 id="disposition-lowercase"),
+    pytest.param(dict(rule_acknowledgements=(_ack(make_policy(PERMANENT_ONLY),
+                                                   {"job.employment_type": "CONTRACT"}, disposition="GARBAGE"),)),
+                 id="disposition-garbage"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", basis_kind="evidence"),)),)), id="basis_kind-lowercase"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", reach="EMPLOYER"),)),)), id="reach-not-enum"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", confirmed_at=_FUTURE),)),)), id="confirmed_at-future"),
+]
+
+
+@pytest.mark.parametrize("overrides", _ROUND1_INVALID_CASES)
+def test_round1_fail_closed_on_malformed_input(overrides):
+    d = evaluate_authorization(make_ctx(**overrides))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+
+
+def test_empty_identity_key_treated_as_missing():
+    d = evaluate_authorization(make_ctx(identity_key=""))
+    assert d.effective_capability == C.FILL and "identity_weak" in codes(d)
+
+
+def test_missing_pack_artifact_id_caps_at_prepare_even_if_confirmable():
+    d = evaluate_authorization(make_ctx(pack_artifact_id=None))
+    assert d.effective_capability == C.PREPARE and "pack_not_auto_confirmable" in codes(d)
+
+
+def test_retryable_flag_only_true_for_deny_temporary():
+    d = evaluate_authorization(make_ctx(counters=(CounterState("submit_per_day", C.SUBMIT, 3, 3, NOW + timedelta(hours=1)),)))
+    assert d.result is R.DENY_TEMPORARY and d.retryable is True
+    d = evaluate_authorization(make_ctx())
+    assert d.result is R.ALLOW and d.retryable is False
+    d = evaluate_authorization(make_ctx(kill_switch_engaged=True))
+    assert d.result is R.DENY and d.retryable is False
+
+
+def test_rule_acknowledgement_lapses_specifically_on_observed_attribute_change():
+    attrs = {"job.employment_type": "CONTRACT", "fit.overall_score": 80}
+    policy = make_policy(PERMANENT_ONLY, MIN_FIT)
+    ack = _ack(policy, attrs)
+    d = evaluate_authorization(make_ctx(standing_policy=policy, attributes={**attrs, "job.employment_type": "TEMPORARY"},
+                                        rule_acknowledgements=(ack,)))
+    assert d.result is R.REQUIRE_USER and "rule_acknowledgement_lapsed" in codes(d)
+
+
+def test_naive_retry_at_on_counter_state_is_invalid_input():
+    naive = datetime(2026, 9, 24, 18, 0)
+    d = evaluate_authorization(make_ctx(counters=(CounterState("submit_per_day", C.SUBMIT, 3, 3, naive),)))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+
+
+def test_employer_key_none_reduces_to_fill():
+    d = evaluate_authorization(make_ctx(employer_key=None))
+    assert d.effective_capability == C.FILL and "employer_key_unknown" in codes(d)
+
+
+FLAGS_EXT = {
+    "kill": dict(kill_switch_engaged=True),
+    "stale_binding": dict(grant_binding_drift=("fill_manifest_hash",)),
+    "block": dict(governing_auto_reject=True),
+    "duplicate": dict(existing_intent_state="CONFIRMED"),
+    "limit": dict(counters=(CounterState("submit_per_day", C.SUBMIT, 3, 3, None),)),
+    "budget": dict(budgets=(BudgetState("LLM", "day", Decimal("4.5"), Decimal("0.4"), Decimal("5"), Decimal("0.2"), None),)),
+    "require_user": dict(unresolved_governing_require_user=("blk_1",)),
+}
+# Precedence order (spec §9.4): kill_switch/stale_binding (kill wins the tie)
+# > BLOCK > duplicate > limit/budget (limit wins the tie) > REQUIRE_USER.
+PRECEDENCE_EXT = [
+    ("kill", R.DENY, "kill_switch"),
+    ("stale_binding", R.DENY, "stale_binding"),
+    ("block", R.BLOCK, None),
+    ("duplicate", R.DENY, "duplicate"),
+    ("limit", R.DENY_TEMPORARY, "limit"),
+    ("budget", R.DENY_TEMPORARY, "budget"),
+    ("require_user", R.REQUIRE_USER, None),
+]
+FLAG_REASON_CODE_EXT = {
+    "kill": "kill_switch",
+    "stale_binding": "stale_binding",
+    "block": "governing_auto_reject",
+    "duplicate": "duplicate_intent",
+    "limit": "limit_reached",
+    "budget": "budget_exceeded",
+    "require_user": "governing_blocker",
+}
+
+
+@pytest.mark.parametrize("combo", [c for n in range(1, len(FLAGS_EXT) + 1) for c in itertools.combinations(FLAGS_EXT, n)])
+def test_precedence_extended_with_stale_binding_and_budget(combo):
+    overrides = {}
+    for name in combo:
+        overrides.update(FLAGS_EXT[name])
+    d = evaluate_authorization(make_ctx(**overrides))
+    winner_name, winner_result, winner_deny_reason = next(
+        (name, result, deny_reason) for name, result, deny_reason in PRECEDENCE_EXT if name in combo
+    )
+    assert d.result is winner_result
+    if winner_result is R.DENY:
+        assert d.deny_reason == winner_deny_reason
+    elif winner_result is R.DENY_TEMPORARY:
+        assert d.deny_reason == ("limit" if "limit" in combo else "budget")
+    for name in combo:
+        assert FLAG_REASON_CODE_EXT[name] in codes(d)

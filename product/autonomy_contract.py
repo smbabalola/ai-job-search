@@ -223,6 +223,7 @@ class AuthorizationDecision:
     reasons: tuple[Reason, ...]
     require_user_items: tuple[RequireUserItem, ...]
     retry_at: datetime | None
+    retryable: bool
     input_fingerprint: str
     engine_version: str
     policy_version_hash: str | None

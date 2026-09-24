@@ -32,6 +32,14 @@ def _aware(value: Any) -> bool:
     return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
 
 
+def _is_bool(value: Any) -> bool:
+    return isinstance(value, bool)
+
+
+def _bool_or_unknown(value: Any) -> bool:
+    return isinstance(value, bool) or is_unknown(value)
+
+
 class _Acc:
     def __init__(self, ceiling: Capability) -> None:
         self.cap = ceiling
@@ -50,18 +58,94 @@ class _Acc:
 
 
 def _context_errors(ctx: AuthorizationContext) -> list[str]:
+    """Type/shape validation for everything the rest of the gate would need to
+    inspect via attribute access (`.name`, `.value`, comparisons) or otherwise
+    trust unconditionally. This function must never raise on a bad-type
+    input -- every check here uses isinstance/containment, never attribute
+    access on an unverified value. Anything not validated here and later
+    accessed unconditionally (e.g. `ctx.deployment_ceiling.name`) is only
+    reached once this function returns no errors, so the gate fails closed
+    before any such access."""
     errors: list[str] = []
-    if not _aware(ctx.now):
+    now_ok = _aware(ctx.now)
+    if not now_ok:
         errors.append("now_naive")
-    if ctx.requested_stage == Capability.NONE:
+
+    if not isinstance(ctx.mode, Mode):
+        errors.append("mode_invalid")
+
+    if not isinstance(ctx.requested_stage, Capability):
+        errors.append("requested_stage_invalid")
+    elif ctx.requested_stage == Capability.NONE:
         errors.append("requested_stage_none")
+
+    for name, value in (
+        ("deployment_ceiling", ctx.deployment_ceiling),
+        ("account_max", ctx.account_max),
+        ("workspace_ceiling", ctx.workspace_ceiling),
+    ):
+        if not isinstance(value, Capability):
+            errors.append(f"{name}_invalid")
+
+    if not isinstance(ctx.identity_strength, IdentityStrength):
+        errors.append("identity_strength_invalid")
+    if not isinstance(ctx.employer_key_strength, EmployerKeyStrength):
+        errors.append("employer_key_strength_invalid")
+
+    for name, value in (
+        ("kill_switch_engaged", ctx.kill_switch_engaged),
+        ("sentinel_present", ctx.sentinel_present),
+        ("governing_auto_reject", ctx.governing_auto_reject),
+        ("pack_auto_confirmable", ctx.pack_auto_confirmable),
+        ("identity_conflict", ctx.identity_conflict),
+        ("intent_overridden", ctx.intent_overridden),
+    ):
+        if not _is_bool(value):
+            errors.append(f"{name}_invalid")
+
+    if ctx.existing_intent_state not in (None, "CLAIMED", "CONFIRMED"):
+        errors.append("existing_intent_state_invalid")
+
+    target = ctx.apply_target
+    if target.provenance is not None and not isinstance(target.provenance, ProvenanceTier):
+        errors.append("apply_target_provenance_invalid")
+    if not _is_bool(target.adapter_submit_capable):
+        errors.append("apply_target_adapter_submit_capable_invalid")
+    for name, value in (
+        ("landing_within_redirect_set", target.landing_within_redirect_set),
+        ("tenant_matches_employer", target.tenant_matches_employer),
+        ("unexplained_redirect", target.unexplained_redirect),
+    ):
+        if not _bool_or_unknown(value):
+            errors.append(f"apply_target_{name}_invalid")
+    if not (target.ats_job_id_matches is None or _bool_or_unknown(target.ats_job_id_matches)):
+        errors.append("apply_target_ats_job_id_matches_invalid")
+
+    for ack in ctx.rule_acknowledgements:
+        if ack.disposition not in ("PROCEED", "DO_NOT_PROCEED"):
+            errors.append(f"rule_acknowledgement_disposition_invalid:{ack.rule_id}")
+
     for req in ctx.requirements:
+        if not _is_bool(req.required):
+            errors.append(f"requirement_required_invalid:{req.key}")
+        if not _is_bool(req.evidence_available):
+            errors.append(f"requirement_evidence_available_invalid:{req.key}")
         for cand in req.candidates:
+            if not _is_bool(cand.contradicted):
+                errors.append(f"candidate_contradicted_invalid:{cand.approved_answer_id}")
+            if cand.basis_kind not in ("EVIDENCE", "USER_ASSERTION"):
+                errors.append(f"candidate_basis_kind_invalid:{cand.approved_answer_id}")
+            if not isinstance(cand.reach, Reach):
+                errors.append(f"candidate_reach_invalid:{cand.approved_answer_id}")
             if not _aware(cand.confirmed_at):
                 errors.append(f"confirmed_at_naive:{cand.approved_answer_id}")
+            elif now_ok and cand.confirmed_at > ctx.now:
+                errors.append(f"confirmed_at_future:{cand.approved_answer_id}")
+
     for item in (*ctx.counters, *ctx.budgets):
         if item.retry_at is not None and not _aware(item.retry_at):
             errors.append("retry_at_naive")
+
     try:
         validate_subject_policy(ctx.subject_policy)
     except SubjectPolicyError:
@@ -90,7 +174,7 @@ def evaluate_authorization(ctx: AuthorizationContext) -> AuthorizationDecision:
             mode=ctx.mode, result=ResultKind.DENY, requested_stage=ctx.requested_stage,
             effective_capability=Capability.NONE, grantable=False, deny_reason="invalid_input",
             reasons=tuple(sorted(reason("invalid_input", detail=e) for e in errors)),
-            require_user_items=(), retry_at=None, input_fingerprint=fingerprint,
+            require_user_items=(), retry_at=None, retryable=False, input_fingerprint=fingerprint,
             engine_version=ENGINE_VERSION, policy_version_hash=policy_version_hash,
             subject_policy_hash=subject_hash,
         )
@@ -105,7 +189,7 @@ def evaluate_authorization(ctx: AuthorizationContext) -> AuthorizationDecision:
     _apply_target(ctx, acc)
     if ctx.employer_key_strength is EmployerKeyStrength.UNKNOWN or not ctx.employer_key:
         acc.reduce(Capability.FILL, "employer_key_unknown")
-    if not ctx.pack_auto_confirmable:
+    if not ctx.pack_auto_confirmable or not ctx.pack_artifact_id:
         acc.reduce(Capability.PREPARE, "pack_not_auto_confirmable")
     _apply_requirements(ctx, acc)
     _apply_stops(ctx, acc)
@@ -145,7 +229,7 @@ def _apply_standing_policy(ctx: AuthorizationContext, acc: _Acc) -> None:
 
 
 def _apply_identity(ctx: AuthorizationContext, acc: _Acc) -> None:
-    if ctx.identity_key is None or ctx.identity_strength is IdentityStrength.WEAK:
+    if not ctx.identity_key or ctx.identity_strength is IdentityStrength.WEAK:
         acc.reduce(Capability.FILL, "identity_weak")
     if ctx.identity_conflict:
         acc.reduce(Capability.FILL, "identity_conflict")
@@ -337,10 +421,11 @@ def _resolve(ctx: AuthorizationContext, acc: _Acc, fingerprint: str,
         result = ResultKind.ALLOW
     grantable = (result is ResultKind.ALLOW and acc.cap >= ctx.requested_stage
                  and ctx.mode is Mode.LIVE)
+    retryable = result is ResultKind.DENY_TEMPORARY
     return AuthorizationDecision(
         mode=ctx.mode, result=result, requested_stage=ctx.requested_stage,
         effective_capability=acc.cap, grantable=grantable, deny_reason=deny_reason,
         reasons=tuple(sorted(set(acc.reasons))), require_user_items=items, retry_at=retry_at,
-        input_fingerprint=fingerprint, engine_version=ENGINE_VERSION,
+        retryable=retryable, input_fingerprint=fingerprint, engine_version=ENGINE_VERSION,
         policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
     )
