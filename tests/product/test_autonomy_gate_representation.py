@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 from product.autonomy_contract import (
-    Capability, EmployerKeyStrength, Reach, RepresentationRequirement, RequireUserItem,
-    ResultKind, UNKNOWN,
+    Capability, EmployerKeyStrength, IdentityStrength, Reach, RepresentationRequirement,
+    RequireUserItem, ResultKind, UNKNOWN,
 )
 from product.autonomy_gate import evaluate_authorization
 from tests.product.autonomy_fixtures import NOW, answer, make_ctx
@@ -124,3 +124,64 @@ def test_relevance_questions_that_cannot_unlock_anything_stay_silent():
 
 def test_prepare_requests_ignore_fields():
     assert run(req("q7", None), requested_stage=C.PREPARE).grantable
+
+
+# --- Fix round 1: gaps found in review ---------------------------------------
+
+
+def test_optional_stale_answer_is_omitted_not_reduced():
+    old = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
+    d = run(req("notice", "employment.notice_period", required=False, candidates=[old]))
+    assert (d.result, d.effective_capability, d.grantable) == (R.ALLOW, C.SUBMIT, True)
+    assert any(r.code == "optional_omitted" and ("why", "expired") in r.params for r in d.reasons)
+
+    ctx = {"currency": "GBP", "region": "UK", "employment_type": "PERMANENT"}
+    sal = answer("compensation.salary_expectation", reach=Reach.SEARCH_WORKSPACE, scope_id="sw_1", context=ctx)
+    unknown_region = {**ctx, "region": UNKNOWN}
+    d2 = run(req("salary", "compensation.salary_expectation", required=False,
+                 job_context=unknown_region, candidates=[sal]))
+    assert d2.grantable
+    assert any(r.code == "optional_omitted" and ("why", "context_unknown") in r.params for r in d2.reasons)
+
+
+def test_employer_bound_answer_mismatched_scope_with_known_key():
+    wood_other = answer("motivation.employer_specific", reach=Reach.EMPLOYER, scope_id="name:other")
+    d = run(req("why_us", "motivation.employer_specific", candidates=[wood_other]))
+    assert RequireUserItem("missing_answer", "why_us") in d.require_user_items
+
+
+def test_basis_at_missing_but_current_present_is_basis_changed():
+    cand = answer("work_authorization.right_to_work", context={"country": "GB"},
+                  basis_kind="EVIDENCE", basis_at=None, basis_now="sha256:a")
+    job = {"country": "GB"}
+    d = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[cand]))
+    assert d.effective_capability == C.FILL
+    assert any(r.code == "answer_not_submit_ready" and ("why", "basis_changed") in r.params for r in d.reasons)
+
+
+def test_optional_field_with_no_candidates_is_omitted_no_answer():
+    d = run(req("notice", "employment.notice_period", required=False, candidates=()))
+    assert d.grantable
+    assert any(r.code == "optional_omitted" and ("why", "no_answer") in r.params for r in d.reasons)
+
+
+def test_contradiction_silenced_by_relevance():
+    bad = answer("employment.notice_period", contradicted=True)
+    d = run(req("notice", "employment.notice_period", candidates=[bad]),
+            identity_strength=IdentityStrength.WEAK)
+    assert RequireUserItem("contradicted_answer", "notice") not in d.require_user_items
+    assert any(r.code == "unresolved_silent" and ("kind", "contradicted_answer") in r.params
+               and ("ref", "notice") in r.params for r in d.reasons)
+
+
+def test_basis_changed_and_basis_gone_carry_basis_changed_reason():
+    job = {"country": "GB"}
+    changed = answer("work_authorization.right_to_work", context={"country": "GB"},
+                     basis_kind="EVIDENCE", basis_at="sha256:a", basis_now="sha256:b")
+    d = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[changed]))
+    assert any(r.code == "answer_not_submit_ready" and ("why", "basis_changed") in r.params for r in d.reasons)
+
+    gone = answer("work_authorization.right_to_work", context={"country": "GB"},
+                  basis_kind="EVIDENCE", basis_at="sha256:a", basis_now=None)
+    d2 = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[gone]))
+    assert any(r.code == "answer_not_submit_ready" and ("why", "basis_changed") in r.params for r in d2.reasons)
