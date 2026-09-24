@@ -27,6 +27,11 @@ def get_documents_root(request: Request) -> Path:
     return request.app.state.settings.documents_root
 
 
+def require_cv_quality_v2_enabled(request: Request) -> None:
+    if not request.app.state.settings.cv_quality_v2_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 def get_account_scope(
     request: Request,
     conn: sqlite3.Connection = Depends(get_conn),

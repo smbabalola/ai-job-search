@@ -13,7 +13,7 @@ async function api(url, options) {
 }
 
 document.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action], button.stage-action, button.review-action, button.review-batch-action, button.confirm-pack, button.status-action, button.discovery-status, button.discovery-promote, button.discovery-evaluate-selected, button.document-generate, button.document-select, button.document-reuse, button.confirm-documents");
+  const button = event.target.closest("button[data-action], button.stage-action, button.review-action, button.review-batch-action, button.confirm-pack, button.status-action, button.discovery-status, button.discovery-promote, button.discovery-evaluate-selected, button.document-generate, button.document-select, button.document-reuse, button.confirm-documents, button.cv-v2-start, button.cv-v2-decision, button.cv-v2-build, button.cv-v2-generate");
   if (!button) return;
   button.disabled = true;
   try {
@@ -54,6 +54,29 @@ document.addEventListener("click", async (event) => {
       await api(`/api/workspaces/${button.dataset.workspaceId}/review-decisions/batch`, {
         method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({decisions})
       });
+    } else if (button.classList.contains("cv-v2-start")) {
+      const result = await api(`/api/workspaces/${button.dataset.workspaceId}/cv-v2/plans`, {method: "POST"});
+      window.location.assign(result.review_url);
+      return;
+    } else if (button.closest(".cv-v2-review, .cv-v2-bases")) {
+      // Every CV-v2 review action carries the exact plan ID from the page, never a "current" plan.
+      const review = document.querySelector(".cv-v2-review");
+      const planBase = `/api/workspaces/${review.dataset.workspaceId}/cv-v2/plans/${review.dataset.planId}`;
+      if (button.classList.contains("cv-v2-decision")) {
+        await api(`${planBase}/decisions`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({statement_id: button.dataset.statementId, disposition: button.dataset.disposition})
+        });
+      } else if (button.classList.contains("cv-v2-build")) {
+        await api(`${planBase}/basis`, {method: "POST"});
+      } else if (button.classList.contains("cv-v2-generate")) {
+        await api(`/api/workspaces/${review.dataset.workspaceId}/application-documents/generate`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({cv_generation_basis_artifact_id: button.dataset.basisId})
+        });
+        window.location.assign(`/workspaces/${review.dataset.workspaceId}#documents`);
+        return;
+      }
     } else if (button.classList.contains("document-generate")) {
       await api(`/api/workspaces/${button.dataset.workspaceId}/application-documents/generate`, {method: "POST"});
     } else if (button.classList.contains("document-select")) {

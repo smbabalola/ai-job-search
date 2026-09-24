@@ -4,12 +4,13 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from product.application_document_contract import DOCX_MEDIA_TYPE, ApplicationDocumentContractError
 from product.docx_package import DocxPackageError
+from webapp.api.cv_generation_v2 import require_owned_artifact
 from webapp.api.dependencies import get_account_scope, get_conn, get_documents_root, get_extensions_dir
 from webapp.services.application_documents import (
     download_application_document, generate_application_documents,
@@ -18,6 +19,7 @@ from webapp.services.application_documents import (
 )
 from webapp.persistence.application_documents import list_reusable
 from webapp.services.document_blob_store import DocumentBlobError
+from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
 
@@ -30,6 +32,11 @@ class SelectionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     document_version_id: str
     expected_revision: int
+
+
+class GenerateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cv_generation_basis_artifact_id: str | None = None
 
 
 class ReusableBody(BaseModel):
@@ -53,9 +60,20 @@ def put_selection(workspace_id: str, kind: str, body: SelectionBody, conn: sqlit
 
 
 @router.post("/generate", status_code=201)
-def post_generate(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
+def post_generate(workspace_id: str, request: Request, body: GenerateBody | None = None, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
+    # No body / null basis ID: unchanged legacy generation. An exact basis ID
+    # selects CV Quality v2 and must belong to this account's own workspace.
+    basis_id = body.cv_generation_basis_artifact_id if body else None
+    if basis_id is not None:
+        if not request.app.state.settings.cv_quality_v2_enabled:
+            raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            require_job_workspace(conn, workspace_id, account_id=scope.account_id)
+        except JobWorkspaceNotFound as exc:
+            raise HTTPException(status_code=404, detail="application workspace not found") from exc
+        require_owned_artifact(conn, workspace_id, basis_id, artifact_type="cv_generation_basis")
     try:
-        return generate_application_documents(conn, workspace_id, documents_root=documents_root, extensions_dir=extensions_dir, account_id=scope.account_id)
+        return generate_application_documents(conn, workspace_id, documents_root=documents_root, extensions_dir=extensions_dir, account_id=scope.account_id, cv_generation_basis_artifact_id=basis_id)
     except (PipelineError, DocxPackageError, DocumentBlobError) as exc:
         raise _error(exc) from exc
 

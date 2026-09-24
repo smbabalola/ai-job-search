@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -10,18 +11,27 @@ from typing import Any
 
 from product.application_document_contract import DOCX_MEDIA_TYPE, DOCUMENT_KINDS
 from product.application_pack_contract import validate_application_pack_v1
-from product.application_pack_renderer import render_application_pack
+from product.application_pack_renderer import (
+    RENDERER_VERSION,
+    V1_RENDERER_VERSION,
+    render_application_pack,
+    render_cover_letter_document,
+)
+from product.cv_document_renderer import CV_DOCUMENT_RENDERER_VERSION, render_cv_document
+from product.cv_generation_basis_contract import validate_cv_generation_basis
 from product.docx_package import validate_docx_package
 from webapp.application_material import application_material_completion
 from webapp.persistence.application_documents import (
     create_document_version, get_document_version, get_selection, list_document_versions,
     list_reusable, new_document_version_id, remove_reusable, save_reusable, set_selection,
 )
-from webapp.persistence.artifacts import get_current_artifact, save_artifact
+from webapp.persistence.artifacts import get_artifact, get_current_artifact, save_artifact
 from webapp.persistence.workspaces import get_workspace
 from webapp.services.application_pack import build_application_pack
 from webapp.services.document_blob_store import DocumentBlobStore
 from webapp.services.pipeline import PipelineError
+
+APPLICATION_DOCUMENT_GENERATION_V2 = "application-document-generation.v2"
 
 
 def _now() -> str:
@@ -48,7 +58,73 @@ def _document_row(*, document_id: str, workspace_id: str, account_id: str, kind:
     }
 
 
-def generate_application_documents(conn: sqlite3.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path, account_id: str) -> dict[str, Any]:
+def _load_exact_cv_generation_basis(
+    conn: sqlite3.Connection, cv_generation_basis_artifact_id: str, *, workspace_id: str,
+) -> dict[str, Any]:
+    """Load and validate the exact, caller-pinned cv_generation_basis artifact.
+
+    Never substitutes the workspace's "current" basis -- the caller must
+    supply the exact artifact ID. Fails closed on any defect: wrong type,
+    wrong workspace, or a payload that does not satisfy the committed
+    cv_generation_basis contract.
+    """
+
+    artifact = get_artifact(conn, cv_generation_basis_artifact_id)
+    if artifact is None:
+        raise PipelineError(f"cv_generation_basis artifact {cv_generation_basis_artifact_id!r} not found")
+    if artifact["artifact_type"] != "cv_generation_basis":
+        raise PipelineError(
+            f"artifact {cv_generation_basis_artifact_id!r} is not a cv_generation_basis "
+            f"(got {artifact['artifact_type']!r})"
+        )
+    if artifact["workspace_id"] != workspace_id:
+        raise PipelineError(
+            f"cv_generation_basis artifact {cv_generation_basis_artifact_id!r} does not belong to workspace "
+            f"{workspace_id}"
+        )
+    validate_cv_generation_basis(artifact["payload"])
+    return artifact
+
+
+def _build_filename_stem(job: dict[str, Any]) -> str:
+    def sanitize(value: str, fallback: str) -> str:
+        normalized = " ".join(str(value or "").split())
+        stripped = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", normalized)
+        collapsed = re.sub(r"[ \t]+", "_", stripped).strip("_.")
+        return collapsed or fallback
+
+    company = sanitize(job.get("company", ""), "Company")
+    title = sanitize(job.get("title", ""), "Role")
+    return f"{company}_{title}"
+
+
+def generate_application_documents(
+    conn: sqlite3.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
+    account_id: str, cv_generation_basis_artifact_id: str | None = None,
+) -> dict[str, Any]:
+    """Generate and persist the CV and cover-letter documents for a workspace.
+
+    ``cv_generation_basis_artifact_id`` is ``None`` by default: exact
+    existing legacy behavior, producing an unchanged
+    ``application-document-generation.v1`` artifact where both documents
+    come from the reviewed ``application-pack.v1`` via the existing
+    Application Pack renderer.
+
+    When an exact ``cv_generation_basis_artifact_id`` is supplied, this
+    enters CV Quality v2 mode: the CV comes from that exact, pinned,
+    already-reviewed basis's ``cv_document_model`` rendered once through the
+    frozen Task 4 API (``render_cv_document``); the cover letter still comes
+    from the exact existing reviewed Application Pack path
+    (``render_cover_letter_document``). This produces an additive
+    ``application-document-generation.v2`` artifact. Never falls back to
+    legacy CV rendering if the supplied basis is invalid -- fails closed.
+    """
+
+    if cv_generation_basis_artifact_id is not None:
+        return _generate_application_documents_cv_v2(
+            conn, workspace_id, documents_root=documents_root, extensions_dir=extensions_dir,
+            account_id=account_id, cv_generation_basis_artifact_id=cv_generation_basis_artifact_id,
+        )
     try:
         conn.execute("BEGIN IMMEDIATE")
         _require_writable_workspace(conn, workspace_id, account_id)
@@ -72,6 +148,95 @@ def generate_application_documents(conn: sqlite3.Connection, workspace_id: str, 
             documents[kind] = {"document_version_id": row["id"], "original_filename": row["original_filename"], "byte_length": row["byte_length"], "sha256": row["sha256"]}
         payload = {"schema_version": "application-document-generation.v1", "reviewed_application_pack": basis, "renderer_version": rendered.renderer_version, "documents": documents, "account_id": account_id}
         artifact = save_artifact(conn, workspace_id=workspace_id, artifact_type="application_document_generation", payload=payload, artifact_id=generation_id, commit=False)
+        for row in rows:
+            create_document_version(conn, row, commit=False)
+        conn.commit()
+        return {"generation_artifact": artifact, "documents": rows}
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _generate_application_documents_cv_v2(
+    conn: sqlite3.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
+    account_id: str, cv_generation_basis_artifact_id: str,
+) -> dict[str, Any]:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_writable_workspace(conn, workspace_id, account_id)
+
+        # Cover letter: exact existing reviewed Application Pack path,
+        # unchanged -- rebuilt the same way legacy generation builds it.
+        basis = build_application_pack(conn, workspace_id, extensions_dir=extensions_dir, account_id=account_id)
+        validate_application_pack_v1(basis)
+        completion = application_material_completion(basis)
+        if completion["status"] != "READY":
+            raise PipelineError("reviewed application material is not completion-ready")
+
+        # CV: exact pinned, already-reviewed basis only. Never reruns Tasks
+        # 1-3, never queries current Profile/Job Fit/review decisions.
+        cv_basis_artifact = _load_exact_cv_generation_basis(
+            conn, cv_generation_basis_artifact_id, workspace_id=workspace_id,
+        )
+        cv_document_model = cv_basis_artifact["payload"]["cv_document_model"]
+
+        generation_id = f"art_{uuid.uuid4().hex[:20]}"
+        version_ids = {kind: new_document_version_id() for kind in DOCUMENT_KINDS}
+        stem = _build_filename_stem(basis.get("job") or {})
+        store = DocumentBlobStore(documents_root)
+        rows = []
+        documents: dict[str, dict[str, Any]] = {}
+
+        cv_bytes = render_cv_document(cv_document_model)
+        cv_filename = f"{stem}_CV.docx"
+        validate_docx_package(cv_bytes, original_filename=cv_filename)
+        cv_blob = store.publish(cv_bytes)
+        cv_row = _document_row(
+            document_id=version_ids["cv"], workspace_id=workspace_id, account_id=account_id, kind="cv",
+            origin="ai_generated", filename=cv_filename, blob=cv_blob, generation_id=generation_id,
+        )
+        rows.append(cv_row)
+        documents["cv"] = {
+            "document_version_id": cv_row["id"], "original_filename": cv_row["original_filename"],
+            "byte_length": cv_row["byte_length"], "sha256": cv_row["sha256"],
+        }
+
+        cover_letter_bytes = render_cover_letter_document(basis)
+        cover_letter_filename = f"{stem}_Cover_Letter.docx"
+        validate_docx_package(cover_letter_bytes, original_filename=cover_letter_filename)
+        cover_letter_blob = store.publish(cover_letter_bytes)
+        cover_letter_row = _document_row(
+            document_id=version_ids["cover_letter"], workspace_id=workspace_id, account_id=account_id,
+            kind="cover_letter", origin="ai_generated", filename=cover_letter_filename,
+            blob=cover_letter_blob, generation_id=generation_id,
+        )
+        rows.append(cover_letter_row)
+        documents["cover_letter"] = {
+            "document_version_id": cover_letter_row["id"], "original_filename": cover_letter_row["original_filename"],
+            "byte_length": cover_letter_row["byte_length"], "sha256": cover_letter_row["sha256"],
+        }
+
+        payload = {
+            "schema_version": APPLICATION_DOCUMENT_GENERATION_V2,
+            "reviewed_application_pack": basis,
+            "cv_generation_basis": {
+                "artifact_id": cv_basis_artifact["id"],
+                "artifact_type": "cv_generation_basis",
+                "content_id": cv_basis_artifact["content_id"],
+            },
+            "renderers": {
+                "cv": CV_DOCUMENT_RENDERER_VERSION,
+                "cover_letter": (
+                    RENDERER_VERSION if basis["schema_version"] == "application-pack.v0" else V1_RENDERER_VERSION
+                ),
+            },
+            "documents": documents,
+            "account_id": account_id,
+        }
+        artifact = save_artifact(
+            conn, workspace_id=workspace_id, artifact_type="application_document_generation",
+            payload=payload, artifact_id=generation_id, commit=False,
+        )
         for row in rows:
             create_document_version(conn, row, commit=False)
         conn.commit()
