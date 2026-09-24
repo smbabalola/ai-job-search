@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from webapp.api.cv_generation_v2 import build_cv_v2_review_view, require_owned_artifact
-from webapp.api.dependencies import get_account_scope, get_conn
+from webapp.api.dependencies import get_account_scope, get_conn, require_cv_quality_v2_enabled
 from product.user_profile import normalize_user_profile
 from webapp.persistence.user_profile import get_current_user_profile
 from product.discovery_search import available_discovery_source_ids
@@ -267,7 +267,10 @@ def search_workspaces_page(
     )
 
 
-@router.get("/workspaces/{workspace_id}/cv-v2/{plan_id}", response_class=HTMLResponse)
+@router.get(
+    "/workspaces/{workspace_id}/cv-v2/{plan_id}", response_class=HTMLResponse,
+    dependencies=[Depends(require_cv_quality_v2_enabled)],
+)
 def cv_v2_review_page(
     workspace_id: str, plan_id: str, request: Request,
     conn: sqlite3.Connection = Depends(get_conn),
@@ -320,6 +323,7 @@ def workspace_detail_page(
         request, "workspace_detail.html",
         {
             **view,
+            "cv_quality_v2_enabled": request.app.state.settings.cv_quality_v2_enabled,
             "onboarding_replay_expected": onboarding_replay_expected,
             **_search_context(conn, scope.account_id),
         }

@@ -14,6 +14,7 @@ import re
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from webapp.persistence.artifacts import get_current_artifact
@@ -26,6 +27,12 @@ from tests.webapp.test_browser_smoke import (
     _run_to_intelligence,
     live_server,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_cv_quality_v2(monkeypatch):
+    # CV Quality v2 is off by default in the product; these tests exercise it.
+    monkeypatch.setenv("JOBSEARCH_ENABLE_CV_QUALITY_V2", "1")
 
 
 def _docx_text(content: bytes) -> str:

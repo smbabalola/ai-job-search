@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
 from fastapi.testclient import TestClient
 
 from webapp.app import create_app
@@ -26,6 +27,12 @@ from tests.webapp.test_full_journey_acceptance import (
     _close,
     _decide_current_review_surface,
 )
+
+@pytest.fixture(autouse=True)
+def _enable_cv_quality_v2(monkeypatch):
+    # CV Quality v2 is off by default in the product; these tests exercise it.
+    monkeypatch.setenv("JOBSEARCH_ENABLE_CV_QUALITY_V2", "1")
+
 
 USE = "acknowledged_and_proceed"
 LEAVE_OUT = "omit_from_positioning"

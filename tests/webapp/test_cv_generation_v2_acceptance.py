@@ -62,6 +62,12 @@ from tests.webapp.test_full_journey_acceptance import (
 AUTHORIZED_DISPOSITION = "acknowledged_and_proceed"
 
 
+@pytest.fixture(autouse=True)
+def _enable_cv_quality_v2(monkeypatch):
+    # CV Quality v2 is off by default in the product; these tests exercise it.
+    monkeypatch.setenv("JOBSEARCH_ENABLE_CV_QUALITY_V2", "1")
+
+
 def _cv_v2_chain(tmp_path, *, ai_units=None, include_transfer=True):
     """Build the real HTTP-driven pipeline up through application intelligence
     (exactly _build_chain), decide every legacy review item (the CV-v2 branch

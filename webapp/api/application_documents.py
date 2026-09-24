@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
@@ -60,11 +60,13 @@ def put_selection(workspace_id: str, kind: str, body: SelectionBody, conn: sqlit
 
 
 @router.post("/generate", status_code=201)
-def post_generate(workspace_id: str, body: GenerateBody | None = None, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
+def post_generate(workspace_id: str, request: Request, body: GenerateBody | None = None, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
     # No body / null basis ID: unchanged legacy generation. An exact basis ID
     # selects CV Quality v2 and must belong to this account's own workspace.
     basis_id = body.cv_generation_basis_artifact_id if body else None
     if basis_id is not None:
+        if not request.app.state.settings.cv_quality_v2_enabled:
+            raise HTTPException(status_code=404, detail="Not Found")
         try:
             require_job_workspace(conn, workspace_id, account_id=scope.account_id)
         except JobWorkspaceNotFound as exc:

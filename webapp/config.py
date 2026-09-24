@@ -16,6 +16,11 @@ class Settings:
     documents_root: Path = field(default_factory=lambda: Path("documents"))
     account_id: str | None = None
     handoff_fixtures_dir: Path | None = None
+    # CV Quality v2's candidate-facing CV is not yet presentable, so its
+    # HTTP/UI entry points stay off unless explicitly enabled.
+    cv_quality_v2_enabled: bool = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_ENABLE_CV_QUALITY_V2") == "1"
+    )
 
     def __post_init__(self) -> None:
         self.db_path = Path(self.db_path)

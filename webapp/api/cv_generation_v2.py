@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from product.cv_review_projection import CvReviewProjectionError
 from product.cv_generation_basis_contract import CvGenerationBasisContractError
-from webapp.api.dependencies import get_account_scope, get_conn
+from webapp.api.dependencies import get_account_scope, get_conn, require_cv_quality_v2_enabled
 from webapp.persistence.artifacts import get_artifact, list_artifact_history
 from webapp.services.application_documents import _require_writable_workspace
 from webapp.services.cv_generation_basis import build_and_persist_cv_generation_basis
@@ -30,7 +30,10 @@ from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/cv-v2", tags=["cv-generation-v2"])
+router = APIRouter(
+    prefix="/api/workspaces/{workspace_id}/cv-v2", tags=["cv-generation-v2"],
+    dependencies=[Depends(require_cv_quality_v2_enabled)],
+)
 
 
 class DecisionBody(BaseModel):
