@@ -133,6 +133,20 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if not isinstance(ctx.application_workspace_id, str):
         errors.append("application_workspace_id_invalid")
 
+    # -- string-or-None identifiers: wrong type (e.g. an int) must not pass
+    # through unchecked -- with no check here, a wrong-type identity/employer
+    # key or run/pack/workspace id silently compares/hashes "successfully"
+    # and the request can come out grantable.
+    for name, value in (
+        ("identity_key", ctx.identity_key),
+        ("employer_key", ctx.employer_key),
+        ("pack_artifact_id", ctx.pack_artifact_id),
+        ("search_workspace_id", ctx.search_workspace_id),
+        ("run_id", ctx.run_id),
+    ):
+        if value is not None and not isinstance(value, str):
+            errors.append(f"{name}_invalid")
+
     if not isinstance(ctx.attributes, Mapping):
         errors.append("attributes_invalid")
 
@@ -144,6 +158,8 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if target is not None:
         if target.provenance is not None and not isinstance(target.provenance, ProvenanceTier):
             errors.append("apply_target_provenance_invalid")
+        if target.adapter_id is not None and not isinstance(target.adapter_id, str):
+            errors.append("apply_target_adapter_id_invalid")
         if not _is_bool(target.adapter_submit_capable):
             errors.append("apply_target_adapter_submit_capable_invalid")
         for name, value in (
@@ -166,10 +182,18 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
             errors.append(f"{name}_invalid")
 
     # -- rule acknowledgements --
+    # Identifiers are validated by position (idx), not by the acknowledgement's
+    # own rule_id, since rule_id itself may be the invalid field.
     if not _tuple_of(ctx.rule_acknowledgements, lambda a: isinstance(a, RuleAcknowledgement)):
         errors.append("rule_acknowledgements_invalid")
     else:
-        for ack in ctx.rule_acknowledgements:
+        for idx, ack in enumerate(ctx.rule_acknowledgements):
+            if not isinstance(ack.rule_id, str):
+                errors.append(f"rule_acknowledgement_rule_id_invalid:{idx}")
+            if not isinstance(ack.rule_hash, str):
+                errors.append(f"rule_acknowledgement_rule_hash_invalid:{idx}")
+            if not isinstance(ack.observed_fingerprint, str):
+                errors.append(f"rule_acknowledgement_observed_fingerprint_invalid:{idx}")
             if ack.disposition not in ("PROCEED", "DO_NOT_PROCEED"):
                 errors.append(f"rule_acknowledgement_disposition_invalid:{ack.rule_id}")
 
@@ -177,17 +201,33 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if not _tuple_of(ctx.requirements, lambda r: isinstance(r, RepresentationRequirement)):
         errors.append("requirements_invalid")
     else:
-        for req in ctx.requirements:
+        for idx, req in enumerate(ctx.requirements):
+            if not isinstance(req.key, str):
+                errors.append(f"requirement_key_invalid:{idx}")
+            if req.subject is not None and not isinstance(req.subject, str):
+                errors.append(f"requirement_subject_invalid:{idx}")
             if not _is_bool(req.required):
                 errors.append(f"requirement_required_invalid:{req.key}")
             if not _is_bool(req.evidence_available):
                 errors.append(f"requirement_evidence_available_invalid:{req.key}")
             if not isinstance(req.job_context, Mapping):
                 errors.append(f"job_context_invalid:{req.key}")
+            elif not all(isinstance(k, str) for k in req.job_context):
+                errors.append(f"job_context_keys_invalid:{idx}")
             if not _tuple_of(req.candidates, lambda c: isinstance(c, AnswerCandidate)):
                 errors.append(f"candidates_invalid:{req.key}")
                 continue
-            for cand in req.candidates:
+            for cand_idx, cand in enumerate(req.candidates):
+                if not isinstance(cand.approved_answer_id, str):
+                    errors.append(f"candidate_approved_answer_id_invalid:{idx}:{cand_idx}")
+                if not isinstance(cand.subject, str):
+                    errors.append(f"candidate_subject_invalid:{idx}:{cand_idx}")
+                if cand.scope_id is not None and not isinstance(cand.scope_id, str):
+                    errors.append(f"candidate_scope_id_invalid:{idx}:{cand_idx}")
+                if cand.basis_hash_at_approval is not None and not isinstance(cand.basis_hash_at_approval, str):
+                    errors.append(f"candidate_basis_hash_at_approval_invalid:{idx}:{cand_idx}")
+                if cand.basis_hash_current is not None and not isinstance(cand.basis_hash_current, str):
+                    errors.append(f"candidate_basis_hash_current_invalid:{idx}:{cand_idx}")
                 if not _is_bool(cand.contradicted):
                     errors.append(f"candidate_contradicted_invalid:{cand.approved_answer_id}")
                 if cand.basis_kind not in ("EVIDENCE", "USER_ASSERTION"):
@@ -196,6 +236,8 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
                     errors.append(f"candidate_reach_invalid:{cand.approved_answer_id}")
                 if not isinstance(cand.context, Mapping):
                     errors.append(f"candidate_context_invalid:{cand.approved_answer_id}")
+                elif not all(isinstance(k, str) for k in cand.context):
+                    errors.append(f"candidate_context_keys_invalid:{idx}:{cand_idx}")
                 if not _aware(cand.confirmed_at):
                     errors.append(f"confirmed_at_naive:{cand.approved_answer_id}")
                 elif now_ok and cand.confirmed_at > ctx.now:
@@ -205,7 +247,9 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if not _tuple_of(ctx.counters, lambda c: isinstance(c, CounterState)):
         errors.append("counters_invalid")
     else:
-        for counter in ctx.counters:
+        for idx, counter in enumerate(ctx.counters):
+            if not isinstance(counter.name, str):
+                errors.append(f"counter_name_invalid:{idx}")
             if not _is_int(counter.used):
                 errors.append(f"counter_used_invalid:{counter.name}")
             if not _is_int(counter.limit):
@@ -219,7 +263,11 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if not _tuple_of(ctx.budgets, lambda b: isinstance(b, BudgetState)):
         errors.append("budgets_invalid")
     else:
-        for budget in ctx.budgets:
+        for idx, budget in enumerate(ctx.budgets):
+            if not isinstance(budget.category, str):
+                errors.append(f"budget_category_invalid:{idx}")
+            if not isinstance(budget.window, str):
+                errors.append(f"budget_window_invalid:{idx}")
             for field_name in ("used", "reserved", "cap", "estimate"):
                 if not _finite_decimal(getattr(budget, field_name)):
                     errors.append(f"budget_{field_name}_invalid:{budget.category}")
@@ -243,12 +291,16 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     return errors
 
 
-def _decision_mode(ctx: AuthorizationContext) -> Mode | None:
-    return ctx.mode if isinstance(ctx.mode, Mode) else None
+def _decision_mode(ctx: Any) -> Mode | None:
+    """getattr with a default: ctx may not even be an AuthorizationContext
+    (see evaluate_authorization's upfront check and its final catch-all)."""
+    mode = getattr(ctx, "mode", None)
+    return mode if isinstance(mode, Mode) else None
 
 
-def _decision_stage(ctx: AuthorizationContext) -> Capability | None:
-    return ctx.requested_stage if isinstance(ctx.requested_stage, Capability) else None
+def _decision_stage(ctx: Any) -> Capability | None:
+    stage = getattr(ctx, "requested_stage", None)
+    return stage if isinstance(stage, Capability) else None
 
 
 def _safe_repr(value: Any) -> str:
@@ -258,26 +310,30 @@ def _safe_repr(value: Any) -> str:
         return "<unrepr-able>"
 
 
-def _error_reason(ctx: AuthorizationContext, code: str) -> Reason:
+def _error_reason(ctx: Any, code: str) -> Reason:
     """mode/requested_stage are the two fields the decision itself may null
     out (see _decision_mode/_decision_stage): keep the raw offending value in
-    the reason so the audit trail never loses it."""
+    the reason so the audit trail never loses it. getattr with a default:
+    ctx may not even be an AuthorizationContext."""
     if code == "mode_invalid":
-        return reason("invalid_input", detail=code, raw=_safe_repr(ctx.mode))
+        return reason("invalid_input", detail=code, raw=_safe_repr(getattr(ctx, "mode", None)))
     if code == "requested_stage_invalid":
-        return reason("invalid_input", detail=code, raw=_safe_repr(ctx.requested_stage))
+        return reason("invalid_input", detail=code, raw=_safe_repr(getattr(ctx, "requested_stage", None)))
     return reason("invalid_input", detail=code)
 
 
-def _safe_facts(ctx: AuthorizationContext) -> tuple[Reason, ...]:
+def _safe_facts(ctx: Any) -> tuple[Reason, ...]:
     """Independent, always-safe-to-report facts surfaced alongside invalid_input
     (spec §9.3 step 1): a validly-typed engaged kill switch or present sentinel.
-    Never raises: guarded by the same type checks used in _context_errors."""
+    Never raises: getattr with a default, then the same type check used in
+    _context_errors (ctx may not even be an AuthorizationContext)."""
     extra: list[Reason] = []
     try:
-        if _is_bool(ctx.kill_switch_engaged) and ctx.kill_switch_engaged:
+        kill_switch_engaged = getattr(ctx, "kill_switch_engaged", None)
+        if _is_bool(kill_switch_engaged) and kill_switch_engaged:
             extra.append(reason("kill_switch"))
-        if _is_bool(ctx.sentinel_present) and ctx.sentinel_present:
+        sentinel_present = getattr(ctx, "sentinel_present", None)
+        if _is_bool(sentinel_present) and sentinel_present:
             extra.append(reason("sentinel_present"))
     except Exception:
         pass
@@ -285,9 +341,12 @@ def _safe_facts(ctx: AuthorizationContext) -> tuple[Reason, ...]:
 
 
 def _invalid_decision(
-    ctx: AuthorizationContext, errors: list[str],
+    ctx: Any, errors: list[str],
     extra_reasons: tuple[Reason, ...] = (), fingerprint: str | None = None,
 ) -> AuthorizationDecision:
+    """Builds the DENY(invalid_input) decision. Never raises regardless of
+    what ctx actually is (a malformed AuthorizationContext, or not an
+    AuthorizationContext at all -- see evaluate_authorization)."""
     if fingerprint is None:
         try:
             fingerprint = canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ctx)
@@ -295,7 +354,7 @@ def _invalid_decision(
             fingerprint = canonical_hash(CONTEXT_SCHEMA, "invalid", {"errors": sorted(errors)})
     subject_hash = None
     try:
-        sp = ctx.subject_policy
+        sp = getattr(ctx, "subject_policy", None)
         if isinstance(sp, Mapping):
             validate_subject_policy(sp)
             subject_hash = subject_policy_hash(sp)
@@ -303,7 +362,7 @@ def _invalid_decision(
         subject_hash = None
     policy_version_hash = None
     try:
-        stp = ctx.standing_policy
+        stp = getattr(ctx, "standing_policy", None)
         if isinstance(stp, Mapping):
             validate_standing_policy(stp)
             policy_version_hash = policy_hash(stp)
@@ -320,6 +379,12 @@ def _invalid_decision(
 
 
 def evaluate_authorization(ctx: AuthorizationContext) -> AuthorizationDecision:
+    if not isinstance(ctx, AuthorizationContext):
+        # The type hint promises an AuthorizationContext, but the gate must
+        # still fail closed -- never raise -- if a caller passes anything
+        # else (including None); mode/requested_stage are unknowable, so
+        # both are None rather than guessed at (see _decision_mode/_decision_stage).
+        return _invalid_decision(ctx, ["not_a_context"], _safe_facts(ctx))
     try:
         return _evaluate(ctx)
     except Exception as exc:  # final guard: the gate must never raise (spec §9.3 step 1)

@@ -11,6 +11,7 @@ from product.autonomy_contract import (
     BudgetState, Capability, CounterState, EmployerKeyStrength, IdentityStrength, Mode,
     ProvenanceTier, RequireUserItem, ResultKind, RuleAcknowledgement, UNKNOWN,
 )
+import product.autonomy_gate as autonomy_gate_module
 from product.autonomy_gate import evaluate_authorization
 from product.standing_policy import evaluate_rules
 from product.autonomy_contract import RepresentationRequirement
@@ -506,3 +507,176 @@ def test_employer_list_edit_lapses_rule_acknowledgement():
     edited = make_policy(WATCH_LIST, lists={"watch": ["name:acme", "name:other"]})
     d = evaluate_authorization(make_ctx(standing_policy=edited, attributes=attrs, rule_acknowledgements=(ack,)))
     assert d.result is R.REQUIRE_USER and "rule_acknowledgement_lapsed" in codes(d)
+
+
+# --- Fix round 3: ruling A was incomplete -- string-typed fields ------------
+# Round 2 validated enums, bools, and container/element *classes* but left
+# every plain string-or-None field unchecked. A wrong-type value there
+# (e.g. identity_key=123) previously survived every comparison/hash and
+# could come out ALLOW/SUBMIT/grantable -- a fail-open defect, not merely an
+# unhandled exception. Each case below asserts DENY(invalid_input) AND the
+# specific detail code that proves the new validation (not some unrelated
+# check) is what caught it.
+
+def _detail_codes(d):
+    return {dict(r.params).get("detail") for r in d.reasons if r.code == "invalid_input"}
+
+
+_ROUND3_STRING_FIELD_CASES = [
+    (dict(identity_key=123), "identity_key_invalid", "identity_key-not-str"),
+    (dict(employer_key=["x"]), "employer_key_invalid", "employer_key-not-str"),
+    (dict(pack_artifact_id=7), "pack_artifact_id_invalid", "pack_artifact_id-not-str"),
+    (dict(search_workspace_id=5), "search_workspace_id_invalid", "search_workspace_id-not-str"),
+    (dict(run_id=5), "run_id_invalid", "run_id-not-str"),
+    (dict(apply_target=good_target(adapter_id=123)), "apply_target_adapter_id_invalid", "adapter_id-not-str"),
+    (dict(rule_acknowledgements=(RuleAcknowledgement(123, "h", "f", "PROCEED"),)),
+     "rule_acknowledgement_rule_id_invalid:0", "ack-rule_id-not-str"),
+    (dict(rule_acknowledgements=(RuleAcknowledgement("perm", 123, "f", "PROCEED"),)),
+     "rule_acknowledgement_rule_hash_invalid:0", "ack-rule_hash-not-str"),
+    (dict(rule_acknowledgements=(RuleAcknowledgement("perm", "h", 123, "PROCEED"),)),
+     "rule_acknowledgement_observed_fingerprint_invalid:0", "ack-observed_fingerprint-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key=123, subject=None, required=True, evidence_available=True),)),
+     "requirement_key_invalid:0", "requirement-key-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject=123, required=True, evidence_available=True),)),
+     "requirement_subject_invalid:0", "requirement-subject-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", answer_id=123),)),)),
+     "candidate_approved_answer_id_invalid:0:0", "candidate-approved_answer_id-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer(123),)),)),
+     "candidate_subject_invalid:0:0", "candidate-subject-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", scope_id=123),)),)),
+     "candidate_scope_id_invalid:0:0", "candidate-scope_id-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", basis_at=123),)),)),
+     "candidate_basis_hash_at_approval_invalid:0:0", "candidate-basis_hash_at_approval-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", basis_now=123),)),)),
+     "candidate_basis_hash_current_invalid:0:0", "candidate-basis_hash_current-not-str"),
+    (dict(counters=(CounterState(["x"], C.SUBMIT, 3, 3, None),)),
+     "counter_name_invalid:0", "counter-name-not-str"),
+    (dict(budgets=(BudgetState(123, "day", Decimal("1"), Decimal("0"), Decimal("5"), Decimal("0"), None),)),
+     "budget_category_invalid:0", "budget-category-not-str"),
+    (dict(budgets=(BudgetState("LLM", 123, Decimal("1"), Decimal("0"), Decimal("5"), Decimal("0"), None),)),
+     "budget_window_invalid:0", "budget-window-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject=None, required=True, evidence_available=True, job_context={1: "x"}),)),
+     "job_context_keys_invalid:0", "job_context-keys-not-str"),
+    (dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", context={1: "x"}),)),)),
+     "candidate_context_keys_invalid:0:0", "candidate-context-keys-not-str"),
+]
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_detail",
+    [pytest.param(o, d, id=i) for o, d, i in _ROUND3_STRING_FIELD_CASES],
+)
+def test_round3_string_fields_fail_closed_with_specific_detail(overrides, expected_detail):
+    d = evaluate_authorization(make_ctx(**overrides))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+    assert expected_detail in _detail_codes(d)
+
+
+# Item 4(a): companion test for the round-2 malformed-container cases --
+# asserting the *specific* detail code each one produces, not merely that
+# the result is DENY(invalid_input). Ground truth was captured by running
+# the current implementation; see the fix report for the full mapping.
+_ROUND2_CASE_DETAILS = [
+    ("apply_target-none", dict(apply_target=None), {"apply_target_invalid"}),
+    ("rule_acknowledgements-none", dict(rule_acknowledgements=None), {"rule_acknowledgements_invalid"}),
+    ("requirements-none", dict(requirements=None), {"requirements_invalid"}),
+    ("executor_hard_stops-none", dict(executor_hard_stops=None), {"executor_hard_stops_invalid"}),
+    ("grant_binding_drift-none", dict(grant_binding_drift=None), {"grant_binding_drift_invalid"}),
+    ("unresolved_governing_require_user-none", dict(unresolved_governing_require_user=None),
+     {"unresolved_governing_require_user_invalid"}),
+    ("counters-not-a-tuple", dict(counters="not-a-tuple"), {"counters_invalid"}),
+    ("budgets-not-a-tuple", dict(budgets="not-a-tuple"), {"budgets_invalid"}),
+    ("counter-used-not-int", dict(counters=(CounterState("submit_per_day", C.SUBMIT, "3", 3, None),)),
+     {"counter_used_invalid:submit_per_day"}),
+    ("counter-stage-not-capability", dict(counters=(CounterState("submit_per_day", "SUBMIT", 3, 3, None),)),
+     {"counter_stage_invalid:submit_per_day"}),
+    ("budget-estimate-float",
+     dict(budgets=(BudgetState("LLM", "day", Decimal("4.5"), Decimal("0.4"), Decimal("5"), 0.2, None),)),
+     {"budget_estimate_invalid:LLM", "unhashable_context"}),
+    ("attributes-not-mapping", dict(attributes="not-a-mapping"), {"attributes_invalid"}),
+    ("standing_policy-not-mapping", dict(standing_policy=["not", "a", "mapping"]),
+     {"standing_policy_invalid", "standing_policy_not_mapping"}),
+    ("subject_policy-not-mapping", dict(subject_policy="not-a-mapping"),
+     {"subject_policy_invalid", "subject_policy_not_mapping"}),
+    ("account_id-not-str", dict(account_id=123), {"account_id_invalid"}),
+    ("application_workspace_id-not-str", dict(application_workspace_id=None), {"application_workspace_id_invalid"}),
+    ("candidates-not-a-tuple", dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates="not-a-tuple"),)), {"candidates_invalid:k"}),
+    ("job_context-not-mapping", dict(requirements=(RepresentationRequirement(
+        key="k", subject=None, required=True, evidence_available=True, job_context="not-a-mapping"),)),
+     {"job_context_invalid:k"}),
+    ("candidate-context-not-mapping", dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", context="not-a-mapping"),)),)),
+     {"candidate_context_invalid:ans_1"}),
+]
+
+
+@pytest.mark.parametrize(
+    "overrides, expected_details",
+    [pytest.param(o, det, id=i) for i, o, det in _ROUND2_CASE_DETAILS],
+)
+def test_round2_cases_produce_their_specific_detail_code(overrides, expected_details):
+    d = evaluate_authorization(make_ctx(**overrides))
+    assert (d.result, d.deny_reason) == (R.DENY, "invalid_input")
+    assert expected_details <= _detail_codes(d)
+
+
+# Item 2: the final guard must itself never raise, even when ctx is not an
+# AuthorizationContext at all.
+def test_evaluate_authorization_with_none_context_fails_closed():
+    d = evaluate_authorization(None)
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert d.mode is None and d.requested_stage is None
+    assert "not_a_context" in _detail_codes(d)
+
+
+# Item 4(b): an unanticipated exception anywhere in the evaluation becomes
+# DENY(invalid_input) with a type-only detail -- no exception message or
+# traceback text leaks into any reason -- and independent safe facts are
+# still reported.
+def test_unexpected_exception_becomes_invalid_input_without_leaking_details(monkeypatch):
+    def boom(ctx, acc):
+        raise RuntimeError("must not leak: /secret/path, Traceback (most recent call last)")
+    monkeypatch.setattr(autonomy_gate_module, "_apply_standing_policy", boom)
+    d = evaluate_authorization(make_ctx(kill_switch_engaged=True))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert "unexpected:RuntimeError" in _detail_codes(d)
+    assert "kill_switch" in codes(d)
+    for r in d.reasons:
+        for _, value in r.params:
+            assert "secret" not in value and "Traceback" not in value
+
+
+# Item 4(c): the raw offending value is kept for an invalid requested_stage
+# too, not only for an invalid mode.
+def test_invalid_requested_stage_raw_value_kept_in_reason():
+    d = evaluate_authorization(make_ctx(requested_stage=0))
+    assert d.requested_stage is None
+    matches = [dict(r.params) for r in d.reasons
+               if r.code == "invalid_input" and dict(r.params).get("detail") == "requested_stage_invalid"]
+    assert matches and matches[0]["raw"] == repr(0)
+
+
+# Item 4(d): sentinel_present is reported as an independent safe fact too,
+# not only kill_switch_engaged.
+def test_invalid_input_still_reports_sentinel_present_as_safe_fact():
+    d = evaluate_authorization(make_ctx(sentinel_present=True, attributes={"fit.overall_score": 74.5}))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert "sentinel_present" in codes(d) and "invalid_input" in codes(d)

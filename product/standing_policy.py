@@ -274,8 +274,12 @@ def observed_fingerprint(
     recorded as UNKNOWN, distinct from an empty list. Editing a referenced
     list's contents therefore changes the fingerprint (and so lapses any
     acknowledgement bound to the old one), even though it never changes
-    referenced_attributes and, absent employer_lists, this is identical to
-    the pre-existing (attributes-only) fingerprint."""
+    referenced_attributes. A rule that references no employer list is
+    unaffected by employer_lists at all: its fingerprint's equality
+    relations (same attributes -> same fingerprint, different attributes ->
+    different fingerprint) are preserved whether or not employer_lists is
+    supplied -- not that the fingerprint *value* itself is unchanged from
+    before this parameter existed, since the hashed payload's shape changed."""
     observed = {attr: _observed_value(attr, attributes.get(attr, UNKNOWN)) for attr in referenced_attributes(rule["when"])}
     lists = employer_lists or {}
     list_names = referenced_lists(rule["when"])
