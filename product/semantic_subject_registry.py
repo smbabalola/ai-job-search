@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 
-SEMANTIC_SUBJECT_REGISTRY_VERSION = "v1"
+SEMANTIC_SUBJECT_REGISTRY_VERSION = "v2"
 
 SEMANTIC_SUBJECTS: dict[str, str] = {
     "work_authorization.right_to_work": (
@@ -41,6 +41,19 @@ SEMANTIC_SUBJECTS: dict[str, str] = {
     ),
     "employment.notice_period": "The candidate's current notice period.",
     "licence.driving": "Whether the candidate holds a valid driving licence.",
+    # Bundle 6B additions (autonomy contract spec §6.2). Additive only.
+    "employment.availability_start": "The earliest date the candidate can start.",
+    "compensation.salary_expectation": "The candidate's salary expectation for a given context.",
+    "mobility.relocation": "Whether the candidate is willing to relocate to a region.",
+    "mobility.travel_or_rotation": "Willingness to travel or work a rotation pattern in a region.",
+    "motivation.role_type": "Why the candidate is interested in this type of role.",
+    "motivation.industry": "What motivates the candidate about this industry.",
+    "motivation.job_search_reason": "Why the candidate is looking for a new opportunity.",
+    "motivation.employer_specific": "Why the candidate wants to work for this specific employer.",
+    "legal.attestation": "A legal declaration or attestation required by the employer.",
+    "demographic.eeo": "Demographic / equal-opportunity monitoring questions.",
+    "background.criminal_record": "Criminal-record disclosure questions.",
+    "health.disability": "Health or disability disclosure questions.",
 }
 
 
