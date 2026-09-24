@@ -5,24 +5,30 @@ is an input), no mutation, no limits consumed, no grants created. Every check
 runs and leaves reasons (collect-then-resolve); the result is derived by the
 fixed precedence of spec §9.4. Only the three ceilings can raise capability;
 everything else applies min() or a non-ALLOW outcome.
+
+The gate must never raise for any malformed input (spec §9.3 step 1):
+`_context_errors` validates every closed-schema field and container's type
+before anything downstream trusts it unconditionally, and `evaluate_authorization`
+wraps the whole evaluation in a final catch-all as defense in depth.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from decimal import Decimal
+from typing import Any, Mapping
 
 from product.autonomy_contract import (
     CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ENGINE_VERSION, REACH_ORDER,
-    AnswerCandidate, AuthorizationContext, AuthorizationDecision, CanonicalHashError,
-    Capability, EmployerKeyStrength, IdentityStrength, Mode, ProvenanceTier, Reach,
-    Reason, RepresentationRequirement, RequireUserItem, ResultKind, canonical_hash,
-    is_unknown, reason,
+    AnswerCandidate, ApplyTargetFacts, AuthorizationContext, AuthorizationDecision,
+    BudgetState, CanonicalHashError, Capability, CounterState, EmployerKeyStrength,
+    IdentityStrength, Mode, ProvenanceTier, Reach, Reason, RepresentationRequirement,
+    RequireUserItem, ResultKind, RuleAcknowledgement, canonical_hash, is_unknown, reason,
 )
 from product.semantic_subject_policy import (
-    SubjectPolicyError, subject_entry, subject_policy_hash, validate_subject_policy,
+    subject_entry, subject_policy_hash, validate_subject_policy,
 )
 from product.standing_policy import (
-    StandingPolicyError, evaluate_rules, policy_hash, validate_standing_policy,
+    evaluate_rules, policy_hash, validate_standing_policy,
 )
 
 _SUBMIT_TIERS = {ProvenanceTier.DISCOVERY_VERIFIED, ProvenanceTier.USER_CONFIRMED_APPLY_TARGET}
@@ -36,8 +42,23 @@ def _is_bool(value: Any) -> bool:
     return isinstance(value, bool)
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _bool_or_unknown(value: Any) -> bool:
     return isinstance(value, bool) or is_unknown(value)
+
+
+def _finite_decimal(value: Any) -> bool:
+    return isinstance(value, Decimal) and value.is_finite()
+
+
+def _tuple_of(value: Any, element_ok: Any) -> bool:
+    """True iff value is a tuple/list and every element satisfies element_ok.
+    Short-circuits on the container check so a non-container value (None,
+    a string, ...) is never iterated."""
+    return isinstance(value, (tuple, list)) and all(element_ok(v) for v in value)
 
 
 class _Acc:
@@ -59,10 +80,11 @@ class _Acc:
 
 def _context_errors(ctx: AuthorizationContext) -> list[str]:
     """Type/shape validation for everything the rest of the gate would need to
-    inspect via attribute access (`.name`, `.value`, comparisons) or otherwise
-    trust unconditionally. This function must never raise on a bad-type
-    input -- every check here uses isinstance/containment, never attribute
-    access on an unverified value. Anything not validated here and later
+    inspect via attribute access (`.name`, `.value`, comparisons, iteration)
+    or otherwise trust unconditionally. This function must never raise on a
+    bad-type input: every container is isinstance-checked (tuple/list) before
+    its contents are ever iterated, and every element is isinstance-checked
+    before any attribute on it is read. Anything not validated here and later
     accessed unconditionally (e.g. `ctx.deployment_ceiling.name`) is only
     reached once this function returns no errors, so the gate fails closed
     before any such access."""
@@ -106,78 +128,219 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if ctx.existing_intent_state not in (None, "CLAIMED", "CONFIRMED"):
         errors.append("existing_intent_state_invalid")
 
+    if not isinstance(ctx.account_id, str):
+        errors.append("account_id_invalid")
+    if not isinstance(ctx.application_workspace_id, str):
+        errors.append("application_workspace_id_invalid")
+
+    if not isinstance(ctx.attributes, Mapping):
+        errors.append("attributes_invalid")
+
+    # -- apply_target: validate the container itself before any attribute access --
     target = ctx.apply_target
-    if target.provenance is not None and not isinstance(target.provenance, ProvenanceTier):
-        errors.append("apply_target_provenance_invalid")
-    if not _is_bool(target.adapter_submit_capable):
-        errors.append("apply_target_adapter_submit_capable_invalid")
+    if not isinstance(target, ApplyTargetFacts):
+        errors.append("apply_target_invalid")
+        target = None
+    if target is not None:
+        if target.provenance is not None and not isinstance(target.provenance, ProvenanceTier):
+            errors.append("apply_target_provenance_invalid")
+        if not _is_bool(target.adapter_submit_capable):
+            errors.append("apply_target_adapter_submit_capable_invalid")
+        for name, value in (
+            ("landing_within_redirect_set", target.landing_within_redirect_set),
+            ("tenant_matches_employer", target.tenant_matches_employer),
+            ("unexplained_redirect", target.unexplained_redirect),
+        ):
+            if not _bool_or_unknown(value):
+                errors.append(f"apply_target_{name}_invalid")
+        if not (target.ats_job_id_matches is None or _bool_or_unknown(target.ats_job_id_matches)):
+            errors.append("apply_target_ats_job_id_matches_invalid")
+
+    # -- containers of opaque strings --
     for name, value in (
-        ("landing_within_redirect_set", target.landing_within_redirect_set),
-        ("tenant_matches_employer", target.tenant_matches_employer),
-        ("unexplained_redirect", target.unexplained_redirect),
+        ("executor_hard_stops", ctx.executor_hard_stops),
+        ("grant_binding_drift", ctx.grant_binding_drift),
+        ("unresolved_governing_require_user", ctx.unresolved_governing_require_user),
     ):
-        if not _bool_or_unknown(value):
-            errors.append(f"apply_target_{name}_invalid")
-    if not (target.ats_job_id_matches is None or _bool_or_unknown(target.ats_job_id_matches)):
-        errors.append("apply_target_ats_job_id_matches_invalid")
+        if not _tuple_of(value, lambda v: isinstance(v, str)):
+            errors.append(f"{name}_invalid")
 
-    for ack in ctx.rule_acknowledgements:
-        if ack.disposition not in ("PROCEED", "DO_NOT_PROCEED"):
-            errors.append(f"rule_acknowledgement_disposition_invalid:{ack.rule_id}")
+    # -- rule acknowledgements --
+    if not _tuple_of(ctx.rule_acknowledgements, lambda a: isinstance(a, RuleAcknowledgement)):
+        errors.append("rule_acknowledgements_invalid")
+    else:
+        for ack in ctx.rule_acknowledgements:
+            if ack.disposition not in ("PROCEED", "DO_NOT_PROCEED"):
+                errors.append(f"rule_acknowledgement_disposition_invalid:{ack.rule_id}")
 
-    for req in ctx.requirements:
-        if not _is_bool(req.required):
-            errors.append(f"requirement_required_invalid:{req.key}")
-        if not _is_bool(req.evidence_available):
-            errors.append(f"requirement_evidence_available_invalid:{req.key}")
-        for cand in req.candidates:
-            if not _is_bool(cand.contradicted):
-                errors.append(f"candidate_contradicted_invalid:{cand.approved_answer_id}")
-            if cand.basis_kind not in ("EVIDENCE", "USER_ASSERTION"):
-                errors.append(f"candidate_basis_kind_invalid:{cand.approved_answer_id}")
-            if not isinstance(cand.reach, Reach):
-                errors.append(f"candidate_reach_invalid:{cand.approved_answer_id}")
-            if not _aware(cand.confirmed_at):
-                errors.append(f"confirmed_at_naive:{cand.approved_answer_id}")
-            elif now_ok and cand.confirmed_at > ctx.now:
-                errors.append(f"confirmed_at_future:{cand.approved_answer_id}")
+    # -- representation requirements and their candidates --
+    if not _tuple_of(ctx.requirements, lambda r: isinstance(r, RepresentationRequirement)):
+        errors.append("requirements_invalid")
+    else:
+        for req in ctx.requirements:
+            if not _is_bool(req.required):
+                errors.append(f"requirement_required_invalid:{req.key}")
+            if not _is_bool(req.evidence_available):
+                errors.append(f"requirement_evidence_available_invalid:{req.key}")
+            if not isinstance(req.job_context, Mapping):
+                errors.append(f"job_context_invalid:{req.key}")
+            if not _tuple_of(req.candidates, lambda c: isinstance(c, AnswerCandidate)):
+                errors.append(f"candidates_invalid:{req.key}")
+                continue
+            for cand in req.candidates:
+                if not _is_bool(cand.contradicted):
+                    errors.append(f"candidate_contradicted_invalid:{cand.approved_answer_id}")
+                if cand.basis_kind not in ("EVIDENCE", "USER_ASSERTION"):
+                    errors.append(f"candidate_basis_kind_invalid:{cand.approved_answer_id}")
+                if not isinstance(cand.reach, Reach):
+                    errors.append(f"candidate_reach_invalid:{cand.approved_answer_id}")
+                if not isinstance(cand.context, Mapping):
+                    errors.append(f"candidate_context_invalid:{cand.approved_answer_id}")
+                if not _aware(cand.confirmed_at):
+                    errors.append(f"confirmed_at_naive:{cand.approved_answer_id}")
+                elif now_ok and cand.confirmed_at > ctx.now:
+                    errors.append(f"confirmed_at_future:{cand.approved_answer_id}")
 
-    for item in (*ctx.counters, *ctx.budgets):
-        if item.retry_at is not None and not _aware(item.retry_at):
-            errors.append("retry_at_naive")
+    # -- counters --
+    if not _tuple_of(ctx.counters, lambda c: isinstance(c, CounterState)):
+        errors.append("counters_invalid")
+    else:
+        for counter in ctx.counters:
+            if not _is_int(counter.used):
+                errors.append(f"counter_used_invalid:{counter.name}")
+            if not _is_int(counter.limit):
+                errors.append(f"counter_limit_invalid:{counter.name}")
+            if not isinstance(counter.stage, Capability):
+                errors.append(f"counter_stage_invalid:{counter.name}")
+            if counter.retry_at is not None and not _aware(counter.retry_at):
+                errors.append("retry_at_naive")
+
+    # -- budgets --
+    if not _tuple_of(ctx.budgets, lambda b: isinstance(b, BudgetState)):
+        errors.append("budgets_invalid")
+    else:
+        for budget in ctx.budgets:
+            for field_name in ("used", "reserved", "cap", "estimate"):
+                if not _finite_decimal(getattr(budget, field_name)):
+                    errors.append(f"budget_{field_name}_invalid:{budget.category}")
+            if budget.retry_at is not None and not _aware(budget.retry_at):
+                errors.append("retry_at_naive")
+
+    if ctx.standing_policy is not None and not isinstance(ctx.standing_policy, Mapping):
+        errors.append("standing_policy_not_mapping")
+    if not isinstance(ctx.subject_policy, Mapping):
+        errors.append("subject_policy_not_mapping")
 
     try:
         validate_subject_policy(ctx.subject_policy)
-    except SubjectPolicyError:
+    except Exception:
         errors.append("subject_policy_invalid")
     if ctx.standing_policy is not None:
         try:
             validate_standing_policy(ctx.standing_policy)
-        except StandingPolicyError:
+        except Exception:
             errors.append("standing_policy_invalid")
     return errors
 
 
+def _decision_mode(ctx: AuthorizationContext) -> Mode | None:
+    return ctx.mode if isinstance(ctx.mode, Mode) else None
+
+
+def _decision_stage(ctx: AuthorizationContext) -> Capability | None:
+    return ctx.requested_stage if isinstance(ctx.requested_stage, Capability) else None
+
+
+def _safe_repr(value: Any) -> str:
+    try:
+        return repr(value)
+    except Exception:
+        return "<unrepr-able>"
+
+
+def _error_reason(ctx: AuthorizationContext, code: str) -> Reason:
+    """mode/requested_stage are the two fields the decision itself may null
+    out (see _decision_mode/_decision_stage): keep the raw offending value in
+    the reason so the audit trail never loses it."""
+    if code == "mode_invalid":
+        return reason("invalid_input", detail=code, raw=_safe_repr(ctx.mode))
+    if code == "requested_stage_invalid":
+        return reason("invalid_input", detail=code, raw=_safe_repr(ctx.requested_stage))
+    return reason("invalid_input", detail=code)
+
+
+def _safe_facts(ctx: AuthorizationContext) -> tuple[Reason, ...]:
+    """Independent, always-safe-to-report facts surfaced alongside invalid_input
+    (spec §9.3 step 1): a validly-typed engaged kill switch or present sentinel.
+    Never raises: guarded by the same type checks used in _context_errors."""
+    extra: list[Reason] = []
+    try:
+        if _is_bool(ctx.kill_switch_engaged) and ctx.kill_switch_engaged:
+            extra.append(reason("kill_switch"))
+        if _is_bool(ctx.sentinel_present) and ctx.sentinel_present:
+            extra.append(reason("sentinel_present"))
+    except Exception:
+        pass
+    return tuple(extra)
+
+
+def _invalid_decision(
+    ctx: AuthorizationContext, errors: list[str],
+    extra_reasons: tuple[Reason, ...] = (), fingerprint: str | None = None,
+) -> AuthorizationDecision:
+    if fingerprint is None:
+        try:
+            fingerprint = canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ctx)
+        except Exception:
+            fingerprint = canonical_hash(CONTEXT_SCHEMA, "invalid", {"errors": sorted(errors)})
+    subject_hash = None
+    try:
+        sp = ctx.subject_policy
+        if isinstance(sp, Mapping):
+            validate_subject_policy(sp)
+            subject_hash = subject_policy_hash(sp)
+    except Exception:
+        subject_hash = None
+    policy_version_hash = None
+    try:
+        stp = ctx.standing_policy
+        if isinstance(stp, Mapping):
+            validate_standing_policy(stp)
+            policy_version_hash = policy_hash(stp)
+    except Exception:
+        policy_version_hash = None
+    reasons = tuple(sorted(set(extra_reasons) | {_error_reason(ctx, e) for e in errors}))
+    return AuthorizationDecision(
+        mode=_decision_mode(ctx), result=ResultKind.DENY, requested_stage=_decision_stage(ctx),
+        effective_capability=Capability.NONE, grantable=False, deny_reason="invalid_input",
+        reasons=reasons, require_user_items=(), retry_at=None, retryable=False,
+        input_fingerprint=fingerprint, engine_version=ENGINE_VERSION,
+        policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
+    )
+
+
 def evaluate_authorization(ctx: AuthorizationContext) -> AuthorizationDecision:
+    try:
+        return _evaluate(ctx)
+    except Exception as exc:  # final guard: the gate must never raise (spec §9.3 step 1)
+        return _invalid_decision(ctx, [f"unexpected:{type(exc).__name__}"], _safe_facts(ctx))
+
+
+def _evaluate(ctx: AuthorizationContext) -> AuthorizationDecision:
     errors = _context_errors(ctx)
+    fingerprint: str | None
     try:
         fingerprint = canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ctx)
     except CanonicalHashError:
         errors.append("unhashable_context")
-        fingerprint = canonical_hash(CONTEXT_SCHEMA, "invalid", {"errors": sorted(errors)})
-    subject_hash = None if "subject_policy_invalid" in errors else subject_policy_hash(ctx.subject_policy)
-    policy_version_hash = None
-    if ctx.standing_policy is not None and "standing_policy_invalid" not in errors:
-        policy_version_hash = policy_hash(ctx.standing_policy)
+        fingerprint = None
     if errors:
-        return AuthorizationDecision(
-            mode=ctx.mode, result=ResultKind.DENY, requested_stage=ctx.requested_stage,
-            effective_capability=Capability.NONE, grantable=False, deny_reason="invalid_input",
-            reasons=tuple(sorted(reason("invalid_input", detail=e) for e in errors)),
-            require_user_items=(), retry_at=None, retryable=False, input_fingerprint=fingerprint,
-            engine_version=ENGINE_VERSION, policy_version_hash=policy_version_hash,
-            subject_policy_hash=subject_hash,
-        )
+        return _invalid_decision(ctx, errors, _safe_facts(ctx), fingerprint=fingerprint)
+
+    # errors is empty: subject_policy and (if present) standing_policy are
+    # already known valid, so these cannot raise or return None here.
+    subject_hash = subject_policy_hash(ctx.subject_policy)
+    policy_version_hash = policy_hash(ctx.standing_policy) if ctx.standing_policy is not None else None
 
     acc = _Acc(min(ctx.deployment_ceiling, ctx.account_max, ctx.workspace_ceiling))
     acc.note("ceiling", deployment=ctx.deployment_ceiling.name,
@@ -189,9 +352,16 @@ def evaluate_authorization(ctx: AuthorizationContext) -> AuthorizationDecision:
     _apply_target(ctx, acc)
     if ctx.employer_key_strength is EmployerKeyStrength.UNKNOWN or not ctx.employer_key:
         acc.reduce(Capability.FILL, "employer_key_unknown")
+    # Relevance baseline (spec §9.3 step 5 "Relevance"): the *structural* cap
+    # -- ceilings and non-actionable reductions only (standing-policy
+    # REDUCE_TO, identity, apply-target tier/adapter/verification, employer
+    # key) -- snapshotted before the actionable reductions below (pack
+    # confirmability, answer freshness) so an actionable reduction can never
+    # suppress a field/question item that is otherwise relevant.
+    structural_cap = acc.cap
+    _apply_requirements(ctx, acc, structural_cap)
     if not ctx.pack_auto_confirmable or not ctx.pack_artifact_id:
         acc.reduce(Capability.PREPARE, "pack_not_auto_confirmable")
-    _apply_requirements(ctx, acc)
     _apply_stops(ctx, acc)
     _apply_questions(ctx, acc)
     return _resolve(ctx, acc, fingerprint, policy_version_hash, subject_hash)
@@ -240,6 +410,9 @@ def _negate(value: Any) -> Any:
 
 
 def _apply_target(ctx: AuthorizationContext, acc: _Acc) -> None:
+    """Apply-target reductions apply at every stage; the corresponding
+    REQUIRE_USER items (page-identity mismatches) are stage-scoped to
+    FILL/SUBMIT only (spec §9.3 step 5 "Stage scoping")."""
     target = ctx.apply_target
     if target.provenance is None:
         acc.reduce(Capability.PREPARE, "no_apply_target")
@@ -257,10 +430,12 @@ def _apply_target(ctx: AuthorizationContext, acc: _Acc) -> None:
     }
     if target.ats_job_id_matches is not None:
         checks["ats_job_id_matches"] = target.ats_job_id_matches
+    item_eligible = ctx.requested_stage >= Capability.FILL
     for name, value in sorted(checks.items()):
         if value is False:
             acc.reduce(Capability.FILL, "target_mismatch", check=name)
-            acc.items.append(RequireUserItem("apply_target", name))
+            if item_eligible:
+                acc.items.append(RequireUserItem("apply_target", name))
         elif value is not True:
             acc.reduce(Capability.FILL, "target_unverified", check=name)
 
@@ -305,14 +480,19 @@ def _submit_blocker(cand: AnswerCandidate, req: RepresentationRequirement, entry
     return None
 
 
-def _apply_requirements(ctx: AuthorizationContext, acc: _Acc) -> None:
+def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Capability) -> None:
     """Field/question items (spec §7, §9.3 step 5). Only for FILL/SUBMIT.
     Contradictions are raised at FILL and SUBMIT; other field items only at
-    SUBMIT; any item is raised only if resolving it could reach the
-    requested stage (relevance) -- otherwise it is a silent reason."""
+    SUBMIT. Relevance is judged against structural_cap (ceilings and
+    non-actionable reductions only, computed by the caller) -- an item is
+    raised only if resolving it could reach the requested stage even with
+    every actionable blocker cleared; otherwise it is a silent reason. A
+    non-required field's own not-submit-ready answer (expired, stale-by-basis,
+    context-unknown, not submit-eligible) is omitted, never a reduction --
+    only a required field's does that (spec §9.3 step 3 "answers" bullet)."""
     if ctx.requested_stage < Capability.FILL:
         return
-    relevant = acc.cap >= ctx.requested_stage
+    relevant = structural_cap >= ctx.requested_stage
     items: list[tuple[RequireUserItem, bool]] = []
     reductions: list[tuple[str, str]] = []
     for req in sorted(ctx.requirements, key=lambda r: r.key):
@@ -342,7 +522,10 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc) -> None:
         if any(b is None for b in blockers):
             continue
         if usable:
-            reductions.append((req.key, blockers[0]))
+            if req.required:
+                reductions.append((req.key, blockers[0]))
+            else:
+                acc.note("optional_omitted", field=req.key, why=blockers[0])
             continue
         if req.required:
             items.append((RequireUserItem("missing_answer", req.key), False))
@@ -372,7 +555,12 @@ def _apply_stops(ctx: AuthorizationContext, acc: _Acc) -> None:
     if ctx.governing_auto_reject:
         acc.blocked = True
         acc.note("governing_auto_reject")
-    if ctx.existing_intent_state in ("CLAIMED", "CONFIRMED"):
+    # A CLAIMED (in-flight) intent always denies -- overrides apply only to a
+    # CONFIRMED submission, never to an in-flight claim (spec §9.3 step 4).
+    if ctx.existing_intent_state == "CLAIMED":
+        acc.denies.add("duplicate")
+        acc.note("duplicate_intent", state=ctx.existing_intent_state)
+    elif ctx.existing_intent_state == "CONFIRMED":
         if ctx.intent_overridden:
             acc.note("duplicate_overridden", state=ctx.existing_intent_state)
         else:

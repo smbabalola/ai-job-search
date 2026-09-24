@@ -214,9 +214,13 @@ class AuthorizationContext:
 
 @dataclass(frozen=True)
 class AuthorizationDecision:
-    mode: Mode
+    # mode/requested_stage are None only on the invalid_input path when that
+    # specific field was not a valid enum -- a genuinely malformed input is
+    # never normalized to a real Mode/Capability value (e.g. SHADOW/NONE),
+    # since that could be mistaken for a real decision at audit time.
+    mode: Mode | None
     result: ResultKind
-    requested_stage: Capability
+    requested_stage: Capability | None
     effective_capability: Capability
     grantable: bool
     deny_reason: str | None

@@ -146,6 +146,29 @@ def test_observed_fingerprint_depends_only_on_referenced_attributes():
     assert a == b and a != c
 
 
+def test_observed_fingerprint_includes_referenced_employer_list_contents():
+    """Fix round 2 ruling G: editing a list an in_list rule references changes
+    the fingerprint, even though the rule's truth value (and referenced
+    attributes) are unchanged; a referenced-but-absent list is UNKNOWN."""
+    attrs = {"company.key": "name:acme"}
+    fp_small = observed_fingerprint(DENY_LIST, attrs, {"deny": ["name:acme"]})
+    fp_grown = observed_fingerprint(DENY_LIST, attrs, {"deny": ["name:acme", "name:other"]})
+    fp_list_absent = observed_fingerprint(DENY_LIST, attrs, {})
+    fp_no_lists_arg = observed_fingerprint(DENY_LIST, attrs)
+    assert fp_small != fp_grown
+    assert fp_list_absent == fp_no_lists_arg
+    assert fp_small != fp_list_absent
+
+
+def test_observed_fingerprint_equality_unchanged_when_rule_does_not_reference_a_list():
+    """Existing (pre-round-2) equality relations must still hold when the
+    rule references no employer list, regardless of what employer_lists holds."""
+    fp_no_lists = observed_fingerprint(PERMANENT_ONLY, {"job.employment_type": "CONTRACT"})
+    fp_with_unrelated_list = observed_fingerprint(
+        PERMANENT_ONLY, {"job.employment_type": "CONTRACT"}, {"deny": ["name:acme"]})
+    assert fp_no_lists == fp_with_unrelated_list
+
+
 @pytest.mark.parametrize("text, expected", [
     ("Permanent", "PERMANENT"), ("Full-time, permanent", "PERMANENT"),
     ("Contract", "CONTRACT"), ("Fixed-term contract", "CONTRACT"),

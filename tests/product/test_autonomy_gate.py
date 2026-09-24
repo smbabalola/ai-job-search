@@ -373,3 +373,136 @@ def test_precedence_extended_with_stale_binding_and_budget(combo):
         assert d.deny_reason == ("limit" if "limit" in combo else "budget")
     for name in combo:
         assert FLAG_REASON_CODE_EXT[name] in codes(d)
+
+
+# --- Fix round 2: user rulings on gate semantics (spec commit ee68ae3) ------
+
+# Ruling A: the gate must never raise for any malformed closed-schema input,
+# including containers of the wrong type or containing wrong-type elements
+# (as opposed to round 1's scalar/enum-type checks).
+_ROUND2_INVALID_CASES = [
+    pytest.param(dict(apply_target=None), id="apply_target-none"),
+    pytest.param(dict(rule_acknowledgements=None), id="rule_acknowledgements-none"),
+    pytest.param(dict(requirements=None), id="requirements-none"),
+    pytest.param(dict(executor_hard_stops=None), id="executor_hard_stops-none"),
+    pytest.param(dict(grant_binding_drift=None), id="grant_binding_drift-none"),
+    pytest.param(dict(unresolved_governing_require_user=None), id="unresolved_governing_require_user-none"),
+    pytest.param(dict(counters="not-a-tuple"), id="counters-not-a-tuple"),
+    pytest.param(dict(budgets="not-a-tuple"), id="budgets-not-a-tuple"),
+    pytest.param(dict(counters=(CounterState("submit_per_day", C.SUBMIT, "3", 3, None),)), id="counter-used-not-int"),
+    pytest.param(dict(counters=(CounterState("submit_per_day", "SUBMIT", 3, 3, None),)), id="counter-stage-not-capability"),
+    pytest.param(dict(budgets=(BudgetState("LLM", "day", Decimal("4.5"), Decimal("0.4"), Decimal("5"), 0.2, None),)),
+                 id="budget-estimate-float"),
+    pytest.param(dict(attributes="not-a-mapping"), id="attributes-not-mapping"),
+    pytest.param(dict(standing_policy=["not", "a", "mapping"]), id="standing_policy-not-mapping"),
+    pytest.param(dict(subject_policy="not-a-mapping"), id="subject_policy-not-mapping"),
+    pytest.param(dict(account_id=123), id="account_id-not-str"),
+    pytest.param(dict(application_workspace_id=None), id="application_workspace_id-not-str"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates="not-a-tuple"),)), id="candidates-not-a-tuple"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject=None, required=True, evidence_available=True, job_context="not-a-mapping"),)),
+        id="job_context-not-mapping"),
+    pytest.param(dict(requirements=(RepresentationRequirement(
+        key="k", subject="employment.notice_period", required=True, evidence_available=False,
+        candidates=(answer("employment.notice_period", context="not-a-mapping"),)),)),
+        id="candidate-context-not-mapping"),
+]
+
+
+@pytest.mark.parametrize("overrides", _ROUND2_INVALID_CASES)
+def test_round2_fail_closed_on_malformed_containers_without_raising(overrides):
+    d = evaluate_authorization(make_ctx(**overrides))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+
+
+def test_invalid_input_still_reports_independent_safe_facts():
+    """kill switch True + float attribute -> reasons include both invalid_input and kill_switch."""
+    d = evaluate_authorization(make_ctx(kill_switch_engaged=True, attributes={"fit.overall_score": 74.5}))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert "kill_switch" in codes(d) and "invalid_input" in codes(d)
+
+
+def test_invalid_mode_normalizes_to_none_with_raw_value_in_reason():
+    d = evaluate_authorization(make_ctx(mode="LIVE"))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input" and d.mode is None
+    matches = [dict(r.params) for r in d.reasons if r.code == "invalid_input" and dict(r.params).get("detail") == "mode_invalid"]
+    assert matches and matches[0]["raw"] == repr("LIVE")
+
+
+def test_invalid_requested_stage_normalizes_to_none():
+    d = evaluate_authorization(make_ctx(requested_stage=0))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input" and d.requested_stage is None
+
+
+def test_valid_mode_preserved_when_other_field_is_the_invalid_one():
+    """A valid-but-invalid-input context (naive `now`, valid mode SHADOW) still
+    reports the real mode -- only the specific malformed field is nulled out."""
+    naive_now = datetime(2026, 9, 24, 12, 0)
+    d = evaluate_authorization(make_ctx(now=naive_now, mode=Mode.SHADOW))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input" and d.mode is Mode.SHADOW
+
+
+# Ruling B: apply-target mismatch REQUIRE_USER items are stage-scoped to
+# FILL/SUBMIT; the FILL cap reduction itself still applies at every stage.
+def test_apply_target_mismatch_item_suppressed_before_fill():
+    d = evaluate_authorization(make_ctx(
+        apply_target=good_target(tenant_matches_employer=False), requested_stage=C.PREPARE))
+    assert RequireUserItem("apply_target", "tenant_matches_employer") not in d.require_user_items
+    assert d.effective_capability == C.FILL
+    assert d.grantable  # PREPARE requested, FILL cap suffices
+
+
+# Ruling C: hard stops always surface at FILL/SUBMIT, independent of relevance.
+def test_hard_stop_surfaces_even_when_structural_cap_is_below_requested_stage():
+    d = evaluate_authorization(make_ctx(
+        apply_target=good_target(provenance=ProvenanceTier.USER_SUPPLIED),  # structural cap -> FILL
+        executor_hard_stops=("captcha",), requested_stage=C.SUBMIT))
+    assert d.result is R.REQUIRE_USER and RequireUserItem("hard_stop", "captcha") in d.require_user_items
+
+
+# Ruling D: a non-required field's not-submit-ready answer is omitted, never
+# a reduction; only a required field's does that.
+def test_optional_expired_answer_does_not_reduce_and_is_omitted():
+    expired = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=100))  # freshness_days=60
+    d = evaluate_authorization(make_ctx(requirements=(RepresentationRequirement(
+        key="notice", subject="employment.notice_period", required=False, evidence_available=False,
+        candidates=(expired,)),)))
+    assert d.grantable and d.effective_capability == C.SUBMIT
+    assert any(r.code == "optional_omitted" and ("why", "expired") in r.params for r in d.reasons)
+
+
+# Ruling E: relevance is judged against the structural cap, computed before
+# the actionable pack/answer-freshness reductions -- so an unconfirmable pack
+# must not suppress an otherwise-relevant required-field item.
+def test_relevance_uses_structural_cap_not_pack_reduction():
+    d = evaluate_authorization(make_ctx(
+        pack_auto_confirmable=False,
+        requirements=(RepresentationRequirement(
+            key="notice", subject="employment.notice_period", required=True, evidence_available=False),)))
+    assert d.result is R.REQUIRE_USER and RequireUserItem("missing_answer", "notice") in d.require_user_items
+
+
+# Ruling F: a CLAIMED (in-flight) intent always denies; only a CONFIRMED
+# intent can be overridden.
+def test_claimed_intent_denies_even_when_overridden():
+    d = evaluate_authorization(make_ctx(existing_intent_state="CLAIMED", intent_overridden=True))
+    assert (d.result, d.deny_reason) == (R.DENY, "duplicate")
+
+
+# Ruling G: an acknowledgement's observed fingerprint includes the contents
+# of any employer list its rule references via in_list.
+WATCH_LIST = {"id": "watch", "description": "", "when": {"attr": "company.key", "op": "in_list", "value": "watch"},
+              "effect": {"type": "REQUIRE_USER"}, "on_unknown": {"type": "REQUIRE_USER"}}
+
+
+def test_employer_list_edit_lapses_rule_acknowledgement():
+    attrs = {"company.key": "name:acme"}
+    policy = make_policy(WATCH_LIST, lists={"watch": ["name:acme"]})
+    ack = _ack(policy, attrs, rule_id="watch")
+    d = evaluate_authorization(make_ctx(standing_policy=policy, attributes=attrs, rule_acknowledgements=(ack,)))
+    assert d.result is R.ALLOW and "rule_acknowledged_proceed" in codes(d)
+    edited = make_policy(WATCH_LIST, lists={"watch": ["name:acme", "name:other"]})
+    d = evaluate_authorization(make_ctx(standing_policy=edited, attributes=attrs, rule_acknowledgements=(ack,)))
+    assert d.result is R.REQUIRE_USER and "rule_acknowledgement_lapsed" in codes(d)

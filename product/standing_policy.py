@@ -250,9 +250,43 @@ def _observed_value(attr: str, value: Any) -> Any:
     return value
 
 
-def observed_fingerprint(rule: Mapping[str, Any], attributes: Mapping[str, Any]) -> str:
+def referenced_lists(pred: Mapping[str, Any]) -> list[str]:
+    """Employer-list names a predicate tree references via in_list (the only
+    way a rule references an employer list, spec §5.2)."""
+    if "all" in pred or "any" in pred:
+        children = pred.get("all", pred.get("any"))
+        return sorted({name for child in children for name in referenced_lists(child)})
+    if "not" in pred:
+        return referenced_lists(pred["not"])
+    if pred.get("op") == "in_list":
+        return [pred["value"]]
+    return []
+
+
+def observed_fingerprint(
+    rule: Mapping[str, Any], attributes: Mapping[str, Any],
+    employer_lists: Mapping[str, list[str]] | None = None,
+) -> str:
+    """The fingerprint a rule acknowledgement is bound to (spec §9.3 step 5
+    "Rule acknowledgements"): the observed attribute values the rule's
+    predicate reads, plus -- for any employer list it references via
+    in_list -- that list's sorted contents. A referenced-but-absent list is
+    recorded as UNKNOWN, distinct from an empty list. Editing a referenced
+    list's contents therefore changes the fingerprint (and so lapses any
+    acknowledgement bound to the old one), even though it never changes
+    referenced_attributes and, absent employer_lists, this is identical to
+    the pre-existing (attributes-only) fingerprint."""
     observed = {attr: _observed_value(attr, attributes.get(attr, UNKNOWN)) for attr in referenced_attributes(rule["when"])}
-    return canonical_hash("rule-observation", "v1", observed)
+    lists = employer_lists or {}
+    list_names = referenced_lists(rule["when"])
+    observed_lists: dict[str, Any] = {}
+    for name in list_names:
+        if name in lists:
+            observed_lists[name] = sorted(lists[name])
+        else:
+            observed_lists[name] = UNKNOWN
+    payload = {"attributes": observed, "lists": observed_lists}
+    return canonical_hash("rule-observation", "v1", payload)
 
 
 def _leaf(pred: Mapping[str, Any], attributes: Mapping[str, Any], lists: Mapping[str, list[str]]) -> Any:
@@ -315,7 +349,7 @@ def evaluate_rules(doc: Mapping[str, Any], attributes: Mapping[str, Any]) -> tup
             effect = dict(rule["effect"]) if truth else None
         outcomes.append(RuleOutcome(
             rule_id=rule["id"], rule_hash=rule_hash(rule),
-            observed_fingerprint=observed_fingerprint(rule, attributes),
+            observed_fingerprint=observed_fingerprint(rule, attributes, lists),
             applied_effect=effect, via_unknown=via_unknown,
         ))
     return tuple(outcomes)
