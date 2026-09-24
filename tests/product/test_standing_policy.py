@@ -154,3 +154,29 @@ def test_observed_fingerprint_depends_only_on_referenced_attributes():
 ])
 def test_normalize_employment_type(text, expected):
     assert normalize_employment_type(text) == expected
+
+
+def test_evaluate_rules_with_float_attribute_no_exception():
+    """evaluate_rules with float attr value (wrong type) does not raise, uses on_unknown."""
+    doc = _doc(MIN_FIT)
+    outcomes = evaluate_rules(doc, {"fit.overall_score": 74.9})
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.via_unknown is True
+    assert outcome.applied_effect == {"type": "REDUCE_TO", "level": "PREPARE"}
+
+
+def test_observed_fingerprint_treats_float_as_unknown():
+    """Float attr value is observed as UNKNOWN, fingerprint same as missing attr."""
+    from decimal import Decimal
+    float_fp = observed_fingerprint(MIN_FIT, {"fit.overall_score": 74.9})
+    missing_fp = observed_fingerprint(MIN_FIT, {})
+    assert float_fp == missing_fp
+
+    # Also test Decimal("NaN")
+    nan_fp = observed_fingerprint(MIN_FIT, {"fit.overall_score": Decimal("NaN")})
+    assert nan_fp == missing_fp
+
+    # Also test str on int attribute
+    str_fp = observed_fingerprint(MIN_FIT, {"fit.overall_score": "seventy-four"})
+    assert str_fp == missing_fp

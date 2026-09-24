@@ -232,23 +232,35 @@ def referenced_attributes(pred: Mapping[str, Any]) -> list[str]:
     return [pred["attr"]]
 
 
+def _observed_value(attr: str, value: Any) -> Any:
+    """Return value if valid for attr's type, else UNKNOWN. Ensures consistency with _leaf."""
+    if value is None or is_unknown(value):
+        return UNKNOWN
+    kind = ATTRIBUTE_TYPES[attr]
+    # int attributes: int or finite Decimal, not bool
+    if kind == "int":
+        if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+            return UNKNOWN
+        if isinstance(value, Decimal) and not value.is_finite():
+            return UNKNOWN
+        return value
+    # str attributes: must be str
+    if kind == "str" and not isinstance(value, str):
+        return UNKNOWN
+    return value
+
+
 def observed_fingerprint(rule: Mapping[str, Any], attributes: Mapping[str, Any]) -> str:
-    observed = {attr: attributes.get(attr, UNKNOWN) for attr in referenced_attributes(rule["when"])}
+    observed = {attr: _observed_value(attr, attributes.get(attr, UNKNOWN)) for attr in referenced_attributes(rule["when"])}
     return canonical_hash("rule-observation", "v1", observed)
 
 
 def _leaf(pred: Mapping[str, Any], attributes: Mapping[str, Any], lists: Mapping[str, list[str]]) -> Any:
     attr, op, target = pred["attr"], pred["op"], pred["value"]
     value = attributes.get(attr, UNKNOWN)
-    if value is None or is_unknown(value):
-        return UNKNOWN
-    kind = ATTRIBUTE_TYPES[attr]
-    # Rule thresholds are integers; runtime values may be int or Decimal
-    # (Job Fit scores can be fractional -- the assembler passes Decimal,
-    # never float, so hashing stays exact). Anything else is UNKNOWN.
-    if kind == "int" and (isinstance(value, bool) or not isinstance(value, (int, Decimal))):
-        return UNKNOWN
-    if kind == "str" and not isinstance(value, str):
+    # Use _observed_value to validate type, ensuring consistency with observed_fingerprint
+    value = _observed_value(attr, value)
+    if is_unknown(value):
         return UNKNOWN
     if op == "eq":
         return value == target
