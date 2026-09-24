@@ -167,7 +167,7 @@ The document contains:
 ```
 
 - **Effects** are exactly `REDUCE_TO(NONE|PREPARE|FILL)`, `BLOCK`, `REQUIRE_USER`. The schema has no granting effect; a rule cannot raise authority by construction.
-- **Predicates** are over a closed attribute vocabulary (`product/standing_policy.py`): `fit.overall_score`, `fit.verdict`, `job.employment_type`, `job.location`, `job.title`, `company.key`, `workspace.id`, `identity.strength`, and additions by explicit vocabulary change only. Operators: `eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`, `contains`; combinators `all`, `any`, `not`.
+- **Predicates** are over a closed attribute vocabulary (`product/standing_policy.py`): `fit.overall_score`, `fit.verdict`, `job.employment_type`, `job.location`, `job.title`, `company.key`, `workspace.id`, `identity.strength`, and additions by explicit vocabulary change only. Operators: `eq`, `ne`, `in`, `not_in`, `lt`, `lte`, `gt`, `gte`, `contains`, and `in_list` (membership in a named `employer_lists` entry, §5.1 — the only way a rule references an employer list); combinators `all`, `any`, `not`.
 - **Three-valued evaluation.** Each predicate evaluates to `TRUE`, `FALSE` or `UNKNOWN` (Kleene logic for combinators).
   - `TRUE` → apply `effect`.
   - `FALSE` → no effect.
@@ -243,7 +243,7 @@ Unattended SUBMIT is permitted only when **every** employer-facing representatio
 ### 7.2 Structured form answers
 
 - Must trace to an approved evidence field (candidate snapshot path, generalizing the closed mapping in `webapp/services/handoff.py`) or to an approved answer (§7.5) for the same canonical subject, within reach and context, and fresh for SUBMIT.
-- **Format-only transforms** are allowed from a closed, deterministic set in `product/representation_transforms.py`: country name ↔ ISO code, date format, phone → E.164 display variants, whitespace/case normalization. Each transform declares a round-trip check proving the underlying value is unchanged. No other transformation is permitted.
+- **Format-only transforms** are allowed from a closed, deterministic set in `product/representation_transforms.py`: country name ↔ ISO code, date format (ISO ↔ dd/mm/yyyy, mm/dd/yyyy), phone → E.164, whitespace normalization, identity. Case normalization is not part of the 6B set; it is added deliberately in 6D only when real form behaviour requires it. Each transform declares a round-trip check, implemented independently of the transform itself, proving the underlying value is unchanged; malformed input fails closed. No other transformation is permitted.
 
 ### 7.3 Free-text screening questions
 
@@ -312,7 +312,7 @@ A domain match alone is never sufficient. Any mismatch → `REQUIRE_USER` (never
 
 The server builds an immutable, content-hashed **fill manifest** and binds its hash into FILL and SUBMIT grants. Each entry:
 
-`page_key`, `page_field_key`, `normalized_field_type` or `subject`, `source_ref` (evidence path | `approved_answer_id` + `answer_confirmation_id` | pack document hash), `transform_id` (§7.2), `value_hash`, `required`.
+`page_key`, `page_field_key`, `normalized_field_type` or `subject`, `source` object `{kind, ref, confirmation_id}` — `kind` ∈ `EVIDENCE` (ref = evidence path), `APPROVED_ANSWER` (ref = `approved_answer_id`, `confirmation_id` = `answer_confirmation_id`, required), `PACK_DOCUMENT` (ref = pack document hash), `transform_id` (§7.2), `value_hash`, `required`.
 
 The manifest answers "exactly what did Job Pipeline authorize the browser to put into this employer form". The executor never invents a value; it may only place what the manifest releases. The 6B deliverable is the manifest **schema, hashing and validation** (`product/fill_manifest.py`); 6D builds manifests from live pages.
 
@@ -369,22 +369,23 @@ Assembled by `webapp/services/autonomy.py` from database reads; for SUBMIT at pr
 
 Every check runs and emits reason codes; the result is derived afterwards by fixed precedence. The ledger always holds the complete explanation.
 
-1. **Validate** the context (versions known, required inputs present, documents valid). Failure → reason `invalid_input`.
+1. **Validate** the context (versions known, required inputs present, documents valid, every closed-schema field and container of the expected type). Failure → `DENY(invalid_input)` deterministically, never an exception. The decision records the validation errors plus any fully independent safe facts (a validly-typed engaged kill switch or present sentinel); checks that depend on malformed input are not evaluated.
 2. **Ceiling** = `min(deployment_ceiling, account_max, workspace_ceiling)`.
 3. **Reductions** (each `min()`):
    - standing-policy `REDUCE_TO` effects and `on_unknown` reductions;
    - identity strength `WEAK` or identity conflict → `FILL`;
    - apply-target tier cap (§8.1);
    - employer key `UNKNOWN` → `FILL`;
-   - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`;
+   - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`. A genuinely optional field (omission permitted) is not needed by SUBMIT: its expired/stale/context-unknown answer is omitted (`optional_omitted`) and does not reduce;
    - an answer contradicted by current evidence is not a permitted source at all (it produces a `REQUIRE_USER` item in step 5);
    - pack not auto-confirmable → `PREPARE`;
    - `mode` ≠ `LIVE` does **not** reduce (shadow evaluates the live outcome) but makes the decision non-grantable (§14).
-4. **Stops:** kill switch or sentinel → `kill_switch`; standing-policy `BLOCK` or governing `AUTO_REJECT` → `BLOCK`; live or `CONFIRMED` intent for the identity (without human override) → `duplicate`; exhausted count or budget → `limit`/`budget` with `retry_at` when computable.
+4. **Stops:** kill switch or sentinel → `kill_switch`; standing-policy `BLOCK` or governing `AUTO_REJECT` → `BLOCK`; a `CLAIMED` (in-flight) intent for the identity → `duplicate` always; a `CONFIRMED` intent → `duplicate` unless the user recorded an explicit override (overrides apply to confirmed submissions only, never to an in-flight claim); exhausted count or budget → `limit`/`budget` with `retry_at` when computable.
 5. **Questions:** standing-policy `REQUIRE_USER` (effect or `on_unknown`) not covered by a current rule acknowledgement; unresolved governing `REQUIRE_USER` decisions; required fields/questions without a permitted source; sensitive required fields; hard stops reported by the executor.
-   - *Stage scoping:* standing-policy and governing-decision items apply to every stage. Field/question items (required fields, free-text questions, sensitive fields, hard stops) arise only for FILL and SUBMIT.
-   - *Relevance:* **a field/question item is raised as `REQUIRE_USER` only if resolving it could raise effective capability to the requested stage**; otherwise it is recorded as a silent reason and does not pause the application.
-   - *Rule acknowledgements:* the user clears a standing-policy `REQUIRE_USER` item for one application by an explicit `rule_acknowledgements` record (proceed / do not proceed), bound to the application, the rule id, the **rule content hash** (canonical hash of that one rule, §15.1) and the fingerprint of the attribute values the rule observed. The overall `policy_version_hash` is recorded for audit only. Validity depends on the rule content hash and the observed-attribute fingerprint: editing an unrelated rule does not invalidate the acknowledgement; changing the acknowledged rule, or a change in the attribute values it observes, does. "Do not proceed" becomes `BLOCK` for that application. An acknowledgement never raises capability above the ceiling; it only lifts a restriction the user themselves wrote.
+   - *Stage scoping:* standing-policy and governing-decision items apply to every stage. Field/question items (required fields, free-text questions, sensitive fields), apply-target/page identity mismatches and executor hard stops arise only for FILL and SUBMIT.
+   - *Hard stops* (CAPTCHA, login/account wall, email verification, out-of-manifest step) always surface at FILL/SUBMIT; they are operational blockers and are not subject to relevance.
+   - *Relevance:* surface **all actionable blockers that must eventually be cleared to reach the requested stage**, even when clearing one alone would not suffice, so the inbox shows everything at once. Relevance is judged against the *structural* cap — the ceilings and non-actionable reductions (standing-policy `REDUCE_TO`, identity, apply-target tier/adapter/verification, employer key) — not against actionable reductions (pack not auto-confirmable, answer freshness). A field/question item that could not help reach the requested stage even with every actionable blocker cleared is recorded as a silent reason and does not pause the application.
+   - *Rule acknowledgements:* the user clears a standing-policy `REQUIRE_USER` item for one application by an explicit `rule_acknowledgements` record (proceed / do not proceed), bound to the application, the rule id, the **rule content hash** (canonical hash of that one rule, §15.1) and the fingerprint of the attribute values the rule observed. The overall `policy_version_hash` is recorded for audit only. Validity depends on the rule content hash and the observed-attribute fingerprint: editing an unrelated rule does not invalidate the acknowledgement; changing the acknowledged rule, a change in the attribute values it observes, or a change to the contents of any employer list it references (`in_list`), does — the referenced lists' contents are part of the observed fingerprint. "Do not proceed" becomes `BLOCK` for that application. An acknowledgement never raises capability above the ceiling; it only lifts a restriction the user themselves wrote.
 
 ### 9.4 Precedence
 
