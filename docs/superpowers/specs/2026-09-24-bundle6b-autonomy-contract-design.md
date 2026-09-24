@@ -1,6 +1,6 @@
 # Bundle 6B: Autonomy Contract — Architectural Design
 
-Status: approved design (sections 1–5 approved in brainstorming 2026-09-24), not yet implemented
+Status: approved design (brainstorming sections 1–5 and spec review, 2026-09-24), not yet implemented
 Date: 2026-09-24
 Base: `master` @ `91acb5a` (Phase 3 release, tag `phase3-release`)
 Depends on: Phase 4A (`policy_decisions`, `product/application_decision_policy.py`), Phase 4B/4C (`application_blockers`, `blocker_resolutions`, `product/semantic_subject_registry.py`, resolved-answer consumption), Application Handoff (`handoff_sessions`, `handoff_events`, `submission_confirmations`, closed field mapping in `webapp/services/handoff.py`), apply-target resolution (`resolve_apply_target` / `ApplyTarget` in `webapp/services/workspace_view.py`), job identity (`application_workspace_job_identities`).
@@ -73,7 +73,8 @@ Each invariant must be enforced structurally where possible and covered by tests
 10. **Grants are never refreshed in place.** Any material drift from a grant's binding revokes it; a fresh decision and grant are required.
 11. **Shadow and dry-run never create executable authority** and never consume real grants, intents, limit slots or reservations.
 12. **Releasing a halt never resumes work.** Only an explicit resume makes applications eligible for fresh evaluation.
-13. **Deterministic ordering.** Every append-only table introduced here orders by an integer sequence (`seq INTEGER PRIMARY KEY AUTOINCREMENT` or equivalent), never by `created_at` alone and never by a random-id tie-break (see 6A).
+13. **"Current" is never defined by timestamp.** Every append-only table introduced here carries a monotonic integer `seq`, and every current-state projection — authorizations, kill switch, resume/pause controls, policy versions, approved answers, answer confirmations, rule acknowledgements, attempt events — is derived by `seq` (or an explicit current pointer), never by `created_at` and never by a random-id tie-break. 6B must not recreate the problem 6A fixes.
+14. **Canonical hashing.** Every content hash and fingerprint (§15.1) is computed over a specified canonical serialization that embeds its schema name and version. Semantically identical inputs hash identically regardless of key order or formatting.
 
 ---
 
@@ -122,8 +123,9 @@ A future normalized role-family/region classification may be used in standing-po
 
 ### 4.2 Defaults
 
-- `ACCOUNT_MAX` absent → `NONE`. Autonomy is opt-in per account.
-- A new search workspace never silently inherits `SUBMIT`. `WORKSPACE_CEILING` absent → the account's `default_workspace_ceiling`, itself defaulting to `PREPARE`, and never defaulted above `PREPARE` by the system.
+- **No record means `NONE`.** Absent `ACCOUNT_MAX` → `NONE`; absent `DEFAULT_WORKSPACE_CEILING` → `NONE`. The system never supplies an implicit capability, not even `PREPARE`, so "only explicit user configuration grants capability" is literally true.
+- The first enabling action (e.g. "enable autonomous preparation") explicitly writes the authorization records it implies — typically `ACCOUNT_MAX = PREPARE` and `DEFAULT_WORKSPACE_CEILING = PREPARE` — attributed to the user.
+- `WORKSPACE_CEILING` absent → the account's explicitly recorded `DEFAULT_WORKSPACE_CEILING` (or `NONE` if there is none). A new search workspace never silently inherits `SUBMIT`; the UI must not offer a default workspace ceiling above `PREPARE` without a deliberate user choice.
 - Raising any ceiling or limit is an explicit user action recorded with actor and time.
 
 ### 4.3 Example
@@ -262,6 +264,10 @@ The data model keeps `provenance` explicit on every answer so a future, separate
 - Reach: `EMPLOYER` (scope id = employer key), `SEARCH_WORKSPACE` (scope id = search workspace id), `ACCOUNT`. The user picks a reach ≤ the subject's `max_reach`; the default is the subject's `default_reach`.
 - Rows are immutable. Editing creates a new row that supersedes the old one (`supersedes_id`); the current answer for (subject, reach, scope, context) is the latest non-superseded row by `seq`.
 - **Freshness** is anchored at the latest `answer_confirmations` row (append-only; approval itself writes the first). An expired answer is never deleted: it remains usable for `PREPARE` and, where the subject allows, `FILL`; it loses unattended `SUBMIT` eligibility until reconfirmed. Expiry only ever reduces autonomy.
+- **Validity is more than freshness.** Each approved answer records its **basis**: the candidate evidence/profile fields it restates or depends on (evidence ids and the canonical hash of their values at approval, from the current `profile_snapshot`), or an explicit `USER_ASSERTION` basis when no profile field corresponds. At evaluation the gate receives the current values of those fields:
+  - basis field superseded or changed → the answer is **stale-by-basis**: ineligible for unattended SUBMIT (usable for PREPARE/FILL only where the subject allows) until the user reconfirms or replaces it;
+  - current evidence **contradicts** the answer (a conflicting value for the same subject in the current profile or a newer resolved answer) → ineligible for SUBMIT **and** FILL, and raised as `REQUIRE_USER`.
+  "No expiry" for a stable fact therefore means no *time-based* expiry; it never lets an old answer survive a changed candidate profile.
 - Context keys must match exactly for reuse; an answer lacking a required context value is not reusable for a job whose context is known to differ, and a job whose context value is unknown cannot use it for SUBMIT (it may for PREPARE/FILL).
 
 ### 7.6 Employer key
@@ -349,7 +355,9 @@ Types in `product/autonomy_contract.py` (frozen dataclasses, `ENGINE_VERSION`). 
 - job facts: attributes for the closed predicate vocabulary, each either a value or `UNKNOWN`;
 - governing `policy_decisions` outcomes for the workspace;
 - pack state: grounding result, unresolved `REQUIRE_USER` count, auto-confirmable flag, pack artifact id;
-- representation manifest requirements: required fields/questions with their resolved source candidates (approved answers with confirmation times, evidence paths);
+- representation manifest requirements: required fields/questions with their resolved source candidates (approved answers with latest confirmation, recorded basis and the **current** values of their basis fields, evidence paths);
+- current rule acknowledgements for the application (rule id, rule hash, observed fingerprint, disposition);
+- `run_id` when the evaluation belongs to an autonomous run;
 - apply target: URL, provenance tier, adapter id/version, submit-capable flag, employer key + strength, expected ATS job id;
 - identity: `job_identity_key`, strength (`SOURCE_RECORD` | `CANONICAL_URL` | `WEAK`), conflict flag, existing intents for the key;
 - limits snapshot: counters per window, open reservations; budget snapshot per category;
@@ -368,14 +376,15 @@ Every check runs and emits reason codes; the result is derived afterwards by fix
    - identity strength `WEAK` or identity conflict → `FILL`;
    - apply-target tier cap (§8.1);
    - employer key `UNKNOWN` → `FILL`;
-   - an answer SUBMIT would need is expired, or its context is unknown → `FILL`;
+   - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`;
+   - an answer contradicted by current evidence is not a permitted source at all (it produces a `REQUIRE_USER` item in step 5);
    - pack not auto-confirmable → `PREPARE`;
    - `mode` ≠ `LIVE` does **not** reduce (shadow evaluates the live outcome) but makes the decision non-grantable (§14).
 4. **Stops:** kill switch or sentinel → `kill_switch`; standing-policy `BLOCK` or governing `AUTO_REJECT` → `BLOCK`; live or `CONFIRMED` intent for the identity (without human override) → `duplicate`; exhausted count or budget → `limit`/`budget` with `retry_at` when computable.
 5. **Questions:** standing-policy `REQUIRE_USER` (effect or `on_unknown`) not covered by a current rule acknowledgement; unresolved governing `REQUIRE_USER` decisions; required fields/questions without a permitted source; sensitive required fields; hard stops reported by the executor.
    - *Stage scoping:* standing-policy and governing-decision items apply to every stage. Field/question items (required fields, free-text questions, sensitive fields, hard stops) arise only for FILL and SUBMIT.
    - *Relevance:* **a field/question item is raised as `REQUIRE_USER` only if resolving it could raise effective capability to the requested stage**; otherwise it is recorded as a silent reason and does not pause the application.
-   - *Rule acknowledgements:* the user clears a standing-policy `REQUIRE_USER` item for one application by an explicit `rule_acknowledgements` record (proceed / do not proceed), bound to the rule id, `policy_version_hash`, application and the fingerprint of the attribute values the rule saw. "Do not proceed" becomes `BLOCK` for that application. An acknowledgement never raises capability above the ceiling; it only lifts a restriction the user themselves wrote, and it lapses if the policy version or the observed attribute values change.
+   - *Rule acknowledgements:* the user clears a standing-policy `REQUIRE_USER` item for one application by an explicit `rule_acknowledgements` record (proceed / do not proceed), bound to the application, the rule id, the **rule content hash** (canonical hash of that one rule, §15.1) and the fingerprint of the attribute values the rule observed. The overall `policy_version_hash` is recorded for audit only. Validity depends on the rule content hash and the observed-attribute fingerprint: editing an unrelated rule does not invalidate the acknowledgement; changing the acknowledged rule, or a change in the attribute values it observes, does. "Do not proceed" becomes `BLOCK` for that application. An acknowledgement never raises capability above the ceiling; it only lifts a restriction the user themselves wrote.
 
 ### 9.4 Precedence
 
@@ -415,8 +424,9 @@ Evaluation runs: at enqueue (PREPARE); immediately before FILL; and, for SUBMIT,
 
 The binding includes, where applicable: pack artifact id and document hashes; fill-manifest hash; approved-answer ids and confirmation ids; apply-target canonical URL, provenance tier, adapter id/version, tenant/employer key, ATS job id, permitted redirect set; job identity key; `policy_version_hash`, `subject_policy_hash`, `engine_version`; account/workspace ids.
 
-- FILL grant: bound to one fill session (the shape of today's `handoff_sessions`), repeatable within that session and TTL.
-- SUBMIT grant: single-use; default TTL 120 s (engine constant, tunable).
+- FILL grant: bound to one fill session (the shape of today's `handoff_sessions`), repeatable within that session and its TTL.
+- SUBMIT grant: single-use.
+- **TTLs are stage-specific, separately configurable constants** in `product/autonomy_contract.py`: `FILL_SESSION_TTL` (long enough for multi-page applications; proposed 30 min), `SUBMIT_GRANT_TTL` (proposed 120 s), `CLICK_DISPATCH_TTL` (proposed 60 s, §10.4). No TTL is shared between stages.
 - Any change to a bound input invalidates the grant; it is marked `REVOKED` (reason `stale_binding`), never updated.
 
 ### 10.2 Submission intents (duplicate prevention)
@@ -455,7 +465,7 @@ DUPLICATE_SUPPRESSED   (terminal; no submission attempted)
 ```
 
 - The executor must receive server acknowledgement that `CLICK_DISPATCHED` is durably recorded **before** dispatching the click. No acknowledgement, no click.
-- `AUTHORIZED` with no dispatch record after the dispatch TTL (default 60 s) → `EXPIRED_UNCLICKED`: the grant is dead, the intent is released, and a completely fresh SUBMIT decision is required.
+- `AUTHORIZED` with no dispatch record after `CLICK_DISPATCH_TTL` → `EXPIRED_UNCLICKED`: the grant is dead, the intent is released, and a completely fresh SUBMIT decision is required.
 - `CLICK_DISPATCHED` with no classified result → `SUBMISSION_AMBIGUOUS`. **Never retried automatically.** The user resolves it to `CONFIRMED_SUCCESS` or attests non-submission.
 - `SUBMISSION_FAILED` permits retry only with positive proof that nothing was submitted (e.g. adapter-declared validation errors still on the form); otherwise it is treated as ambiguous.
 - Post-dispatch browser evidence classifies the result; it never authorizes a retry.
@@ -467,7 +477,7 @@ DUPLICATE_SUPPRESSED   (terminal; no submission attempted)
 
 ### 11.1 States
 
-State is **derived** from the ledger, grants, attempts, intents and open exceptions, never asserted. The only mutable scheduling record is `autonomy_queue_items` (`application_workspace_id`, `next_stage`, `next_eligible_at`, `lease_holder`, `lease_expires_at`, `paused`); it carries no authority.
+State is **derived** from the ledger, grants, attempts, intents, open exceptions and control events, never asserted. The only mutable scheduling record is `autonomy_queue_items` (`application_workspace_id`, `next_stage`, `next_eligible_at`, `lease_holder`, `lease_expires_at`, `paused`); it carries no authority. Its `paused` flag is an operational cache of `autonomy_control_events` (§11.4), which is the authoritative, append-only history of every pause and resume.
 
 ```
 QUEUED ─► PREPARING ─► PREPARED ─┬─► PREPARED_AWAITING_HUMAN                 (eff = PREPARE)
@@ -504,6 +514,8 @@ Each forward arrow requires a fresh `ALLOW` for that stage (and a grant for FILL
 | Ceiling/policy change | workspace or account | effective at the next evaluation (incl. pre-FILL and pre-click) |
 | Kill switch (UI / local endpoint / file sentinel) | global | all stages → `DENY(kill_switch)`; every `ISSUED` grant revoked in the engaging transaction; consumed grants and existing attempts continue their lifecycle and are not rewritten |
 
+Every pause, resume and resume-all is an `autonomy_control_events` row with actor, reason and time; kill-switch changes are `autonomy_kill_switch` rows. No safety-relevant control exists only as a mutable flag.
+
 **Resume:** clearing the kill switch or removing the sentinel only removes a halt signal. Applications stay halted until an explicit **resume all**, which wakes queue items for fresh evaluation from current policy; it never revives old decisions or grants.
 
 ### 11.5 Recovery
@@ -523,7 +535,7 @@ Lost leases are retaken after expiry. `DENY_TEMPORARY` sets `next_eligible_at = 
 | FILL per calendar day | 10 |
 | SUBMIT per employer key per rolling 30 days | 2 |
 
-Defaults are deliberately conservative and are not permanent. Raising any limit is an explicit user action. Calendar windows use the policy document's IANA `timezone`. An "autonomous run" is a scheduler run identified by `run_id` (6C).
+Defaults are deliberately conservative and are not permanent. Raising any limit is an explicit user action. Calendar windows use the policy document's IANA `timezone`. An "autonomous run" is a durable `autonomy_runs` record (§15); its identity is part of this contract so the per-run limit is evaluable and auditable, and every SUBMIT decision, grant and attempt carries its `run_id`. 6C starts and ends runs.
 
 Exact duplicate prevention is §10.2; the per-employer limit is an anti-flood control.
 
@@ -582,18 +594,19 @@ Then live SUBMIT starts as the 1/day canary. The deployment ceiling is raised on
 
 ## 15. Data model
 
-New migration(s) `016_autonomy_contract` onward. All append-only tables carry `seq INTEGER PRIMARY KEY AUTOINCREMENT` (or a unique monotonic `seq` column) used for all "latest" ordering (§2 invariant 13). Ids are opaque text ids alongside `seq` where referenced externally.
+New migration(s) `016_autonomy_contract` onward. All append-only tables carry `seq INTEGER PRIMARY KEY AUTOINCREMENT` (or a unique monotonic `seq` column), and every current-state projection uses it (§2 invariant 13); `created_at` is informational only. Ids are opaque text ids alongside `seq` where referenced externally.
 
 | Table | Kind | Key columns |
 |---|---|---|
 | `autonomy_authorizations` | append-only | `account_id`, `scope_type` (`ACCOUNT_MAX` \| `WORKSPACE_CEILING` \| `DEFAULT_WORKSPACE_CEILING`), `scope_id`, `capability`, `set_by`, `created_at` |
 | `autonomy_kill_switch` | append-only | `account_id`, `engaged`, `reason`, `actor`, `created_at` |
-| `autonomy_resume_events` | append-only | `account_id`, `actor`, `created_at` (explicit resume all) |
 | `standing_policy_versions` | append-only | `account_id`, `policy_json`, `policy_hash`, `created_by`, `created_at` |
-| `approved_answers` | append-only | `id`, `account_id`, `subject`, `answer_kind`, `value_json`, `reach`, `scope_id`, `context_json`, `provenance` (`USER` \| `USER_EDITED_PROPOSAL`), `supersedes_id`, `source_blocker_resolution_id`, `approved_by`, `created_at` |
+| `approved_answers` | append-only | `id`, `account_id`, `subject`, `answer_kind`, `value_json`, `reach`, `scope_id`, `context_json`, `provenance` (`USER` \| `USER_EDITED_PROPOSAL`), `basis_json` (evidence ids + value hash, or `USER_ASSERTION`), `basis_profile_version_id`, `supersedes_id`, `source_blocker_resolution_id`, `approved_by`, `created_at` |
 | `answer_confirmations` | append-only | `approved_answer_id`, `confirmed_by`, `created_at` |
 | `proposed_answers` | append-only | `id`, `blocker_id`, `subject`, `value_json`, `provenance='SYSTEM_PROPOSED'`, `created_at` |
-| `rule_acknowledgements` | append-only | `account_id`, `application_workspace_id`, `rule_id`, `policy_version_hash`, `observed_fingerprint`, `disposition` (`PROCEED` \| `DO_NOT_PROCEED`), `actor`, `created_at` |
+| `rule_acknowledgements` | append-only | `account_id`, `application_workspace_id`, `rule_id`, `rule_hash`, `observed_fingerprint`, `policy_version_hash` (audit only), `disposition` (`PROCEED` \| `DO_NOT_PROCEED`), `actor`, `created_at` |
+| `autonomy_runs` | append-only start/end events | `run_id`, `account_id`, `started_by` (`SCHEDULER` \| `USER`), `started_at`, `ended_at`, `end_reason` (identity defined in 6B; operated from 6C) |
+| `autonomy_control_events` | append-only | `account_id`, `scope_type` (`APPLICATION` \| `SEARCH_WORKSPACE` \| `ACCOUNT`), `scope_id`, `action` (`PAUSE` \| `RESUME` \| `RESUME_ALL`), `actor`, `reason`, `created_at` |
 | `apply_target_confirmations` | append-only | `application_workspace_id`, `job_identity_key`, `canonical_url`, `confirmed_by`, `created_at` |
 | `autonomy_decisions` | append-only | `id`, `account_id`, `application_workspace_id`, `mode`, `requested_stage`, `result`, `effective_capability`, `grantable`, `reasons_json`, `require_user_json`, `retry_at`, `inputs_json`, `input_fingerprint`, `engine_version`, `policy_version_hash`, `subject_policy_hash`, `grant_id` (pre-click evaluations), `created_at` |
 | `autonomy_grants` | status column; transitions append-logged | per §10.1 |
@@ -607,7 +620,19 @@ New migration(s) `016_autonomy_contract` onward. All append-only tables carry `s
 
 `blocker_resolutions`, `application_blockers`, `policy_decisions` and `handoff_*` are unchanged; new tables reference them.
 
-**File sentinel:** a fixed path under the application-data directory (`<data_dir>/AUTONOMY_HALT`), resolved from `Settings`. Presence means halt. It is checked synchronously wherever the kill-switch state is read, including inside the pre-click transaction; a filesystem watcher, if any, is only an optimization.
+### 15.1 Canonical hashing
+
+One function, `canonical_hash(schema: str, schema_version: str, payload) -> str`, in `product/autonomy_contract.py`, used for every hash and fingerprint in this spec: standing-policy document (`policy_version_hash`), individual rule (`rule_hash`), subject policy (`subject_policy_hash`), fill manifest, representation/answer set, answer basis values, observed-attribute fingerprints, grant binding, and the authorization `input_fingerprint`.
+
+- Serialization: UTF-8 JSON with keys sorted lexicographically at every level, no insignificant whitespace (`separators=(",", ":")`), `ensure_ascii=False`, strings NFC-normalized; the envelope is `{"schema": ..., "schema_version": ..., "payload": ...}`.
+- Numbers: integers as integers; non-integers rejected in hashed payloads unless the schema declares a decimal-as-string field (no float formatting ambiguity). `NaN`/`Infinity` rejected.
+- Collections whose order is semantically irrelevant (e.g. sets of reasons, answer ids) are sorted by the schema's declared key before hashing; ordered collections (e.g. manifest pages) keep order.
+- Algorithm: SHA-256, hex-encoded, prefixed `sha256:`.
+- Semantically identical inputs must hash identically regardless of key order or formatting; tests enforce this (§17).
+
+### 15.2 File sentinel
+
+A fixed path under the application-data directory (`<data_dir>/AUTONOMY_HALT`), resolved from `Settings`. Presence means halt. It is checked synchronously wherever the kill-switch state is read, including inside the pre-click transaction; a filesystem watcher, if any, is only an optimization.
 
 ---
 
@@ -649,7 +674,17 @@ New migration(s) `016_autonomy_contract` onward. All append-only tables carry `s
 
 **Isolation:** shadow and dry-run never write grants, intents, reservations or attempts.
 
-**Ordering:** equal-`created_at` fixtures prove every "latest" query uses `seq`.
+**Ordering:** equal-`created_at` fixtures prove every current-state projection uses `seq`.
+
+**Canonical hashing:** key-order, whitespace and Unicode-normalization permutations of the same payload hash identically; different schema versions of the same payload hash differently; floats/NaN are rejected (property tests).
+
+**Explicit authority:** with no authorization records the effective capability is `NONE` at every stage; the enabling action writes attributed records.
+
+**Answer validity:** a changed basis field makes an answer SUBMIT-ineligible; contradicting current evidence makes it FILL- and SUBMIT-ineligible and raises `REQUIRE_USER`; a stable "no expiry" answer is still invalidated by a basis change.
+
+**Rule acknowledgements:** an edit to an unrelated rule keeps an acknowledgement valid; an edit to the acknowledged rule, or a change in its observed attributes, voids it.
+
+Property-based tests use **Hypothesis**, added to `requirements-dev.txt` in its own dependency commit.
 
 **Dossier:** reconstructs a complete scripted application history exactly.
 
@@ -678,6 +713,6 @@ These do not change the contract; the plan must settle them.
 2. How the existing unsupported-claim validation result is surfaced as the pack's grounding input on the legacy document path.
 3. Migration of existing `blocker_resolutions` with scope `SEARCH_WORKSPACE`/`CANDIDATE_FACT` into `approved_answers`: proposed **no automatic migration** — existing answers remain valid for Phase 4C consumption, and become reusable for autonomy only after explicit user approval.
 4. The standing-policy editor's first form (validated JSON editor vs. structured form); the contract requires only that invalid documents are rejected.
-5. Default grant/dispatch TTL values (120 s / 60 s proposed) as engine constants.
-6. Property-based testing library: Hypothesis would be a new **dev** dependency. It must be added deliberately in `requirements-dev.txt` with its own commit, or the plan must use hand-written generators instead.
+5. Final values of `FILL_SESSION_TTL` / `SUBMIT_GRANT_TTL` / `CLICK_DISPATCH_TTL` (proposed 30 min / 120 s / 60 s).
+6. How answer-basis fields are identified for each subject (mapping from subject to candidate snapshot paths), and which subjects default to `USER_ASSERTION`.
 7. The v1 freshness values in §6.2 other than "no expiry" for stable facts are proposed baselines (salary and availability deliberately short-lived) and may be tuned in the plan without changing the contract.
