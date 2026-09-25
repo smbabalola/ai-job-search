@@ -410,11 +410,47 @@ def test_required_unclassified_and_sensitive_record_completion_blockers():
     assert CompletionBlocker("eeo", "demographic.eeo", "sensitive_field", C.SUBMIT) in d.completion_blockers
 
 
+def test_required_unclassified_and_sensitive_record_completion_blockers_at_fill_too():
+    """Test gap: the SUBMIT-only test above didn't cover FILL. unclassified_field
+    and sensitive_field items never surface at FILL (raise_at_fill=False), so
+    result stays ALLOW -- but the completion blocker is still recorded,
+    exactly as it is for missing_answer (spec §9.5: recorded whenever
+    requirements are evaluated, FILL and SUBMIT, regardless of relevance)."""
+    d = run(req("q7", None), requested_stage=C.FILL)
+    assert d.result is R.ALLOW and d.effective_capability == C.FILL and d.grantable
+    assert CompletionBlocker("q7", None, "unclassified_field", C.SUBMIT) in d.completion_blockers
+
+    d2 = run(req("eeo", "demographic.eeo"), requested_stage=C.FILL)
+    assert d2.result is R.ALLOW and d2.effective_capability == C.FILL and d2.grantable
+    assert CompletionBlocker("eeo", "demographic.eeo", "sensitive_field", C.SUBMIT) in d2.completion_blockers
+
+
 def test_expired_required_answer_is_not_a_completion_blocker():
     old = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
     d = run(req("notice", "employment.notice_period", candidates=[old]), requested_stage=C.SUBMIT)
     assert d.effective_capability == C.FILL  # still capped (not submit-ready)...
     assert d.completion_blockers == ()  # ...but not a completion blocker: the field is fillable
+
+
+def test_stale_by_basis_and_context_unknown_required_answers_are_not_completion_blockers():
+    """Test gap: basis_changed and context_unknown required answers go
+    through the same `reductions` path as `expired` (the field is fillable,
+    just not SUBMIT-ready), so neither is a completion blocker."""
+    job = {"country": "GB"}
+    basis_changed = answer("work_authorization.right_to_work", context={"country": "GB"},
+                            basis_kind="EVIDENCE", basis_at="sha256:a", basis_now="sha256:b")
+    d = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[basis_changed]),
+            requested_stage=C.SUBMIT)
+    assert d.effective_capability == C.FILL
+    assert d.completion_blockers == ()
+
+    ctx = {"currency": "GBP", "region": "UK", "employment_type": "PERMANENT"}
+    sal = answer("compensation.salary_expectation", reach=Reach.SEARCH_WORKSPACE, scope_id="sw_1", context=ctx)
+    unknown_region = {**ctx, "region": UNKNOWN}
+    d2 = run(req("salary", "compensation.salary_expectation", job_context=unknown_region, candidates=[sal]),
+             requested_stage=C.SUBMIT)
+    assert d2.effective_capability == C.FILL
+    assert d2.completion_blockers == ()
 
 
 def test_optional_field_never_records_a_completion_blocker():
@@ -461,6 +497,22 @@ def test_completion_blockers_identical_whether_item_surfaced_or_silenced():
     assert silent.effective_capability == surfaced.effective_capability == C.FILL
 
 
+def test_completion_blockers_ordering_is_deterministic_and_sorted():
+    """Test gap: several simultaneous completion blockers are sorted
+    deterministically (spec §9.5), independent of the order the underlying
+    requirements were supplied in."""
+    bad = answer("employment.notice_period", contradicted=True)
+    missing = req("aaa_notice", "employment.notice_period", candidates=())
+    unclassified = req("zzz_q7", None)
+    sensitive = req("mmm_eeo", "demographic.eeo")
+    contradicted = req("bbb_notice2", "employment.notice_period", candidates=[bad])
+    d1 = run(missing, unclassified, sensitive, contradicted, requested_stage=C.SUBMIT)
+    d2 = run(contradicted, sensitive, unclassified, missing, requested_stage=C.SUBMIT)
+    assert len(d1.completion_blockers) == 4
+    assert d1.completion_blockers == tuple(sorted(d1.completion_blockers))
+    assert d1.completion_blockers == d2.completion_blockers
+
+
 def test_optional_field_completion_blockers_match_no_field_baseline():
     baseline = run(requested_stage=C.SUBMIT)
     with_optional = run(req("notice", "employment.notice_period", required=False, candidates=()),
@@ -489,3 +541,27 @@ def test_optional_field_answer_state_chain_never_lowers_below_no_field_baseline(
     ]
     for r in optional_chain:
         assert run(r).effective_capability == baseline
+
+
+def test_optional_field_answer_state_chain_grantable_parity_with_no_field_baseline():
+    """New test (the existing chain test above deliberately checks only
+    effective_capability, not grantable -- see its docstring history). After
+    ruling M, every optional worst-tier state -- contradicted included -- no
+    longer raises any item, so grantable now matches the no-field baseline
+    too, not only effective_capability."""
+    baseline = evaluate_authorization(make_ctx())
+    fresh = answer("employment.notice_period", confirmed_at=NOW)
+    expired = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
+    contradicted = answer("employment.notice_period", contradicted=True)
+    optional_chain = [
+        req("notice", "employment.notice_period", required=False, candidates=[fresh]),
+        req("notice", "employment.notice_period", required=False, candidates=[expired]),
+        req("notice", "employment.notice_period", required=False, candidates=()),
+        req("notice", "employment.notice_period", required=False, candidates=[contradicted]),
+        req("q7", None, required=False),
+        req("eeo", "demographic.eeo", required=False),
+    ]
+    for r in optional_chain:
+        d = run(r)
+        assert d.effective_capability == baseline.effective_capability
+        assert d.grantable == baseline.grantable

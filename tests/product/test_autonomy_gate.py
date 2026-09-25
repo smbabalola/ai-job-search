@@ -783,3 +783,110 @@ def test_decision_fingerprint_present_and_stable_on_invalid_input_path():
     # produce a well-formed decision_fingerprint, never raise.
     d3 = evaluate_authorization(None)
     assert d3.decision_fingerprint.startswith("sha256:") and d3.completion_blockers == ()
+
+
+# --- Fix round 2: duplicate requirement keys are a closed-schema
+# malformation (spec §9.3 step 1). Before this check, two requirements
+# sharing a key (e.g. one unclassified with subject=None, one classified)
+# could each independently drive a CompletionBlocker for "the same" field
+# with a different subject; sorting completion_blockers (whose ordering
+# compares subject: str | None) would then compare None to a str and raise
+# TypeError -- an unexpected-exception fail-closed rather than the specific
+# DENY(invalid_input) detail this validation now produces up front.
+
+def _dup_reqs(subject_a=None, subject_b="employment.notice_period", required_a=True, required_b=True):
+    return (
+        RepresentationRequirement(key="k", subject=subject_a, required=required_a, evidence_available=False),
+        RepresentationRequirement(key="k", subject=subject_b, required=required_b, evidence_available=False),
+    )
+
+
+@pytest.mark.parametrize("stage", [C.FILL, C.SUBMIT])
+def test_duplicate_requirement_keys_denied_invalid_input_not_unexpected_exception(stage):
+    d = evaluate_authorization(make_ctx(requirements=_dup_reqs(), requested_stage=stage))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+    details = _detail_codes(d)
+    assert any(det.startswith("requirement_key_duplicate:") for det in details)
+    assert not any(det is not None and det.startswith("unexpected:") for det in details)
+
+
+def test_duplicate_requirement_keys_same_subject_also_rejected():
+    d = evaluate_authorization(make_ctx(requirements=_dup_reqs(
+        subject_a="employment.notice_period", subject_b="employment.notice_period")))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert any(det.startswith("requirement_key_duplicate:") for det in _detail_codes(d))
+
+
+def test_duplicate_requirement_keys_required_vs_optional_also_rejected():
+    d = evaluate_authorization(make_ctx(requirements=_dup_reqs(required_a=True, required_b=False)))
+    assert d.result is R.DENY and d.deny_reason == "invalid_input"
+    assert any(det.startswith("requirement_key_duplicate:") for det in _detail_codes(d))
+
+
+def test_unique_requirement_keys_are_unaffected():
+    """Regression: requirements with distinct keys are not flagged."""
+    reqs = (
+        RepresentationRequirement(key="k1", subject=None, required=True, evidence_available=True),
+        RepresentationRequirement(key="k2", subject=None, required=True, evidence_available=True),
+    )
+    d = evaluate_authorization(make_ctx(requirements=reqs))
+    assert d.result is R.ALLOW and d.grantable
+
+
+# --- Fix round 2: decision_fingerprint must hash EVERY other field of
+# AuthorizationDecision, including engine_version, policy_version_hash and
+# subject_policy_hash (spec §9.5), not only the fields fix round 1 covered.
+
+def test_decision_fingerprint_helper_hashes_engine_version_and_policy_hashes():
+    kwargs = dict(
+        input_fingerprint="sha256:aaaa", mode=Mode.LIVE, result=R.ALLOW, deny_reason=None,
+        requested_stage=C.SUBMIT, effective_capability=C.SUBMIT, grantable=True,
+        reasons=(), require_user_items=(), completion_blockers=(), retry_at=None, retryable=False,
+    )
+    base = autonomy_gate_module._decision_fingerprint(
+        engine_version="autonomy-gate.v1", policy_version_hash="sha256:policy_a",
+        subject_policy_hash="sha256:subj_a", **kwargs)
+    diff_engine = autonomy_gate_module._decision_fingerprint(
+        engine_version="autonomy-gate.v2", policy_version_hash="sha256:policy_a",
+        subject_policy_hash="sha256:subj_a", **kwargs)
+    diff_policy = autonomy_gate_module._decision_fingerprint(
+        engine_version="autonomy-gate.v1", policy_version_hash="sha256:policy_b",
+        subject_policy_hash="sha256:subj_a", **kwargs)
+    diff_subject = autonomy_gate_module._decision_fingerprint(
+        engine_version="autonomy-gate.v1", policy_version_hash="sha256:policy_a",
+        subject_policy_hash="sha256:subj_b", **kwargs)
+    assert len({base, diff_engine, diff_policy, diff_subject}) == 4
+
+
+def test_decision_fingerprint_differs_with_different_standing_policy_via_gate():
+    """End-to-end sanity check: a standing_policy document with an extra rule
+    that never actually fires (predicate false, given ctx's known attribute
+    values) produces an identical result/effective_capability/grantable/
+    reasons/require_user_items, but a different policy_version_hash -- and
+    the decision_fingerprint must differ too."""
+    never_fires = {"id": "never", "description": "",
+                   "when": {"attr": "company.key", "op": "eq", "value": "name:nobody"},
+                   "effect": {"type": "REQUIRE_USER"}, "on_unknown": {"type": "REQUIRE_USER"}}
+    a = evaluate_authorization(make_ctx(standing_policy=make_policy()))
+    b = evaluate_authorization(make_ctx(standing_policy=make_policy(never_fires)))
+    assert (a.result, a.effective_capability, a.grantable, a.reasons, a.require_user_items) == \
+           (b.result, b.effective_capability, b.grantable, b.reasons, b.require_user_items)
+    assert a.policy_version_hash != b.policy_version_hash
+    assert a.decision_fingerprint != b.decision_fingerprint
+
+
+# --- Fix round 2: ruling N with a valid PROCEED acknowledgement -- the
+# acknowledgement lifts the REQUIRE_USER stop but never the REDUCE_TO cap
+# ruling N applies alongside it (an acknowledgement only lifts a restriction
+# the user themselves wrote; it never raises capability above what the
+# rule's own effect declares, spec §9.3 step 5).
+
+def test_ruling_n_with_valid_proceed_acknowledgement_keeps_the_reduce_to_cap():
+    ack = _ack(make_policy(REDUCE_PREPARE_REQUIRE_USER), {}, rule_id="reduce-prepare-ru")
+    d = evaluate_authorization(make_ctx(
+        standing_policy=make_policy(REDUCE_PREPARE_REQUIRE_USER), attributes={},
+        rule_acknowledgements=(ack,)))
+    assert d.result is R.ALLOW and d.effective_capability == C.PREPARE
+    assert "rule_acknowledged_proceed" in codes(d)
+    assert any(r.code == "rule_reduce" and ("to", "PREPARE") in r.params and ("via", "unknown") in r.params
+               for r in d.reasons)

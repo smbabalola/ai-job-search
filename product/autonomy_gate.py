@@ -203,9 +203,19 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
     if not _tuple_of(ctx.requirements, lambda r: isinstance(r, RepresentationRequirement)):
         errors.append("requirements_invalid")
     else:
+        # Requirement keys must be unique within the context (spec §9.3 step
+        # 1): a duplicate key is a closed-schema malformation -- without this
+        # check, two requirements sharing a key would each independently
+        # drive completion_blockers/require_user_items for "the same" field,
+        # silently doubling or conflicting with itself downstream.
+        seen_keys: dict[str, int] = {}
         for idx, req in enumerate(ctx.requirements):
             if not isinstance(req.key, str):
                 errors.append(f"requirement_key_invalid:{idx}")
+            elif req.key in seen_keys:
+                errors.append(f"requirement_key_duplicate:{idx}")
+            else:
+                seen_keys[req.key] = idx
             if req.subject is not None and not isinstance(req.subject, str):
                 errors.append(f"requirement_subject_invalid:{idx}")
             if not _is_bool(req.required):
@@ -347,10 +357,12 @@ def _decision_fingerprint(
     requested_stage: Capability | None, effective_capability: Capability, grantable: bool,
     reasons: tuple[Reason, ...], require_user_items: tuple[RequireUserItem, ...],
     completion_blockers: tuple[CompletionBlocker, ...], retry_at: Any, retryable: bool,
+    engine_version: str, policy_version_hash: str | None, subject_policy_hash: str | None,
 ) -> str:
-    """Canonical hash (spec §9.5, §15.1) of the decision's own outputs, so no
-    output -- completion_blockers in particular -- can drift independently of
-    the decision. None mode/requested_stage (the invalid-input path) are
+    """Canonical hash (spec §9.5, §15.1) of EVERY other field of the decision,
+    so no output -- completion_blockers in particular, but also engine_version
+    and the two policy hashes -- can drift independently of the decision.
+    None mode/requested_stage/policy hashes (the invalid-input path) are
     valid payload values, not malformed input."""
     return canonical_hash("autonomy-decision", "v1", {
         "input_fingerprint": input_fingerprint,
@@ -365,6 +377,9 @@ def _decision_fingerprint(
         "completion_blockers": completion_blockers,
         "retry_at": retry_at,
         "retryable": retryable,
+        "engine_version": engine_version,
+        "policy_version_hash": policy_version_hash,
+        "subject_policy_hash": subject_policy_hash,
     })
 
 
@@ -403,6 +418,7 @@ def _invalid_decision(
         input_fingerprint=fingerprint, mode=mode, result=ResultKind.DENY, deny_reason="invalid_input",
         requested_stage=requested_stage, effective_capability=Capability.NONE, grantable=False,
         reasons=reasons, require_user_items=(), completion_blockers=(), retry_at=None, retryable=False,
+        engine_version=ENGINE_VERSION, policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
     )
     return AuthorizationDecision(
         mode=mode, result=ResultKind.DENY, requested_stage=requested_stage,
@@ -765,7 +781,8 @@ def _resolve(ctx: AuthorizationContext, acc: _Acc, fingerprint: str,
         input_fingerprint=fingerprint, mode=ctx.mode, result=result, deny_reason=deny_reason,
         requested_stage=ctx.requested_stage, effective_capability=acc.cap, grantable=grantable,
         reasons=reasons, require_user_items=items, completion_blockers=completion_blockers,
-        retry_at=retry_at, retryable=retryable,
+        retry_at=retry_at, retryable=retryable, engine_version=ENGINE_VERSION,
+        policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
     )
     return AuthorizationDecision(
         mode=ctx.mode, result=result, requested_stage=ctx.requested_stage,
