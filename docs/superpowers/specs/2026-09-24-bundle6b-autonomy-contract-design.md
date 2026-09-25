@@ -172,7 +172,7 @@ The document contains:
   - `TRUE` → apply `effect`.
   - `FALSE` → no effect.
   - `UNKNOWN` → apply the rule's declared `on_unknown`.
-- **`on_unknown` is mandatory** and must be one of `REQUIRE_USER`, `REDUCE_TO(level)`, `BLOCK`, or `NO_EFFECT`. `NO_EFFECT` is permitted only where absence genuinely has no safety consequence; the validator rejects `NO_EFFECT` on rules whose effect is `BLOCK` (e.g. "unknown company key" on a deny-list rule must not be read as "not on the list").
+- **`on_unknown` is mandatory** and must be one of `REQUIRE_USER`, `REDUCE_TO(level)`, `BLOCK`, or `NO_EFFECT`. `NO_EFFECT` is permitted only where absence genuinely has no safety consequence; for a rule whose effect is `BLOCK`, `on_unknown` must be `BLOCK` or `REQUIRE_USER` — the validator rejects `REDUCE_TO(...)` and `NO_EFFECT` there, because missing information must never weaken an explicit prohibition into permission (e.g. "unknown company key" on a deny-list rule must not be read as "not on the list"). A document violating this is invalid, so it fails closed (`DENY(invalid_input)`) if it ever reaches the evaluator. `NO_EFFECT` remains available on non-BLOCK rules where the user declares absence safe.
 - **Combination is order-independent.** All applicable effects combine: any `BLOCK` → blocked; `REQUIRE_USER` items accumulate; `REDUCE_TO` takes the minimum. Permuting rules cannot change a result.
 
 ---
@@ -378,6 +378,7 @@ Every check runs and emits reason codes; the result is derived afterwards by fix
    - employer key `UNKNOWN` → `FILL`;
    - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`. A genuinely optional field (omission permitted) is not needed by SUBMIT: its expired/stale/context-unknown answer is omitted (`optional_omitted`) and does not reduce;
    - an answer contradicted by current evidence is not a permitted source at all (it produces a `REQUIRE_USER` item in step 5);
+   - a **required** field that SUBMIT needs and that has no permitted source — answer missing, contradicted, unclassified, or sensitive — caps capability at `FILL` exactly as an expired required answer does, while still producing its `REQUIRE_USER` item in step 5. `effective_capability` therefore always states the highest level that can actually proceed now; a worse answer state can never record a higher capability. Genuinely optional (omittable) fields remain non-blocking;
    - pack not auto-confirmable → `PREPARE`;
    - `mode` ≠ `LIVE` does **not** reduce (shadow evaluates the live outcome) but makes the decision non-grantable (§14).
 4. **Stops:** kill switch or sentinel → `kill_switch`; standing-policy `BLOCK` or governing `AUTO_REJECT` → `BLOCK`; a `CLAIMED` (in-flight) intent for the identity → `duplicate` always; a `CONFIRMED` intent → `duplicate` unless the user recorded an explicit override (overrides apply to confirmed submissions only, never to an in-flight claim); exhausted count or budget → `limit`/`budget` with `retry_at` when computable.
