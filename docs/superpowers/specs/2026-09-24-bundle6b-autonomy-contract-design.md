@@ -412,6 +412,8 @@ All lower-precedence reasons are retained in the decision.
 
 A SUBMIT request returning `ALLOW(FILL)` is not an engine failure: no SUBMIT grant is issued and the application settles at `FILLED_AWAITING_HUMAN_SUBMIT` (§11.1).
 
+**`effective_capability = FILL` means "the system may perform unattended filling within the approved manifest" — never "the form is complete and ready to submit".** A decision whose result is `REQUIRE_USER` because a required representation is unresolved (missing, contradicted, unclassified, sensitive) may still carry `effective_capability = FILL`; that authorizes populating the permitted fields only. Completeness is a separate fact derived from the fill manifest and the open exceptions (§11.1), not from the capability level.
+
 ### 9.6 Timing
 
 Evaluation runs: at enqueue (PREPARE); immediately before FILL; and, for SUBMIT, once to issue the SUBMIT grant and again inside the pre-click transaction against current authoritative state. SUBMIT always uses the current policy state; a grant snapshot is never authority by itself.
@@ -493,6 +495,8 @@ QUEUED ─► PREPARING ─► PREPARED ─┬─► PREPARED_AWAITING_HUMAN    
 Overlays, by deterministic precedence: `HALTED > BLOCKED > NEEDS_USER > PAUSED > WAITING(retry_at) > lifecycle state`.
 
 Each forward arrow requires a fresh `ALLOW` for that stage (and a grant for FILL/SUBMIT). `*_AWAITING_HUMAN` states hand off to the existing human handoff flow.
+
+**`FILLED` requires completeness.** An application is `FILLED` (and may become `FILLED_AWAITING_HUMAN_SUBMIT` or proceed toward SUBMIT) only when every required representation in its manifest is resolved. If a required representation is unresolved, SUBMIT is impossible; FILL may still populate the permitted fields, but the run ends under the `NEEDS_USER` overlay — never `FILLED_AWAITING_HUMAN_SUBMIT` as though the form were complete. After the user resolves the field, a fresh FILL decision and manifest complete the form before SUBMIT is considered.
 
 ### 11.2 Idempotency
 
