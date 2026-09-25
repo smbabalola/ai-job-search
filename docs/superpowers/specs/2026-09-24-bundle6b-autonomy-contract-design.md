@@ -370,7 +370,7 @@ Assembled by `webapp/services/autonomy.py` from database reads; for SUBMIT at pr
 
 Every check runs and emits reason codes; the result is derived afterwards by fixed precedence. The ledger always holds the complete explanation.
 
-1. **Validate** the context (versions known, required inputs present, documents valid, every closed-schema field and container of the expected type). Failure → `DENY(invalid_input)` deterministically, never an exception. The decision records the validation errors plus any fully independent safe facts (a validly-typed engaged kill switch or present sentinel); checks that depend on malformed input are not evaluated.
+1. **Validate** the context (versions known, required inputs present, documents valid, every closed-schema field and container of the expected type, requirement keys unique within the context). Failure → `DENY(invalid_input)` deterministically, never an exception. The decision records the validation errors plus any fully independent safe facts (a validly-typed engaged kill switch or present sentinel); checks that depend on malformed input are not evaluated.
 2. **Ceiling** = `min(deployment_ceiling, account_max, workspace_ceiling)`.
 3. **Reductions** (each `min()`):
    - standing-policy `REDUCE_TO` effects and `on_unknown` reductions;
@@ -378,7 +378,7 @@ Every check runs and emits reason codes; the result is derived afterwards by fix
    - apply-target tier cap (§8.1);
    - employer key `UNKNOWN` → `FILL`;
    - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`. A genuinely optional field (omission permitted) is not needed by SUBMIT: its expired/stale/context-unknown answer is omitted (`optional_omitted`) and does not reduce;
-   - an answer contradicted by current evidence is not a permitted source at all (it produces a `REQUIRE_USER` item in step 5);
+   - an answer contradicted by current evidence is not a permitted source at all (for a required field it produces a `REQUIRE_USER` item in step 5; an optional omittable field is omitted, §7.5);
    - a **required** field that SUBMIT needs and that has no permitted source — answer missing, contradicted, unclassified, or sensitive — caps capability at `FILL` exactly as an expired required answer does, while still producing its `REQUIRE_USER` item in step 5. `effective_capability` therefore always states the highest level that can actually proceed now; a worse answer state can never record a higher capability. Genuinely optional (omittable) fields remain non-blocking: a missing, expired, stale, context-unknown or contradicted answer on such a field is omitted and recorded, never a question or a cap;
    - pack not auto-confirmable → `PREPARE`;
    - `mode` ≠ `LIVE` does **not** reduce (shadow evaluates the live outcome) but makes the decision non-grantable (§14).
@@ -410,7 +410,7 @@ All lower-precedence reasons are retained in the decision.
 - `retryable`, `retry_at` for `DENY_TEMPORARY`;
 - `completion_blockers[]` — machine-readable entries `{field_key, subject, reason, prevents}` for every **required** representation that has no fillable permitted value (reason ∈ `missing_answer`, `contradicted_answer`, `unclassified_field`, `sensitive_field`; `prevents` = `SUBMIT`), recorded whenever requirements are evaluated (FILL and SUBMIT requests), sorted deterministically. They are lifecycle facts, not an authority outcome: they never change `result`, `effective_capability` or `grantable`. 6C uses them to derive `NEEDS_USER` after permitted filling, open or reuse the matching `application_blockers`, and require a fresh FILL decision and manifest after resolution; `FILLED`/submit-ready is derived only when the list is empty (§11.1). Expired or stale required answers are not completion blockers — the field can be filled; they only prevent unattended SUBMIT;
 - `input_fingerprint` — hash of the canonicalized context;
-- `decision_fingerprint` — canonical hash (§15.1) of the decision's outputs (`input_fingerprint`, result, deny reason, effective capability, grantable, reasons, require-user items, completion blockers, retry fields), so no output — in particular `completion_blockers` — can drift independently of the decision;
+- `decision_fingerprint` — canonical hash (§15.1) of **every** other field of the decision (mode, requested stage, result, deny reason, effective capability, grantable, reasons, require-user items, completion blockers, retry fields, `input_fingerprint`, `engine_version`, `policy_version_hash`, `subject_policy_hash`), so no output — in particular `completion_blockers` — can drift independently of the decision;
 - `engine_version`, `policy_version_hash`, `subject_policy_hash`.
 
 A SUBMIT request returning `ALLOW(FILL)` is not an engine failure: no SUBMIT grant is issued and the application settles at `FILLED_AWAITING_HUMAN_SUBMIT` (§11.1).
@@ -689,7 +689,7 @@ A fixed path under the application-data directory (`<data_dir>/AUTONOMY_HALT`), 
 
 **Explicit authority:** with no authorization records the effective capability is `NONE` at every stage; the enabling action writes attributed records.
 
-**Answer validity:** a changed basis field makes an answer SUBMIT-ineligible; contradicting current evidence makes it FILL- and SUBMIT-ineligible and raises `REQUIRE_USER`; a stable "no expiry" answer is still invalidated by a basis change.
+**Answer validity:** a changed basis field makes an answer SUBMIT-ineligible; contradicting current evidence makes it FILL- and SUBMIT-ineligible and raises `REQUIRE_USER` for a required field (an optional omittable field is omitted and recorded); a stable "no expiry" answer is still invalidated by a basis change.
 
 **Rule acknowledgements:** an edit to an unrelated rule keeps an acknowledgement valid; an edit to the acknowledged rule, or a change in its observed attributes, voids it.
 
