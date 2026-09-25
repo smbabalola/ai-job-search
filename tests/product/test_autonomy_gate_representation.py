@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from product.autonomy_contract import (
     Capability, EmployerKeyStrength, IdentityStrength, Reach, RepresentationRequirement,
     RequireUserItem, ResultKind, UNKNOWN,
@@ -239,11 +241,20 @@ def test_missing_required_field_silent_when_structural_cap_already_fill_still_ca
     assert any(r.code == "required_field_unresolved" for r in d.reasons)
 
 
-def test_required_field_unresolved_cap_applies_only_at_submit():
-    """At FILL/PREPARE the cap is a deliberate no-op (spec follow-up ruling K)."""
+def test_required_field_unresolved_cap_applies_at_fill_too_not_only_submit():
+    """Corrected per the coordinator's fix round: effective_capability always
+    states the highest level that can actually proceed *now*, for whatever
+    stage was requested (spec §9.3 step 3 and the FILL-is-authority-not-
+    completeness note in §9.5) -- so the cap applies at a FILL request too,
+    not only at SUBMIT (superseding the SUBMIT-only gating this test used to
+    assert, which was itself a mistaken simplification later corrected).
+    At PREPARE the cap still never applies, because _apply_requirements
+    itself never runs below FILL."""
     bad = answer("employment.notice_period", contradicted=True)
     d = run(req("notice", "employment.notice_period", candidates=[bad]), requested_stage=C.FILL)
-    assert not any(r.code == "required_field_unresolved" for r in d.reasons)
+    assert d.effective_capability == C.FILL
+    assert any(r.code == "required_field_unresolved" and ("kind", "contradicted_answer") in r.params
+               for r in d.reasons)
     d = run(req("q7", None), requested_stage=C.PREPARE)
     assert not any(r.code == "required_field_unresolved" for r in d.reasons)
 
@@ -252,3 +263,100 @@ def test_required_field_unresolved_cap_never_raises_capability():
     optional_cap = run(req("notice", "employment.notice_period", required=False, candidates=())).effective_capability
     required_cap = run(req("notice", "employment.notice_period", required=True, candidates=())).effective_capability
     assert required_cap <= optional_cap
+
+
+# --- Fix round for the K/L follow-up: the SUBMIT-only gate above was itself
+# a mistaken simplification (spec §9.3 step 3: effective_capability ALWAYS
+# states the highest level that can actually proceed now, for whatever
+# stage was requested; a worse answer state can never record a higher
+# capability). The cap now applies whenever requirements are evaluated at
+# all (requested_stage >= FILL), not only at SUBMIT.
+
+
+def test_missing_answer_required_field_silent_when_structural_cap_already_fill_still_caps():
+    """A correctly named duplicate of
+    test_missing_required_field_silent_when_structural_cap_already_fill_still_caps:
+    that test's name promises an actual missing *answer* but its req("q7",
+    None) is unclassified (subject=None), not missing_answer (a classified
+    subject with no candidates). This exercises the real missing_answer
+    case instead; the original test is left as-is."""
+    d = run(req("notice", "employment.notice_period", candidates=()), workspace_ceiling=C.FILL)
+    assert d.result is R.ALLOW and d.effective_capability == C.FILL
+    assert RequireUserItem("missing_answer", "notice") not in d.require_user_items
+    assert any(r.code == "unresolved_silent" and ("kind", "missing_answer") in r.params for r in d.reasons)
+    assert any(r.code == "required_field_unresolved" and ("kind", "missing_answer") in r.params for r in d.reasons)
+
+
+@pytest.mark.parametrize("stage", [C.FILL, C.SUBMIT])
+def test_required_field_answer_state_chain_never_increases_capability(stage):
+    """Walk a required field from a fresh answer through progressively worse
+    states (fresh -> expired -> missing -> contradicted -> unclassified ->
+    sensitive); effective_capability must never rise from one state to the
+    next, at EITHER requested stage, since the fix round corrected the
+    required_field_unresolved cap to apply at FILL too, not only SUBMIT.
+
+    grantable is checked the same way (pairwise, never rises) at SUBMIT,
+    where every one of these item kinds surfaces. At FILL it is checked
+    per-state instead of pairwise: contradicted_answer items uniquely
+    surface at FILL too (pre-existing, spec-mandated behaviour unrelated to
+    rulings K/L -- see test_contradiction_requires_user_even_at_fill), while
+    missing_answer/unclassified_field/sensitive_field items are SUBMIT-only
+    and so are silenced by relevance at a FILL request. A strict pairwise
+    "never increases" over this fixed chain ordering would therefore
+    wrongly flag the step immediately after "contradicted" as a
+    monotonicity violation, when the actual ruling-K property --
+    effective_capability itself never rising -- still holds throughout."""
+    fresh = answer("employment.notice_period", confirmed_at=NOW)
+    expired = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
+    contradicted = answer("employment.notice_period", contradicted=True)
+    chain = [
+        ("fresh", req("notice", "employment.notice_period", candidates=[fresh])),
+        ("expired", req("notice", "employment.notice_period", candidates=[expired])),
+        ("missing", req("notice", "employment.notice_period", candidates=())),
+        ("contradicted", req("notice", "employment.notice_period", candidates=[contradicted])),
+        ("unclassified", req("q7", None)),
+        ("sensitive", req("eeo", "demographic.eeo")),
+    ]
+    decisions = [(name, run(r, requested_stage=stage)) for name, r in chain]
+    for (prev_name, prev), (cur_name, cur) in zip(decisions, decisions[1:]):
+        assert cur.effective_capability <= prev.effective_capability, (
+            f"{cur_name} capability rose above {prev_name} at requested_stage={stage.name}")
+    by_name = dict(decisions)
+    if stage == C.SUBMIT:
+        for (prev_name, prev), (cur_name, cur) in zip(decisions, decisions[1:]):
+            assert not (cur.grantable and not prev.grantable), (
+                f"{cur_name} grantable rose above {prev_name} at requested_stage=SUBMIT")
+    else:
+        assert by_name["fresh"].grantable
+        assert by_name["expired"].grantable
+        assert by_name["missing"].grantable
+        assert not by_name["contradicted"].grantable
+        assert by_name["unclassified"].grantable
+        assert by_name["sensitive"].grantable
+        # The corrected behaviour this fix round exists for: at a FILL
+        # request, a missing or contradicted required answer now caps at
+        # FILL too (it used to wrongly stay at the SUBMIT-level ceiling,
+        # since the superseded code only applied the cap at requested_stage
+        # == SUBMIT).
+        assert by_name["missing"].effective_capability == C.FILL
+        assert by_name["contradicted"].effective_capability == C.FILL
+
+
+def test_optional_field_answer_state_chain_never_lowers_below_no_field_baseline():
+    """The mirror of the required-field chain: an optional field's worst
+    answer state must never cap capability below the baseline a context
+    with no such field at all would get."""
+    baseline = evaluate_authorization(make_ctx()).effective_capability
+    fresh = answer("employment.notice_period", confirmed_at=NOW)
+    expired = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
+    contradicted = answer("employment.notice_period", contradicted=True)
+    optional_chain = [
+        req("notice", "employment.notice_period", required=False, candidates=[fresh]),
+        req("notice", "employment.notice_period", required=False, candidates=[expired]),
+        req("notice", "employment.notice_period", required=False, candidates=()),
+        req("notice", "employment.notice_period", required=False, candidates=[contradicted]),
+        req("q7", None, required=False),
+        req("eeo", "demographic.eeo", required=False),
+    ]
+    for r in optional_chain:
+        assert run(r).effective_capability == baseline

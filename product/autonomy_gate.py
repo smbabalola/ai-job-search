@@ -562,9 +562,14 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
     answer does (the `reductions` loop below), independent of whether the
     item ends up surfaced or silent (an actionable reduction, applied after
     relevance/structural_cap are already fixed, so it can never affect them).
-    Applied only when requested_stage is SUBMIT: at FILL/PREPARE a FILL cap
-    can never lower what's reachable, so there's nothing to simplify by
-    computing it there too."""
+    Applied whenever requirements are evaluated at all (requested_stage >=
+    FILL, this function's own entry guard below), not only at SUBMIT:
+    effective_capability always states the highest level that can actually
+    proceed *now*, for any requested stage, and a worse answer state must
+    never record a higher capability than a better one would (spec §9.3
+    step 3, and the FILL-is-authority-not-completeness note in §9.5) --
+    gating this on requested_stage == SUBMIT would let a FILL request quietly
+    over-report capability for a required field that is, in fact, missing."""
     if ctx.requested_stage < Capability.FILL:
         return
     relevant = structural_cap >= ctx.requested_stage
@@ -621,9 +626,8 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             acc.note("unresolved_silent", kind=item.kind, ref=item.ref)
     for field, why in reductions:
         acc.reduce(Capability.FILL, "answer_not_submit_ready", field=field, why=why)
-    if ctx.requested_stage == Capability.SUBMIT:
-        for field, kind in unresolved_required:
-            acc.reduce(Capability.FILL, "required_field_unresolved", field=field, kind=kind)
+    for field, kind in unresolved_required:
+        acc.reduce(Capability.FILL, "required_field_unresolved", field=field, kind=kind)
 
 
 def _apply_stops(ctx: AuthorizationContext, acc: _Acc) -> None:
