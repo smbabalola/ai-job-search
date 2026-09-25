@@ -554,12 +554,23 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
     every actionable blocker cleared; otherwise it is a silent reason. A
     non-required field's own not-submit-ready answer (expired, stale-by-basis,
     context-unknown, not submit-eligible) is omitted, never a reduction --
-    only a required field's does that (spec §9.3 step 3 "answers" bullet)."""
+    only a required field's does that (spec §9.3 step 3 "answers" bullet).
+
+    Ruling K: a required field that SUBMIT needs and that has no permitted
+    source at all -- missing_answer, contradicted_answer, unclassified_field,
+    sensitive_field -- caps capability at FILL exactly as an expired required
+    answer does (the `reductions` loop below), independent of whether the
+    item ends up surfaced or silent (an actionable reduction, applied after
+    relevance/structural_cap are already fixed, so it can never affect them).
+    Applied only when requested_stage is SUBMIT: at FILL/PREPARE a FILL cap
+    can never lower what's reachable, so there's nothing to simplify by
+    computing it there too."""
     if ctx.requested_stage < Capability.FILL:
         return
     relevant = structural_cap >= ctx.requested_stage
     items: list[tuple[RequireUserItem, bool]] = []
     reductions: list[tuple[str, str]] = []
+    unresolved_required: list[tuple[str, str]] = []
     for req in sorted(ctx.requirements, key=lambda r: r.key):
         entry = subject_entry(ctx.subject_policy, req.subject)
         if entry is None:
@@ -567,12 +578,14 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
                 continue
             if req.required:
                 items.append((RequireUserItem("unclassified_field", req.key), False))
+                unresolved_required.append((req.key, "unclassified_field"))
             else:
                 acc.note("optional_omitted", field=req.key, why="unclassified")
             continue
         if entry["sensitive"] is not None:
             if req.required:
                 items.append((RequireUserItem("sensitive_field", req.key), False))
+                unresolved_required.append((req.key, "sensitive_field"))
             else:
                 acc.note("optional_omitted", field=req.key, why="sensitive")
             continue
@@ -581,6 +594,8 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
         in_reach = [c for c in req.candidates if c.subject == req.subject and _in_reach(c, entry, ctx)]
         if any(c.contradicted for c in in_reach):
             items.append((RequireUserItem("contradicted_answer", req.key), True))
+            if req.required:
+                unresolved_required.append((req.key, "contradicted_answer"))
             continue
         usable = [c for c in in_reach if not _context_known_different(c, req, entry)]
         blockers = [_submit_blocker(c, req, entry, ctx.now) for c in usable]
@@ -594,6 +609,7 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             continue
         if req.required:
             items.append((RequireUserItem("missing_answer", req.key), False))
+            unresolved_required.append((req.key, "missing_answer"))
         else:
             acc.note("optional_omitted", field=req.key, why="no_answer")
     for item, raise_at_fill in items:
@@ -605,6 +621,9 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             acc.note("unresolved_silent", kind=item.kind, ref=item.ref)
     for field, why in reductions:
         acc.reduce(Capability.FILL, "answer_not_submit_ready", field=field, why=why)
+    if ctx.requested_stage == Capability.SUBMIT:
+        for field, kind in unresolved_required:
+            acc.reduce(Capability.FILL, "required_field_unresolved", field=field, kind=kind)
 
 
 def _apply_stops(ctx: AuthorizationContext, acc: _Acc) -> None:

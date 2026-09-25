@@ -185,3 +185,70 @@ def test_basis_changed_and_basis_gone_carry_basis_changed_reason():
                   basis_kind="EVIDENCE", basis_at="sha256:a", basis_now=None)
     d2 = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[gone]))
     assert any(r.code == "answer_not_submit_ready" and ("why", "basis_changed") in r.params for r in d2.reasons)
+
+
+# --- Follow-up ruling K: a required field with no permitted source caps at
+# FILL exactly as an expired required answer does (spec §9.3 step 3), while
+# still following the existing stage/relevance rules for whether its item
+# is surfaced or silent. Optional (required=False) fields stay non-blocking.
+
+
+def test_required_missing_answer_caps_at_fill_when_submit_requested():
+    d = run(req("notice", "employment.notice_period", candidates=()))
+    assert (d.result, d.effective_capability) == (R.REQUIRE_USER, C.FILL)
+    assert any(r.code == "required_field_unresolved" and ("field", "notice") in r.params
+               and ("kind", "missing_answer") in r.params for r in d.reasons)
+
+
+def test_required_contradicted_answer_caps_at_fill_when_submit_requested():
+    bad = answer("employment.notice_period", contradicted=True)
+    d = run(req("notice", "employment.notice_period", candidates=[bad]))
+    assert (d.result, d.effective_capability) == (R.REQUIRE_USER, C.FILL)
+    assert any(r.code == "required_field_unresolved" and ("field", "notice") in r.params
+               and ("kind", "contradicted_answer") in r.params for r in d.reasons)
+
+
+def test_required_unclassified_and_sensitive_cap_at_fill_when_submit_requested():
+    d = run(req("q7", None))
+    assert d.result is R.REQUIRE_USER and d.effective_capability == C.FILL
+    assert any(r.code == "required_field_unresolved" and ("kind", "unclassified_field") in r.params for r in d.reasons)
+    d = run(req("eeo", "demographic.eeo"))
+    assert d.result is R.REQUIRE_USER and d.effective_capability == C.FILL
+    assert any(r.code == "required_field_unresolved" and ("kind", "sensitive_field") in r.params for r in d.reasons)
+
+
+def test_optional_missing_and_contradicted_fields_do_not_cap():
+    d = run(req("notice", "employment.notice_period", required=False, candidates=()))
+    assert d.effective_capability == C.SUBMIT and d.grantable
+    assert not any(r.code == "required_field_unresolved" for r in d.reasons)
+    bad = answer("employment.notice_period", contradicted=True)
+    d2 = run(req("notice", "employment.notice_period", required=False, candidates=[bad]))
+    assert d2.effective_capability == C.SUBMIT
+    assert not any(r.code == "required_field_unresolved" for r in d2.reasons)
+
+
+def test_missing_required_field_silent_when_structural_cap_already_fill_still_caps():
+    """The cap is unconditional (an actionable reduction applied after
+    relevance is judged), so it still applies even when the item itself is
+    silenced by relevance -- with no *observable* effect here, since the
+    structural cap (from workspace_ceiling) was already FILL."""
+    d = run(req("q7", None), workspace_ceiling=C.FILL)
+    assert d.result is R.ALLOW and d.effective_capability == C.FILL
+    assert RequireUserItem("unclassified_field", "q7") not in d.require_user_items
+    assert any(r.code == "unresolved_silent" and ("kind", "unclassified_field") in r.params for r in d.reasons)
+    assert any(r.code == "required_field_unresolved" for r in d.reasons)
+
+
+def test_required_field_unresolved_cap_applies_only_at_submit():
+    """At FILL/PREPARE the cap is a deliberate no-op (spec follow-up ruling K)."""
+    bad = answer("employment.notice_period", contradicted=True)
+    d = run(req("notice", "employment.notice_period", candidates=[bad]), requested_stage=C.FILL)
+    assert not any(r.code == "required_field_unresolved" for r in d.reasons)
+    d = run(req("q7", None), requested_stage=C.PREPARE)
+    assert not any(r.code == "required_field_unresolved" for r in d.reasons)
+
+
+def test_required_field_unresolved_cap_never_raises_capability():
+    optional_cap = run(req("notice", "employment.notice_period", required=False, candidates=())).effective_capability
+    required_cap = run(req("notice", "employment.notice_period", required=True, candidates=())).effective_capability
+    assert required_cap <= optional_cap

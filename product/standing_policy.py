@@ -206,11 +206,18 @@ def validate_standing_policy(doc: Any) -> None:
         _validate_predicate(rule["when"], f"{path}.when", lists, errors)
         _validate_effect(rule["effect"], f"{path}.effect", EFFECT_TYPES, errors)
         _validate_effect(rule["on_unknown"], f"{path}.on_unknown", ON_UNKNOWN_TYPES, errors)
-        if (
-            isinstance(rule["effect"], dict) and rule["effect"].get("type") == "BLOCK"
-            and isinstance(rule["on_unknown"], dict) and rule["on_unknown"].get("type") == "NO_EFFECT"
-        ):
-            errors.append(f"{path}.on_unknown: NO_EFFECT is not allowed on a BLOCK rule")
+        if isinstance(rule["effect"], dict) and rule["effect"].get("type") == "BLOCK":
+            # Missing information must never weaken an explicit prohibition into
+            # permission (e.g. "unknown company key" on a deny-list rule must
+            # not be read as "not on the list") -- REDUCE_TO and NO_EFFECT are
+            # rejected on a BLOCK rule's on_unknown; only BLOCK/REQUIRE_USER
+            # preserve the prohibition when the predicate can't be evaluated.
+            on_unknown_type = rule["on_unknown"].get("type") if isinstance(rule["on_unknown"], dict) else None
+            if on_unknown_type not in ("BLOCK", "REQUIRE_USER"):
+                errors.append(
+                    f"{path}.on_unknown: a BLOCK rule's on_unknown must be BLOCK or "
+                    "REQUIRE_USER, not REDUCE_TO or NO_EFFECT"
+                )
     if errors:
         raise StandingPolicyError(errors)
 

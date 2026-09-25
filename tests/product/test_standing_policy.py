@@ -203,3 +203,34 @@ def test_observed_fingerprint_treats_float_as_unknown():
     # Also test str on int attribute
     str_fp = observed_fingerprint(MIN_FIT, {"fit.overall_score": "seventy-four"})
     assert str_fp == missing_fp
+
+
+# --- Follow-up ruling L: a BLOCK rule's on_unknown must itself be BLOCK or
+# REQUIRE_USER -- missing information must never weaken an explicit
+# prohibition into permission (spec §5.2).
+
+
+def test_block_rule_rejects_reduce_to_on_unknown():
+    doc = _doc({**DENY_LIST, "on_unknown": {"type": "REDUCE_TO", "level": "FILL"}}, lists={"deny": ["name:acme"]})
+    with pytest.raises(StandingPolicyError) as exc:
+        validate_standing_policy(doc)
+    assert any("on_unknown" in e for e in exc.value.errors)
+
+
+def test_block_rule_rejects_no_effect_on_unknown():
+    doc = _doc({**DENY_LIST, "on_unknown": {"type": "NO_EFFECT"}}, lists={"deny": ["name:acme"]})
+    with pytest.raises(StandingPolicyError) as exc:
+        validate_standing_policy(doc)
+    assert any("on_unknown" in e for e in exc.value.errors)
+
+
+def test_block_rule_accepts_block_or_require_user_on_unknown():
+    validate_standing_policy(_doc({**DENY_LIST, "on_unknown": {"type": "BLOCK"}}, lists={"deny": ["name:acme"]}))
+    validate_standing_policy(_doc({**DENY_LIST, "on_unknown": {"type": "REQUIRE_USER"}}, lists={"deny": ["name:acme"]}))
+
+
+def test_non_block_rules_still_accept_reduce_to_and_no_effect_on_unknown():
+    """Regression: ruling L only tightens BLOCK rules; REDUCE_TO/REQUIRE_USER
+    rules are unaffected."""
+    validate_standing_policy(_doc({**PERMANENT_ONLY, "on_unknown": {"type": "REDUCE_TO", "level": "PREPARE"}}))
+    validate_standing_policy(_doc({**MIN_FIT, "on_unknown": {"type": "NO_EFFECT"}}))

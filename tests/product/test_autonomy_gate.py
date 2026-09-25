@@ -680,3 +680,17 @@ def test_invalid_input_still_reports_sentinel_present_as_safe_fact():
     d = evaluate_authorization(make_ctx(sentinel_present=True, attributes={"fit.overall_score": 74.5}))
     assert d.result is R.DENY and d.deny_reason == "invalid_input"
     assert "sentinel_present" in codes(d) and "invalid_input" in codes(d)
+
+
+# --- Follow-up ruling L: a standing-policy document with a BLOCK rule whose
+# on_unknown is REDUCE_TO is invalid per validate_standing_policy, and since
+# the gate validates the policy in _context_errors, such a document already
+# fails closed as DENY(invalid_input) at evaluate_authorization -- without
+# ever going through validate_standing_policy directly in this test.
+def test_block_rule_with_reduce_to_on_unknown_denies_invalid_input_at_the_gate():
+    bad_rule = {"id": "deny", "description": "", "when": {"attr": "company.key", "op": "in_list", "value": "deny"},
+                "effect": {"type": "BLOCK"}, "on_unknown": {"type": "REDUCE_TO", "level": "FILL"}}
+    policy = make_policy(bad_rule, lists={"deny": ["name:acme"]})
+    d = evaluate_authorization(make_ctx(standing_policy=policy))
+    assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
+    assert "standing_policy_invalid" in _detail_codes(d)
