@@ -112,6 +112,17 @@ class RequireUserItem:
     ref: str
 
 
+@dataclass(frozen=True, order=True)
+class CompletionBlocker:
+    """A machine-readable entry for a required representation with no
+    fillable permitted value (spec §9.5). Lifecycle fact, not an authority
+    outcome: never changes result/effective_capability/grantable (ruling O)."""
+    field_key: str
+    subject: str | None
+    reason: str
+    prevents: Capability
+
+
 @dataclass(frozen=True)
 class AnswerCandidate:
     approved_answer_id: str
@@ -226,9 +237,11 @@ class AuthorizationDecision:
     deny_reason: str | None
     reasons: tuple[Reason, ...]
     require_user_items: tuple[RequireUserItem, ...]
+    completion_blockers: tuple[CompletionBlocker, ...]
     retry_at: datetime | None
     retryable: bool
     input_fingerprint: str
+    decision_fingerprint: str
     engine_version: str
     policy_version_hash: str | None
     subject_policy_hash: str | None

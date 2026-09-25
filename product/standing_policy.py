@@ -346,6 +346,11 @@ class RuleOutcome:
     observed_fingerprint: str
     applied_effect: dict[str, Any] | None
     via_unknown: bool
+    # The rule's own declared effect (spec §5.2), regardless of whether it was
+    # applied or superseded by on_unknown -- lets the gate detect a REDUCE_TO
+    # rule whose on_unknown stopped (REQUIRE_USER/BLOCK) instead of reducing,
+    # so it can still apply the rule's cap (ruling N).
+    declared_effect: dict[str, Any]
 
 
 def evaluate_rules(doc: Mapping[str, Any], attributes: Mapping[str, Any]) -> tuple[RuleOutcome, ...]:
@@ -362,6 +367,7 @@ def evaluate_rules(doc: Mapping[str, Any], attributes: Mapping[str, Any]) -> tup
             rule_id=rule["id"], rule_hash=rule_hash(rule),
             observed_fingerprint=observed_fingerprint(rule, attributes, lists),
             applied_effect=effect, via_unknown=via_unknown,
+            declared_effect=dict(rule["effect"]),
         ))
     return tuple(outcomes)
 

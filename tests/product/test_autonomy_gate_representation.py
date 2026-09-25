@@ -6,8 +6,8 @@ from datetime import timedelta
 import pytest
 
 from product.autonomy_contract import (
-    Capability, EmployerKeyStrength, IdentityStrength, Reach, RepresentationRequirement,
-    RequireUserItem, ResultKind, UNKNOWN,
+    Capability, CompletionBlocker, EmployerKeyStrength, IdentityStrength, Reach,
+    RepresentationRequirement, RequireUserItem, ResultKind, UNKNOWN,
 )
 from product.autonomy_gate import evaluate_authorization
 from tests.product.autonomy_fixtures import NOW, answer, make_ctx
@@ -340,6 +340,135 @@ def test_required_field_answer_state_chain_never_increases_capability(stage):
         # == SUBMIT).
         assert by_name["missing"].effective_capability == C.FILL
         assert by_name["contradicted"].effective_capability == C.FILL
+
+
+# --- Follow-up ruling M: a NON-required field's contradicted answer is
+# omitted (optional_omitted why=contradicted), not a question -- it raises no
+# RequireUserItem and applies no cap. Required fields are unchanged (spec §7.5).
+
+
+def test_optional_contradicted_answer_is_omitted_not_a_question():
+    bad = answer("employment.notice_period", contradicted=True)
+    for stage in (C.FILL, C.SUBMIT):
+        baseline = run(requested_stage=stage)
+        d = run(req("notice", "employment.notice_period", required=False, candidates=[bad]),
+                requested_stage=stage)
+        assert d.effective_capability == baseline.effective_capability
+        assert d.grantable is baseline.grantable is True
+        assert RequireUserItem("contradicted_answer", "notice") not in d.require_user_items
+        assert any(r.code == "optional_omitted" and ("why", "contradicted") in r.params for r in d.reasons)
+        assert not any(r.code == "unresolved_silent" and ("kind", "contradicted_answer") in r.params
+                       for r in d.reasons)
+
+
+def test_required_contradicted_answer_unchanged_by_ruling_m():
+    """Ruling M only changes optional (non-required) fields; a required
+    field's contradicted answer still raises its item at FILL and SUBMIT and
+    still caps at FILL (unchanged from test_contradiction_requires_user_even_at_fill
+    and the ruling-K tests above)."""
+    bad = answer("employment.notice_period", contradicted=True)
+    for stage in (C.FILL, C.SUBMIT):
+        d = run(req("notice", "employment.notice_period", required=True, candidates=[bad]),
+                requested_stage=stage)
+        assert d.result is R.REQUIRE_USER and d.effective_capability == C.FILL
+        assert RequireUserItem("contradicted_answer", "notice") in d.require_user_items
+
+
+# --- Follow-up ruling O: completion_blockers (spec §9.5) --------------------
+# A machine-readable entry for every REQUIRED field with no fillable
+# permitted value (missing_answer, contradicted_answer, unclassified_field,
+# sensitive_field), recorded whenever requirements are evaluated (FILL and
+# SUBMIT), regardless of relevance, and never affecting result/effective_
+# capability/grantable. Expired/stale/context-unknown required answers are
+# fillable (just not SUBMIT-ready), so they are NOT completion blockers;
+# optional fields never are.
+
+
+def test_required_missing_answer_records_completion_blocker_at_fill_and_submit():
+    blocker = CompletionBlocker("notice", "employment.notice_period", "missing_answer", C.SUBMIT)
+    d = run(req("notice", "employment.notice_period", candidates=()), requested_stage=C.FILL)
+    assert d.result is R.ALLOW and d.effective_capability == C.FILL and d.grantable
+    assert blocker in d.completion_blockers
+
+    d2 = run(req("notice", "employment.notice_period", candidates=()), requested_stage=C.SUBMIT)
+    assert d2.result is R.REQUIRE_USER and d2.effective_capability == C.FILL and not d2.grantable
+    assert blocker in d2.completion_blockers
+
+
+def test_required_contradicted_answer_records_completion_blocker():
+    bad = answer("employment.notice_period", contradicted=True)
+    blocker = CompletionBlocker("notice", "employment.notice_period", "contradicted_answer", C.SUBMIT)
+    for stage in (C.FILL, C.SUBMIT):
+        d = run(req("notice", "employment.notice_period", candidates=[bad]), requested_stage=stage)
+        assert blocker in d.completion_blockers
+
+
+def test_required_unclassified_and_sensitive_record_completion_blockers():
+    d = run(req("q7", None), requested_stage=C.SUBMIT)
+    assert CompletionBlocker("q7", None, "unclassified_field", C.SUBMIT) in d.completion_blockers
+    d = run(req("eeo", "demographic.eeo"), requested_stage=C.SUBMIT)
+    assert CompletionBlocker("eeo", "demographic.eeo", "sensitive_field", C.SUBMIT) in d.completion_blockers
+
+
+def test_expired_required_answer_is_not_a_completion_blocker():
+    old = answer("employment.notice_period", confirmed_at=NOW - timedelta(days=61))
+    d = run(req("notice", "employment.notice_period", candidates=[old]), requested_stage=C.SUBMIT)
+    assert d.effective_capability == C.FILL  # still capped (not submit-ready)...
+    assert d.completion_blockers == ()  # ...but not a completion blocker: the field is fillable
+
+
+def test_optional_field_never_records_a_completion_blocker():
+    contradicted = answer("employment.notice_period", contradicted=True)
+    for r in (
+        req("notice", "employment.notice_period", required=False, candidates=()),
+        req("notice", "employment.notice_period", required=False, candidates=[contradicted]),
+        req("q7", None, required=False),
+        req("eeo", "demographic.eeo", required=False),
+    ):
+        d = run(r, requested_stage=C.SUBMIT)
+        assert d.completion_blockers == ()
+
+
+def test_prepare_stage_records_no_completion_blockers():
+    d = run(req("notice", "employment.notice_period", candidates=()), requested_stage=C.PREPARE)
+    assert d.completion_blockers == ()
+
+
+def test_completion_blockers_recorded_even_when_silenced_by_relevance():
+    """The structural cap (from workspace_ceiling) is already FILL, below the
+    SUBMIT request, so relevance silences the missing_answer item -- but the
+    completion blocker is still recorded, unlike the REQUIRE_USER item."""
+    d = run(req("notice", "employment.notice_period", candidates=()),
+            requested_stage=C.SUBMIT, workspace_ceiling=C.FILL)
+    assert d.result is R.ALLOW and d.effective_capability == C.FILL
+    assert RequireUserItem("missing_answer", "notice") not in d.require_user_items
+    assert any(r.code == "unresolved_silent" and ("kind", "missing_answer") in r.params for r in d.reasons)
+    assert CompletionBlocker("notice", "employment.notice_period", "missing_answer", C.SUBMIT) in d.completion_blockers
+
+
+def test_completion_blockers_identical_whether_item_surfaced_or_silenced():
+    """completion_blockers never change result/effective_capability/grantable
+    (spec §9.5): the SAME blocker is recorded whether its item is silenced
+    (a FILL request never surfaces missing_answer) or surfaced (a SUBMIT
+    request does) -- only `result` and `grantable` differ, driven by the
+    pre-existing relevance/stage logic, not by the blocker's presence."""
+    blocker = CompletionBlocker("notice", "employment.notice_period", "missing_answer", C.SUBMIT)
+    silent = run(req("notice", "employment.notice_period", candidates=()), requested_stage=C.FILL)
+    surfaced = run(req("notice", "employment.notice_period", candidates=()), requested_stage=C.SUBMIT)
+    assert silent.result is R.ALLOW and surfaced.result is R.REQUIRE_USER
+    assert silent.grantable and not surfaced.grantable
+    assert silent.completion_blockers == surfaced.completion_blockers == (blocker,)
+    assert silent.effective_capability == surfaced.effective_capability == C.FILL
+
+
+def test_optional_field_completion_blockers_match_no_field_baseline():
+    baseline = run(requested_stage=C.SUBMIT)
+    with_optional = run(req("notice", "employment.notice_period", required=False, candidates=()),
+                         requested_stage=C.SUBMIT)
+    assert with_optional.completion_blockers == baseline.completion_blockers == ()
+    assert with_optional.result == baseline.result
+    assert with_optional.effective_capability == baseline.effective_capability
+    assert with_optional.grantable == baseline.grantable
 
 
 def test_optional_field_answer_state_chain_never_lowers_below_no_field_baseline():

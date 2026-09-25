@@ -8,8 +8,9 @@ from decimal import Decimal
 import pytest
 
 from product.autonomy_contract import (
-    BudgetState, Capability, CounterState, EmployerKeyStrength, IdentityStrength, Mode,
-    ProvenanceTier, RequireUserItem, ResultKind, RuleAcknowledgement, UNKNOWN,
+    BudgetState, Capability, CompletionBlocker, CounterState, EmployerKeyStrength,
+    IdentityStrength, Mode, ProvenanceTier, RequireUserItem, ResultKind, RuleAcknowledgement,
+    UNKNOWN,
 )
 import product.autonomy_gate as autonomy_gate_module
 from product.autonomy_gate import evaluate_authorization
@@ -69,6 +70,54 @@ def test_rule_reduce_on_match_and_on_unknown():
     d = evaluate_authorization(make_ctx(standing_policy=make_policy(MIN_FIT), attributes={}))
     assert d.effective_capability == C.PREPARE
     assert any(r.code == "rule_reduce" and ("via", "unknown") in r.params for r in d.reasons)
+
+
+# --- Follow-up ruling N: a stricter stop on unknown keeps the rule's cap
+# (spec §5.2). For a REDUCE_TO(X) rule whose predicate is UNKNOWN and whose
+# applied on_unknown is REQUIRE_USER or BLOCK, both the cap reduction to X
+# and the stop outcome apply. A weaker on_unknown (NO_EFFECT) is unaffected.
+
+REDUCE_PREPARE_REQUIRE_USER = {
+    "id": "reduce-prepare-ru", "description": "",
+    "when": {"attr": "fit.overall_score", "op": "lt", "value": 75},
+    "effect": {"type": "REDUCE_TO", "level": "PREPARE"},
+    "on_unknown": {"type": "REQUIRE_USER"},
+}
+REDUCE_NONE_BLOCK = {
+    "id": "reduce-none-block", "description": "",
+    "when": {"attr": "job.employment_type", "op": "eq", "value": "CONTRACT"},
+    "effect": {"type": "REDUCE_TO", "level": "NONE"},
+    "on_unknown": {"type": "BLOCK"},
+}
+REDUCE_PREPARE_NO_EFFECT = {
+    "id": "reduce-prepare-no-effect", "description": "",
+    "when": {"attr": "fit.overall_score", "op": "lt", "value": 75},
+    "effect": {"type": "REDUCE_TO", "level": "PREPARE"},
+    "on_unknown": {"type": "NO_EFFECT"},
+}
+
+
+def test_reduce_to_with_require_user_on_unknown_keeps_the_cap():
+    d = evaluate_authorization(make_ctx(standing_policy=make_policy(REDUCE_PREPARE_REQUIRE_USER), attributes={}))
+    assert d.result is R.REQUIRE_USER and d.effective_capability == C.PREPARE
+    assert any(r.code == "rule_reduce" and ("to", "PREPARE") in r.params and ("via", "unknown") in r.params
+               for r in d.reasons)
+    assert any(r.code == "rule_require_user" for r in d.reasons)
+
+
+def test_reduce_to_with_block_on_unknown_keeps_the_cap():
+    d = evaluate_authorization(make_ctx(standing_policy=make_policy(REDUCE_NONE_BLOCK), attributes={}))
+    assert d.result is R.BLOCK and d.effective_capability == C.NONE
+    assert any(r.code == "rule_reduce" and ("to", "NONE") in r.params and ("via", "unknown") in r.params
+               for r in d.reasons)
+
+
+def test_reduce_to_with_no_effect_on_unknown_is_unaffected_by_ruling_n():
+    """A REDUCE_TO rule's weaker on_unknown (NO_EFFECT) is declared user
+    policy behaviour, unaffected by ruling N: no reduction, no stop."""
+    d = evaluate_authorization(make_ctx(standing_policy=make_policy(REDUCE_PREPARE_NO_EFFECT), attributes={}))
+    assert d.result is R.ALLOW and d.effective_capability == C.SUBMIT
+    assert not any(r.code == "rule_reduce" for r in d.reasons)
 
 
 def test_rule_block_and_require_user():
@@ -694,3 +743,43 @@ def test_block_rule_with_reduce_to_on_unknown_denies_invalid_input_at_the_gate()
     d = evaluate_authorization(make_ctx(standing_policy=policy))
     assert (d.result, d.deny_reason, d.effective_capability, d.grantable) == (R.DENY, "invalid_input", C.NONE, False)
     assert "standing_policy_invalid" in _detail_codes(d)
+
+
+# --- Follow-up ruling O: decision_fingerprint (spec §9.5, §15.1) ------------
+# A canonical hash of the decision's own outputs (including completion_
+# blockers), so no output can drift independently of the decision.
+# RepresentationRequirement is already imported at module top.
+
+
+def test_decision_fingerprint_identical_for_identical_contexts():
+    a, b = evaluate_authorization(make_ctx()), evaluate_authorization(make_ctx())
+    assert a.decision_fingerprint == b.decision_fingerprint
+    assert a.decision_fingerprint.startswith("sha256:")
+
+
+def test_decision_fingerprint_changes_when_completion_blockers_change():
+    with_blocker = evaluate_authorization(make_ctx(
+        requested_stage=C.FILL,
+        requirements=(RepresentationRequirement(
+            key="notice", subject="employment.notice_period", required=True,
+            evidence_available=False),),
+    ))
+    without = evaluate_authorization(make_ctx(requested_stage=C.FILL))
+    assert with_blocker.completion_blockers == (
+        CompletionBlocker("notice", "employment.notice_period", "missing_answer", C.SUBMIT),
+    )
+    assert without.completion_blockers == ()
+    assert with_blocker.decision_fingerprint != without.decision_fingerprint
+
+
+def test_decision_fingerprint_present_and_stable_on_invalid_input_path():
+    d = evaluate_authorization(make_ctx(requested_stage=C.NONE))
+    assert (d.result, d.deny_reason) == (R.DENY, "invalid_input")
+    assert d.completion_blockers == ()
+    assert d.decision_fingerprint.startswith("sha256:")
+    d2 = evaluate_authorization(make_ctx(requested_stage=C.NONE))
+    assert d.decision_fingerprint == d2.decision_fingerprint
+    # Even a wholly malformed (non-AuthorizationContext) input must still
+    # produce a well-formed decision_fingerprint, never raise.
+    d3 = evaluate_authorization(None)
+    assert d3.decision_fingerprint.startswith("sha256:") and d3.completion_blockers == ()

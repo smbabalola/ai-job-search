@@ -241,13 +241,28 @@ def _cap_impact(effect):
     return Capability[effect["level"]] if effect["type"] == "REDUCE_TO" else None
 
 
+def _on_unknown_cap_impact(rule):
+    """The capability impact when this rule's predicate is UNKNOWN, per the
+    gate's actual behaviour including ruling N (spec §5.2 "a stricter stop on
+    unknown keeps the rule's cap"): a REDUCE_TO(X) rule whose on_unknown
+    stops (REQUIRE_USER/BLOCK) instead of reducing still applies the cap to
+    X, in addition to the stop -- so its unknown-cap impact equals the
+    known-match cap, not None as it would without ruling N."""
+    effect, on_unknown = rule["effect"], rule["on_unknown"]
+    if on_unknown["type"] == "REDUCE_TO":
+        return Capability[on_unknown["level"]]
+    if effect["type"] == "REDUCE_TO" and on_unknown["type"] in ("REQUIRE_USER", "BLOCK"):
+        return Capability[effect["level"]]
+    return None
+
+
 def _restricts_result(effect):
     return effect["type"] in ("BLOCK", "REQUIRE_USER")
 
 
 def _rule_safe_for_unknown(rule):
     effect, on_unknown = rule["effect"], rule["on_unknown"]
-    e_cap, u_cap = _cap_impact(effect), _cap_impact(on_unknown)
+    e_cap, u_cap = _cap_impact(effect), _on_unknown_cap_impact(rule)
     cap_safe = True if e_cap is None else (u_cap is not None and u_cap <= e_cap)
     result_safe = True if not _restricts_result(effect) else on_unknown["type"] in ("BLOCK", "REQUIRE_USER")
     return cap_safe and result_safe
@@ -405,22 +420,18 @@ def test_required_field_state_never_increases_capability_or_grantable(ctx, stage
 @settings(max_examples=150, deadline=None)
 @given(contexts(), st.sampled_from([Capability.FILL, Capability.SUBMIT]))
 def test_optional_field_state_never_lowers_below_baseline(ctx, stage):
+    """Ruling M: an optional (non-required) field's contradicted answer is
+    now omitted (optional_omitted why=contradicted) rather than raising its
+    own REQUIRE_USER item, so it no longer needs the special case this test
+    used to carve out for "contradicted" -- every optional worst-tier state,
+    contradicted included, now matches the no-field baseline exactly, both
+    in effective_capability and in grantable."""
     base_ctx = dataclasses.replace(ctx, requested_stage=stage, requirements=())
     baseline = evaluate_authorization(base_ctx)
     for name, factory in ALL_STATES:
         d = evaluate_authorization(dataclasses.replace(base_ctx, requirements=(factory("f", False),)))
         assert d.effective_capability == baseline.effective_capability, name
-        if name != "contradicted":
-            # A contradicted answer is not a permitted source at all and
-            # produces its own REQUIRE_USER item regardless of required/
-            # optional (spec §9.3 step 3 "answers" bullet + step 5) -- the
-            # one state where an optional field CAN legitimately lower
-            # grantable below baseline, confirmed by the pinned unit test
-            # test_optional_field_answer_state_chain_never_lowers_below_no_field_baseline
-            # in test_autonomy_gate_representation.py, which deliberately
-            # checks only effective_capability, not grantable, for this
-            # exact reason.
-            assert not (baseline.grantable and not d.grantable), name
+        assert not (baseline.grantable and not d.grantable), name
 
 
 # ---------------------------------------------------------------------------

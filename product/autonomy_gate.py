@@ -20,9 +20,10 @@ from typing import Any, Mapping
 from product.autonomy_contract import (
     CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ENGINE_VERSION, REACH_ORDER,
     AnswerCandidate, ApplyTargetFacts, AuthorizationContext, AuthorizationDecision,
-    BudgetState, CanonicalHashError, Capability, CounterState, EmployerKeyStrength,
-    IdentityStrength, Mode, ProvenanceTier, Reach, Reason, RepresentationRequirement,
-    RequireUserItem, ResultKind, RuleAcknowledgement, canonical_hash, is_unknown, reason,
+    BudgetState, CanonicalHashError, Capability, CompletionBlocker, CounterState,
+    EmployerKeyStrength, IdentityStrength, Mode, ProvenanceTier, Reach, Reason,
+    RepresentationRequirement, RequireUserItem, ResultKind, RuleAcknowledgement,
+    canonical_hash, is_unknown, reason,
 )
 from product.semantic_subject_policy import (
     subject_entry, subject_policy_hash, validate_subject_policy,
@@ -66,6 +67,7 @@ class _Acc:
         self.cap = ceiling
         self.reasons: list[Reason] = []
         self.items: list[RequireUserItem] = []
+        self.completion_blockers: list[CompletionBlocker] = []
         self.denies: set[str] = set()
         self.temporary: list[tuple[str, datetime | None]] = []
         self.blocked = False
@@ -340,6 +342,32 @@ def _safe_facts(ctx: Any) -> tuple[Reason, ...]:
     return tuple(extra)
 
 
+def _decision_fingerprint(
+    *, input_fingerprint: str, mode: Mode | None, result: ResultKind, deny_reason: str | None,
+    requested_stage: Capability | None, effective_capability: Capability, grantable: bool,
+    reasons: tuple[Reason, ...], require_user_items: tuple[RequireUserItem, ...],
+    completion_blockers: tuple[CompletionBlocker, ...], retry_at: Any, retryable: bool,
+) -> str:
+    """Canonical hash (spec §9.5, §15.1) of the decision's own outputs, so no
+    output -- completion_blockers in particular -- can drift independently of
+    the decision. None mode/requested_stage (the invalid-input path) are
+    valid payload values, not malformed input."""
+    return canonical_hash("autonomy-decision", "v1", {
+        "input_fingerprint": input_fingerprint,
+        "mode": mode,
+        "result": result,
+        "deny_reason": deny_reason,
+        "requested_stage": requested_stage,
+        "effective_capability": effective_capability,
+        "grantable": grantable,
+        "reasons": reasons,
+        "require_user_items": require_user_items,
+        "completion_blockers": completion_blockers,
+        "retry_at": retry_at,
+        "retryable": retryable,
+    })
+
+
 def _invalid_decision(
     ctx: Any, errors: list[str],
     extra_reasons: tuple[Reason, ...] = (), fingerprint: str | None = None,
@@ -369,11 +397,18 @@ def _invalid_decision(
     except Exception:
         policy_version_hash = None
     reasons = tuple(sorted(set(extra_reasons) | {_error_reason(ctx, e) for e in errors}))
+    mode = _decision_mode(ctx)
+    requested_stage = _decision_stage(ctx)
+    decision_fp = _decision_fingerprint(
+        input_fingerprint=fingerprint, mode=mode, result=ResultKind.DENY, deny_reason="invalid_input",
+        requested_stage=requested_stage, effective_capability=Capability.NONE, grantable=False,
+        reasons=reasons, require_user_items=(), completion_blockers=(), retry_at=None, retryable=False,
+    )
     return AuthorizationDecision(
-        mode=_decision_mode(ctx), result=ResultKind.DENY, requested_stage=_decision_stage(ctx),
+        mode=mode, result=ResultKind.DENY, requested_stage=requested_stage,
         effective_capability=Capability.NONE, grantable=False, deny_reason="invalid_input",
-        reasons=reasons, require_user_items=(), retry_at=None, retryable=False,
-        input_fingerprint=fingerprint, engine_version=ENGINE_VERSION,
+        reasons=reasons, require_user_items=(), completion_blockers=(), retry_at=None, retryable=False,
+        input_fingerprint=fingerprint, decision_fingerprint=decision_fp, engine_version=ENGINE_VERSION,
         policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
     )
 
@@ -442,6 +477,16 @@ def _apply_standing_policy(ctx: AuthorizationContext, acc: _Acc) -> None:
         if effect is None:
             continue
         via = "unknown" if outcome.via_unknown else "match"
+        # Ruling N (spec §5.2 "a stricter stop on unknown keeps the rule's
+        # cap"): a REDUCE_TO(X) rule whose predicate is UNKNOWN and whose
+        # applied on_unknown stops (REQUIRE_USER/BLOCK) instead of reducing
+        # still applies the cap to X, in addition to the stop below -- so
+        # choosing the stricter unknown behaviour can never record a higher
+        # effective_capability than a known match would.
+        if (outcome.via_unknown and outcome.declared_effect.get("type") == "REDUCE_TO"
+                and effect["type"] in ("REQUIRE_USER", "BLOCK")):
+            acc.reduce(Capability[outcome.declared_effect["level"]], "rule_reduce",
+                       rule=outcome.rule_id, via="unknown")
         if effect["type"] == "REDUCE_TO":
             acc.reduce(Capability[effect["level"]], "rule_reduce", rule=outcome.rule_id, via=via)
         elif effect["type"] == "BLOCK":
@@ -569,13 +614,26 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
     never record a higher capability than a better one would (spec §9.3
     step 3, and the FILL-is-authority-not-completeness note in §9.5) --
     gating this on requested_stage == SUBMIT would let a FILL request quietly
-    over-report capability for a required field that is, in fact, missing."""
+    over-report capability for a required field that is, in fact, missing.
+
+    Ruling M: a NON-required field whose in-reach candidates include a
+    contradicted answer is omitted (optional_omitted why=contradicted) --
+    it raises no RequireUserItem and applies no cap, unlike a required
+    field's contradicted answer, which is unchanged.
+
+    Ruling O: every required field with no fillable permitted value --
+    missing_answer, contradicted_answer, unclassified_field, sensitive_field
+    -- also records a CompletionBlocker(prevents=SUBMIT), regardless of
+    relevance (unlike the REQUIRE_USER item, which is stage/relevance
+    scoped). Expired/stale/context-unknown required answers are fillable
+    (just not SUBMIT-ready) so they are not completion blockers; optional
+    fields never are."""
     if ctx.requested_stage < Capability.FILL:
         return
     relevant = structural_cap >= ctx.requested_stage
     items: list[tuple[RequireUserItem, bool]] = []
     reductions: list[tuple[str, str]] = []
-    unresolved_required: list[tuple[str, str]] = []
+    unresolved_required: list[tuple[str, str | None, str]] = []
     for req in sorted(ctx.requirements, key=lambda r: r.key):
         entry = subject_entry(ctx.subject_policy, req.subject)
         if entry is None:
@@ -583,14 +641,14 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
                 continue
             if req.required:
                 items.append((RequireUserItem("unclassified_field", req.key), False))
-                unresolved_required.append((req.key, "unclassified_field"))
+                unresolved_required.append((req.key, req.subject, "unclassified_field"))
             else:
                 acc.note("optional_omitted", field=req.key, why="unclassified")
             continue
         if entry["sensitive"] is not None:
             if req.required:
                 items.append((RequireUserItem("sensitive_field", req.key), False))
-                unresolved_required.append((req.key, "sensitive_field"))
+                unresolved_required.append((req.key, req.subject, "sensitive_field"))
             else:
                 acc.note("optional_omitted", field=req.key, why="sensitive")
             continue
@@ -598,9 +656,11 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             continue
         in_reach = [c for c in req.candidates if c.subject == req.subject and _in_reach(c, entry, ctx)]
         if any(c.contradicted for c in in_reach):
-            items.append((RequireUserItem("contradicted_answer", req.key), True))
             if req.required:
-                unresolved_required.append((req.key, "contradicted_answer"))
+                items.append((RequireUserItem("contradicted_answer", req.key), True))
+                unresolved_required.append((req.key, req.subject, "contradicted_answer"))
+            else:
+                acc.note("optional_omitted", field=req.key, why="contradicted")
             continue
         usable = [c for c in in_reach if not _context_known_different(c, req, entry)]
         blockers = [_submit_blocker(c, req, entry, ctx.now) for c in usable]
@@ -614,7 +674,7 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             continue
         if req.required:
             items.append((RequireUserItem("missing_answer", req.key), False))
-            unresolved_required.append((req.key, "missing_answer"))
+            unresolved_required.append((req.key, req.subject, "missing_answer"))
         else:
             acc.note("optional_omitted", field=req.key, why="no_answer")
     for item, raise_at_fill in items:
@@ -626,8 +686,9 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             acc.note("unresolved_silent", kind=item.kind, ref=item.ref)
     for field, why in reductions:
         acc.reduce(Capability.FILL, "answer_not_submit_ready", field=field, why=why)
-    for field, kind in unresolved_required:
+    for field, subject, kind in unresolved_required:
         acc.reduce(Capability.FILL, "required_field_unresolved", field=field, kind=kind)
+        acc.completion_blockers.append(CompletionBlocker(field, subject, kind, Capability.SUBMIT))
 
 
 def _apply_stops(ctx: AuthorizationContext, acc: _Acc) -> None:
@@ -677,6 +738,7 @@ def _apply_questions(ctx: AuthorizationContext, acc: _Acc) -> None:
 def _resolve(ctx: AuthorizationContext, acc: _Acc, fingerprint: str,
              policy_version_hash: str | None, subject_hash: str | None) -> AuthorizationDecision:
     items = tuple(sorted(set(acc.items)))
+    completion_blockers = tuple(sorted(set(acc.completion_blockers)))
     retry_at = None
     deny_reason = None
     if acc.denies & {"kill_switch", "stale_binding"}:
@@ -698,10 +760,18 @@ def _resolve(ctx: AuthorizationContext, acc: _Acc, fingerprint: str,
     grantable = (result is ResultKind.ALLOW and acc.cap >= ctx.requested_stage
                  and ctx.mode is Mode.LIVE)
     retryable = result is ResultKind.DENY_TEMPORARY
+    reasons = tuple(sorted(set(acc.reasons)))
+    decision_fp = _decision_fingerprint(
+        input_fingerprint=fingerprint, mode=ctx.mode, result=result, deny_reason=deny_reason,
+        requested_stage=ctx.requested_stage, effective_capability=acc.cap, grantable=grantable,
+        reasons=reasons, require_user_items=items, completion_blockers=completion_blockers,
+        retry_at=retry_at, retryable=retryable,
+    )
     return AuthorizationDecision(
         mode=ctx.mode, result=result, requested_stage=ctx.requested_stage,
         effective_capability=acc.cap, grantable=grantable, deny_reason=deny_reason,
-        reasons=tuple(sorted(set(acc.reasons))), require_user_items=items, retry_at=retry_at,
-        retryable=retryable, input_fingerprint=fingerprint, engine_version=ENGINE_VERSION,
+        reasons=reasons, require_user_items=items, completion_blockers=completion_blockers,
+        retry_at=retry_at, retryable=retryable, input_fingerprint=fingerprint,
+        decision_fingerprint=decision_fp, engine_version=ENGINE_VERSION,
         policy_version_hash=policy_version_hash, subject_policy_hash=subject_hash,
     )
