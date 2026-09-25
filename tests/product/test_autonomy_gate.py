@@ -858,6 +858,28 @@ def test_decision_fingerprint_helper_hashes_engine_version_and_policy_hashes():
     assert len({base, diff_engine, diff_policy, diff_subject}) == 4
 
 
+# --- Fix round 3 item 3: an isolated unit test calling the helper directly
+# with inputs identical except for completion_blockers (the property test's
+# end-to-end equivalent, test_decision_fingerprint_changes_when_completion_
+# blockers_change above, goes through evaluate_authorization and a real
+# requirement, so it can't rule out some other field changing incidentally
+# alongside completion_blockers; this isolates the one field directly).
+
+def test_decision_fingerprint_helper_differs_when_only_completion_blockers_differ():
+    kwargs = dict(
+        input_fingerprint="sha256:aaaa", mode=Mode.LIVE, result=R.ALLOW, deny_reason=None,
+        requested_stage=C.SUBMIT, effective_capability=C.SUBMIT, grantable=True,
+        reasons=(), require_user_items=(), retry_at=None, retryable=False,
+        engine_version="autonomy-gate.v1", policy_version_hash="sha256:policy_a",
+        subject_policy_hash="sha256:subj_a",
+    )
+    empty = autonomy_gate_module._decision_fingerprint(completion_blockers=(), **kwargs)
+    with_blocker = autonomy_gate_module._decision_fingerprint(
+        completion_blockers=(CompletionBlocker("f", "employment.notice_period", "missing_answer", C.SUBMIT),),
+        **kwargs)
+    assert empty != with_blocker
+
+
 def test_decision_fingerprint_differs_with_different_standing_policy_via_gate():
     """End-to-end sanity check: a standing_policy document with an extra rule
     that never actually fires (predicate false, given ctx's known attribute

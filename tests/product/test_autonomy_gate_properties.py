@@ -12,10 +12,21 @@ almost never grantable, ~1.5%, because grant_binding_drift was non-empty
 ~51% of the time). `contexts()` now draws a `permissive` half the time,
 forcing every restrictive dimension to its most permissive value so a
 substantial share of generated bases are actually grantable at both FILL
-and SUBMIT (see test_permissive_bases_are_grantable_at_fill_and_submit,
-which measures and asserts the observed rate). Example counts are restored
-to at least their pre-round-1 values. See task-7-report.md for the full
-case analysis behind every guard below.
+and SUBMIT. Example counts are restored to at least their pre-round-1
+values.
+
+Fix round 3 (2026-09-25): round 2's permissive profile turned out to be a
+near-constant EMPTY context (grantable, but with no rules/requirements/
+acks to act on), making rule/unknown/answer/ack tightenings vacuous; the
+permissive profile is now RICH but still grantable (see contexts() and
+test_rich_permissive_bases_are_grantable_and_flip_across_every_op_family,
+which is derandomized and measures/reports rates and flip counts per op
+family). Also: a direct, stage-by-stage ruling-O property for
+completion_blockers, and a decision_fingerprint property that recomputes
+the canonical hash directly (via dataclasses.fields) and checks sensitivity
+to every field individually, rather than inferring it from whether the
+whole output tuple changed. See task-7-report.md for the full case
+analysis behind every guard below.
 """
 from __future__ import annotations
 
@@ -26,9 +37,9 @@ from decimal import Decimal
 from hypothesis import given, settings, strategies as st
 
 from product.autonomy_contract import (
-    BudgetState, Capability, CounterState, EmployerKeyStrength,
-    IdentityStrength, Mode, ProvenanceTier, RepresentationRequirement, ResultKind,
-    RuleAcknowledgement, UNKNOWN,
+    BudgetState, Capability, CompletionBlocker, CounterState, EmployerKeyStrength,
+    IdentityStrength, Mode, ProvenanceTier, RepresentationRequirement, RequireUserItem,
+    ResultKind, RuleAcknowledgement, UNKNOWN, canonical_hash, reason as make_reason,
 )
 from product.autonomy_gate import evaluate_authorization
 from product.standing_policy import observed_fingerprint, referenced_attributes, rule_hash
@@ -104,6 +115,21 @@ def requirement(draw, key):
                "contradicted": _req_contradicted, "unclassified": _req_unclassified,
                "sensitive": _req_sensitive, "evidence": _req_evidence}[kind]
     return factory(key, required)
+
+
+def _false_predicate_for(attr, attributes):
+    """A predicate over `attr` guaranteed FALSE (never UNKNOWN, never TRUE)
+    for `attributes`'s current values -- used to build "dormant" rules for
+    the rich permissive profile (fix round 3 item 1): present, referencing a
+    real attribute, but inert until that attribute is deliberately marked
+    UNKNOWN by a tighten op, at which point on_unknown activates -- a real
+    tightening rather than a no-op on an empty policy."""
+    if attr == "fit.overall_score":
+        return {"attr": attr, "op": "gt", "value": 1000}  # score is always 0-100
+    if attr == "job.employment_type":
+        other = "CONTRACT" if attributes["job.employment_type"] == "PERMANENT" else "PERMANENT"
+        return {"attr": attr, "op": "eq", "value": other}
+    return {"attr": attr, "op": "eq", "value": "name:definitely-not-acme"}  # company.key is always "name:acme"
 
 
 # ---------------------------------------------------------------------------
@@ -182,47 +208,98 @@ def maybe_ack(draw, rules_list, attributes, employer_lists):
 # identity conflict, plus attributes that may already be UNKNOWN.
 # ---------------------------------------------------------------------------
 
+_DORMANT_ON_UNKNOWN_CHOICES = [
+    {"type": "BLOCK"}, {"type": "REQUIRE_USER"}, {"type": "REDUCE_TO", "level": "NONE"},
+]
+
+
 @st.composite
 def contexts(draw):
-    # Fix round 2 item 1: half the time, force every restrictive dimension to
-    # its most permissive value so a substantial share of generated bases are
-    # actually grantable (round 1's widened base was grantable only ~1.5% of
-    # the time, since e.g. grant_binding_drift was non-empty ~51% of the time
-    # and ANY non-empty drift unconditionally denies). See
-    # test_permissive_bases_are_grantable_at_fill_and_submit for the measured
-    # rate this achieves.
+    # Fix round 2 item 1: bias `contexts()` so a substantial share of bases
+    # are grantable. Fix round 3 item 1: round 2's permissive profile was a
+    # near-constant EMPTY context (no rules/requirements/acks/counters/
+    # budgets/UNKNOWN attrs) -- so rule/UNKNOWN/answer/ack tightenings never
+    # had anything to act on starting from a grantable base (0 observed
+    # flips). The profile below is RICH but still grantable: 1-3 "dormant"
+    # rules (predicate FALSE for the base attributes, on_unknown restrictive
+    # -- inert now, a real tightening once a referenced attribute goes
+    # UNKNOWN), one REQUIRE_USER rule that DOES match paired with a valid
+    # PROCEED acknowledgement (removing/lapsing it is a real tightening),
+    # required+optional requirements in fresh/evidence-backed states
+    # (aging/contradicting/dropping the required one is a real tightening),
+    # a counter below its limit and a budget under its cap, and -- only on an
+    # attribute none of the dormant/ack rules reference, so it can't
+    # accidentally break grantability -- an already-UNKNOWN attribute.
     #
     # Every dimension below is drawn UNCONDITIONALLY, regardless of
     # `permissive`, and only the *value actually used* is chosen afterwards.
-    # An earlier version skipped the restrictive draws entirely when
-    # permissive, making that branch far shorter/cheaper to generate; measured
-    # empirically, Hypothesis's example generation grows the size/complexity
-    # of its byte buffer as a run progresses (to explore more of the input
-    # space), which systematically starved the short "permissive" branch to
-    # ~14% of examples instead of the intended ~50% -- confirmed via a direct
-    # sampling script before this fix. Drawing the same amount either way
+    # An earlier version skipped the restrictive/rich draws entirely on the
+    # branch not taken, making that branch far shorter/cheaper to generate;
+    # measured empirically, Hypothesis's example generation grows the size/
+    # complexity of its byte buffer as a run progresses (to explore more of
+    # the input space), which systematically starved whichever branch was
+    # shorter (round 2: ~14% instead of an intended ~50%) -- confirmed via a
+    # direct sampling script both times. Drawing the same amount either way
     # removes that size asymmetry.
-    # Weighted rather than a plain 50/50 coin: even with the unconditional-draw
-    # size parity above, run-to-run variance in the observed rate (see
-    # test_permissive_bases_are_grantable_at_fill_and_submit) needs a safety
-    # margin comfortably clear of the >=40% floor, not a coin flip hovering
-    # right at it.
     permissive = draw(st.integers(1, 10)) <= 6
 
-    attributes = {
-        "fit.overall_score": draw(st.integers(0, 100)),
-        "job.employment_type": draw(st.sampled_from(["PERMANENT", "CONTRACT"])),
-        "company.key": "name:acme",
-    }
-    if draw(st.booleans()) and not permissive:
-        attributes[draw(st.sampled_from(ATTRS))] = UNKNOWN
+    fit_score = draw(st.integers(0, 100))
+    employment_type = draw(st.sampled_from(["PERMANENT", "CONTRACT"]))
+    attributes = {"fit.overall_score": fit_score, "job.employment_type": employment_type, "company.key": "name:acme"}
+
+    # Generic (unrestricted) already-UNKNOWN attribute -- the non-permissive
+    # branch's existing dimension, unrelated to the rich profile's own
+    # UNKNOWN placement below.
+    generic_blank_attr = draw(st.sampled_from(ATTRS))
+    generic_blank_flag = draw(st.booleans())
 
     employer_lists = {EMPLOYER_LIST_NAME: draw(st.sampled_from([[], ["name:acme"], ["name:other"]]))}
     drawn_rules_list = draw(rules(employer_lists))
-    rules_list = [] if permissive else drawn_rules_list
+
+    # -- rich profile: dormant rules + one matching REQUIRE_USER rule --
+    num_dormant = draw(st.integers(1, 3))
+    dormant_rules = []
+    dormant_referenced = set()
+    for i in range(num_dormant):
+        d_attr = draw(st.sampled_from(ATTRS))
+        dormant_referenced.add(d_attr)
+        d_on_unknown = draw(st.sampled_from(_DORMANT_ON_UNKNOWN_CHOICES))
+        dormant_rules.append({
+            "id": f"dormant{i}", "description": "", "when": _false_predicate_for(d_attr, attributes),
+            "effect": {"type": "REQUIRE_USER"}, "on_unknown": d_on_unknown,
+        })
+    ack_rule = {
+        "id": "ack_rule", "description": "",
+        "when": {"attr": "company.key", "op": "eq", "value": "name:acme"},  # always TRUE for the base attributes
+        "effect": {"type": "REQUIRE_USER"}, "on_unknown": {"type": "REQUIRE_USER"},
+    }
+    rich_rules_list = dormant_rules + [ack_rule]
+    rich_referenced = dormant_referenced | {"company.key"}
+    rich_ack = RuleAcknowledgement(
+        rule_id="ack_rule", rule_hash=rule_hash(ack_rule),
+        observed_fingerprint=observed_fingerprint(ack_rule, attributes, employer_lists),
+        disposition="PROCEED",
+    )
+
+    # Rich profile's own UNKNOWN placement: only on an attribute none of the
+    # dormant/ack rules reference (drawn unconditionally either way, for size
+    # parity -- see comment above).
+    unreferenced = [a for a in ATTRS if a not in rich_referenced]
+    rich_blank_flag = draw(st.booleans())
+    rich_blank_attr = draw(st.sampled_from(unreferenced)) if unreferenced else None
+
+    if permissive:
+        rules_list = rich_rules_list
+        if rich_blank_flag and rich_blank_attr is not None:
+            attributes[rich_blank_attr] = UNKNOWN
+    else:
+        rules_list = drawn_rules_list
+        if generic_blank_flag:
+            attributes[generic_blank_attr] = UNKNOWN
     policy = make_policy(*rules_list, lists=employer_lists)
+
     drawn_acks = draw(maybe_ack(drawn_rules_list, attributes, employer_lists))
-    acks = () if permissive else drawn_acks
+    acks = (rich_ack,) if permissive else drawn_acks
 
     bool_or_unknown = st.sampled_from([True, False, UNKNOWN])
     drawn_target = good_target(
@@ -236,7 +313,15 @@ def contexts(draw):
     apply_target = good_target() if permissive else drawn_target  # DISCOVERY_VERIFIED, submit-capable, all True
 
     drawn_requirements = tuple(draw(requirement(f"req{i}")) for i in range(draw(st.integers(0, 2))))
-    requirements = () if permissive else drawn_requirements
+    # req0 always required+fresh: real material for the answer-state tighten
+    # ops (age/contradict/drop). req1 optional 50% of the time, mixing
+    # required/optional and fresh/evidence-backed, per fix round 3 item 1.
+    include_req1 = draw(st.booleans())
+    req1_required = draw(st.booleans())
+    req1_evidence = draw(st.booleans())
+    req1 = _req_evidence("req1", req1_required) if req1_evidence else _req_fresh("req1", req1_required)
+    rich_requirements = (_req_fresh("req0", True), req1) if include_req1 else (_req_fresh("req0", True),)
+    requirements = rich_requirements if permissive else drawn_requirements
 
     drawn_counters = tuple(
         CounterState(f"c{i}", draw(stages), draw(st.integers(0, 5)), draw(st.integers(1, 5)), None)
@@ -252,8 +337,20 @@ def contexts(draw):
         st.sampled_from(["captcha", "login_wall", "email_verification"]), max_size=2, unique=True)))
     drawn_drift = tuple(draw(st.lists(
         st.sampled_from(["pack_hash", "manifest_hash"]), max_size=2, unique=True)))
-    counters = () if permissive else drawn_counters
-    budgets = () if permissive else drawn_budgets
+
+    rich_counter_used = draw(st.integers(0, 2))
+    rich_counter_headroom = draw(st.integers(1, 3))
+    rich_counter_stage = draw(stages)
+    rich_counters = (CounterState("rich_c", rich_counter_stage, rich_counter_used,
+                                   rich_counter_used + rich_counter_headroom, None),)
+    rich_budget_used = draw(st.integers(0, 50))
+    rich_budget_headroom = draw(st.integers(1, 50))
+    rich_budget_category = draw(st.sampled_from(["LLM", "BROWSER", "EXTERNAL_API", "OTHER"]))
+    rich_budgets = (BudgetState(rich_budget_category, "daily", Decimal(rich_budget_used), Decimal(0),
+                                 Decimal(rich_budget_used + rich_budget_headroom), Decimal(0), None),)
+
+    counters = rich_counters if permissive else drawn_counters
+    budgets = rich_budgets if permissive else drawn_budgets
     executor_hard_stops = () if permissive else drawn_hard_stops
     grant_binding_drift = () if permissive else drawn_drift
 
@@ -354,50 +451,61 @@ def _attr_safe_for_unknown(ctx, attr):
 # ---------------------------------------------------------------------------
 
 def tighten_ops(ctx):
+    """Yields (family, tightened_ctx) pairs. Families are tracked by fix
+    round 3's flip-diversity meta-test to confirm each of the op families the
+    coordinator named (unknown-marking, answer aging/contradiction/drop, ack
+    removal/lapse) actually produces a non-trivial number of
+    grantable->non-grantable flips against the rich permissive profile above
+    -- not just that the properties hold vacuously."""
     lower = lambda c: C(max(0, c - 1))
-    yield dataclasses.replace(ctx, deployment_ceiling=lower(ctx.deployment_ceiling))
-    yield dataclasses.replace(ctx, account_max=lower(ctx.account_max))
-    yield dataclasses.replace(ctx, workspace_ceiling=lower(ctx.workspace_ceiling))
-    yield dataclasses.replace(ctx, kill_switch_engaged=True)
-    yield dataclasses.replace(ctx, sentinel_present=True)
-    yield dataclasses.replace(ctx, identity_strength=IdentityStrength.WEAK)
-    yield dataclasses.replace(ctx, identity_conflict=True)
-    yield dataclasses.replace(ctx, pack_auto_confirmable=False)
+    yield "ceiling", dataclasses.replace(ctx, deployment_ceiling=lower(ctx.deployment_ceiling))
+    yield "ceiling", dataclasses.replace(ctx, account_max=lower(ctx.account_max))
+    yield "ceiling", dataclasses.replace(ctx, workspace_ceiling=lower(ctx.workspace_ceiling))
+    yield "stop", dataclasses.replace(ctx, kill_switch_engaged=True)
+    yield "stop", dataclasses.replace(ctx, sentinel_present=True)
+    yield "identity", dataclasses.replace(ctx, identity_strength=IdentityStrength.WEAK)
+    yield "identity", dataclasses.replace(ctx, identity_conflict=True)
+    yield "pack", dataclasses.replace(ctx, pack_auto_confirmable=False)
     # §9.3 step 4: CLAIMED always denies; CONFIRMED denies unless overridden.
     # Switching CLAIMED -> CONFIRMED while intent_overridden is already True
     # would LOOSEN the decision (CLAIMED denies unconditionally; CONFIRMED
     # + override does not) -- skip only that one combination.
     if not (ctx.existing_intent_state == "CLAIMED" and ctx.intent_overridden):
-        yield dataclasses.replace(ctx, existing_intent_state="CONFIRMED")
+        yield "intent", dataclasses.replace(ctx, existing_intent_state="CONFIRMED")
     # CLAIMED always denies unconditionally (no override escape hatch), the
     # strictest of the three intent states -- unlike the CONFIRMED op above,
     # this needs no guard: moving to CLAIMED can only add the duplicate
     # denial, never remove one, from any starting state (None: adds it;
     # CONFIRMED+override: adds it, since override no longer applies;
     # CONFIRMED+no-override or already CLAIMED: already denied, unchanged).
-    yield dataclasses.replace(ctx, existing_intent_state="CLAIMED")
-    yield dataclasses.replace(ctx, governing_auto_reject=True)
+    yield "intent", dataclasses.replace(ctx, existing_intent_state="CLAIMED")
+    yield "stop", dataclasses.replace(ctx, governing_auto_reject=True)
     # §8.1: "no target" already caps at PREPARE, stricter than imported_source's
     # FILL cap, so substituting IMPORTED_SOURCE is only a valid tightening when
     # a target already exists (see task-7-report.md's original NEEDS_CONTEXT).
     if ctx.apply_target.provenance is not None:
-        yield dataclasses.replace(ctx, apply_target=good_target(provenance=ProvenanceTier.IMPORTED_SOURCE))
+        yield "apply_target", dataclasses.replace(ctx, apply_target=good_target(provenance=ProvenanceTier.IMPORTED_SOURCE))
     # Append rather than replace: a varied base context may already carry its
     # own counters/blockers/drift/hard-stops, and replacing them outright
     # could silently drop an existing restriction -- a loosening.
-    yield dataclasses.replace(
+    yield "limit", dataclasses.replace(
         ctx, counters=ctx.counters + (CounterState("tighten_x", ctx.requested_stage, 1, 1, None),))
-    yield dataclasses.replace(
+    yield "governing", dataclasses.replace(
         ctx, unresolved_governing_require_user=ctx.unresolved_governing_require_user + ("tighten_blk",))
-    yield dataclasses.replace(ctx, grant_binding_drift=ctx.grant_binding_drift + ("tighten_field",))
-    yield dataclasses.replace(ctx, executor_hard_stops=ctx.executor_hard_stops + ("tighten_stop",))
-    yield dataclasses.replace(ctx, budgets=ctx.budgets + (
+    yield "drift", dataclasses.replace(ctx, grant_binding_drift=ctx.grant_binding_drift + ("tighten_field",))
+    yield "hard_stop", dataclasses.replace(ctx, executor_hard_stops=ctx.executor_hard_stops + ("tighten_stop",))
+    yield "budget", dataclasses.replace(ctx, budgets=ctx.budgets + (
         BudgetState("OTHER", "daily", Decimal(999), Decimal(0), Decimal(1), Decimal(0), None),))
     # An acknowledgement can only ever lift a restriction the user themselves
-    # wrote (spec §9.3 step 5); removing it can only add restriction back.
+    # wrote (spec §9.3 step 5); removing (or lapsing, i.e. corrupting its
+    # rule_hash so it no longer matches -- functionally identical to removal
+    # in _apply_standing_policy's validity check) it can only add restriction
+    # back.
     if ctx.rule_acknowledgements:
-        yield dataclasses.replace(ctx, rule_acknowledgements=())
-    yield dataclasses.replace(ctx, standing_policy=make_policy(
+        yield "ack", dataclasses.replace(ctx, rule_acknowledgements=())
+        yield "ack", dataclasses.replace(ctx, rule_acknowledgements=tuple(
+            dataclasses.replace(a, rule_hash=a.rule_hash + "_lapsed") for a in ctx.rule_acknowledgements))
+    yield "rule", dataclasses.replace(ctx, standing_policy=make_policy(
         *ctx.standing_policy["rules"],
         {"id": "extra", "description": "", "when": {"attr": "fit.overall_score", "op": "lt", "value": 101},
          "effect": {"type": "REDUCE_TO", "level": "PREPARE"}, "on_unknown": {"type": "REDUCE_TO", "level": "PREPARE"}},
@@ -406,11 +514,11 @@ def tighten_ops(ctx):
     # fresh answer past its subject's freshness window, or marking any
     # candidate contradicted, can only ever add a blocker or a REQUIRE_USER
     # item, never remove one -- safe unconditionally from any starting state.
-    yield dataclasses.replace(ctx, requirements=tuple(
+    yield "answer", dataclasses.replace(ctx, requirements=tuple(
         dataclasses.replace(r, candidates=tuple(
             dataclasses.replace(c, confirmed_at=NOW - timedelta(days=99999)) for c in r.candidates))
         for r in ctx.requirements))
-    yield dataclasses.replace(ctx, requirements=tuple(
+    yield "answer", dataclasses.replace(ctx, requirements=tuple(
         dataclasses.replace(r, candidates=tuple(
             dataclasses.replace(c, contradicted=True) for c in r.candidates))
         for r in ctx.requirements))
@@ -420,7 +528,7 @@ def tighten_ops(ctx):
     # SUBMIT-only -- removing the candidate would silence an already-surfaced
     # FILL-stage item, loosening the decision at a FILL request.
     if all(not any(c.contradicted for c in r.candidates) for r in ctx.requirements):
-        yield dataclasses.replace(
+        yield "answer", dataclasses.replace(
             ctx, requirements=tuple(dataclasses.replace(r, candidates=()) for r in ctx.requirements))
     for attr in ATTRS:
         # Unknown-safety holds only for rules whose on_unknown is at least as
@@ -431,14 +539,14 @@ def tighten_ops(ctx):
         # REDUCE_TO(NONE), on_unknown=BLOCK, which doesn't touch capability
         # at all) -- skip those attributes rather than assert a false property.
         if _attr_safe_for_unknown(ctx, attr):
-            yield dataclasses.replace(ctx, attributes={**ctx.attributes, attr: UNKNOWN})
+            yield "unknown", dataclasses.replace(ctx, attributes={**ctx.attributes, attr: UNKNOWN})
 
 
 @settings(max_examples=300, deadline=None)
 @given(contexts())
 def test_monotonicity_and_unknown_safety(ctx):
     base = evaluate_authorization(ctx)
-    for tighter in tighten_ops(ctx):
+    for _family, tighter in tighten_ops(ctx):
         d = evaluate_authorization(tighter)
         assert d.effective_capability <= base.effective_capability
         assert not (d.grantable and not base.grantable)
@@ -597,14 +705,14 @@ def test_determinism_under_reordered_dict_keys(ctx):
 @given(contexts(), st.data())
 def test_composed_tightenings_still_monotonic(ctx, data):
     base = evaluate_authorization(ctx)
-    first_ops = list(tighten_ops(ctx))
+    first_ops = [c for _family, c in tighten_ops(ctx)]
     if not first_ops:
         return
     ctx1 = data.draw(st.sampled_from(first_ops))
     once = evaluate_authorization(ctx1)
     assert once.effective_capability <= base.effective_capability
     assert not (once.grantable and not base.grantable)
-    second_ops = list(tighten_ops(ctx1))
+    second_ops = [c for _family, c in tighten_ops(ctx1)]
     if not second_ops:
         return
     ctx2 = data.draw(st.sampled_from(second_ops))
@@ -625,54 +733,82 @@ def test_composed_tightenings_still_monotonic(ctx, data):
 # --hypothesis-show-statistics tooling.
 # ---------------------------------------------------------------------------
 
-def test_permissive_bases_are_grantable_at_fill_and_submit():
-    """Sample via a normal per-example @given run (not st.data().draw() in a
-    loop inside one example -- that pattern chains hundreds of draws into a
-    single Hypothesis buffer and was observed to blow the internal
-    generation-size budget, at which point Hypothesis's fallback generation
-    systematically favours the cheapest/most-restrictive choice for every
-    strategy -- e.g. permissive always False -- silently corrupting the very
-    distribution this test exists to measure. A plain accumulator mutated by
-    a normally-run @given sampler has no such failure mode: every example is
-    an ordinary, independent draw exactly like the rest of this file's
-    properties."""
-    counts = {"n": 0, "fill": 0, "submit": 0}
+def test_rich_permissive_bases_are_grantable_and_flip_across_every_op_family():
+    """Fix round 3 item 1 + item 4. Sample via a normal per-example @given
+    run (not st.data().draw() in a loop inside one example -- that pattern
+    chains hundreds of draws into a single Hypothesis buffer and was
+    observed to blow the internal generation-size budget, at which point
+    Hypothesis's fallback generation systematically favours the cheapest
+    choice for every strategy, silently corrupting the very distribution
+    this test exists to measure -- see fix round 2's report). A plain
+    accumulator mutated by a normally-run, derandomized @given sampler has no
+    such failure mode and reproduces the exact same examples on every run
+    (item 4): every example is an ordinary, independent draw exactly like
+    the rest of this file's properties.
 
-    @settings(max_examples=300, deadline=None)
+    Round 2's permissive profile was grantable but near-constant EMPTY (no
+    rules/requirements/acks/counters/budgets/UNKNOWN attrs), so the
+    rule/unknown/answer/ack tighten_ops families never had anything to act
+    on starting from a grantable base -- 0 observed flips. This test
+    measures, against the round-3 RICH permissive profile: (a) the fraction
+    of bases that are grantable AND carry >=1 rule, (b) grantable AND carry
+    >=1 requirement, both against a >=30% floor; and (c) for each of the
+    three op families the coordinator named (unknown-marking, answer
+    aging/contradiction/drop, ack removal/lapse), the count of
+    grantable->non-grantable flips over the whole run, each against a
+    floor chosen well below every observed count in this file's own
+    diagnostic runs (see task-7-report.md) so it cannot flake."""
+    counts = {"n": 0, "fill": 0, "submit": 0, "rule_and_grantable": 0, "req_and_grantable": 0}
+    flips = {"unknown": 0, "answer": 0, "ack": 0}
+
+    @settings(max_examples=400, deadline=None, derandomize=True)
     @given(contexts())
     def _sample(ctx):
         counts["n"] += 1
+        d = evaluate_authorization(ctx)
         if evaluate_authorization(dataclasses.replace(ctx, requested_stage=Capability.FILL)).grantable:
             counts["fill"] += 1
         if evaluate_authorization(dataclasses.replace(ctx, requested_stage=Capability.SUBMIT)).grantable:
             counts["submit"] += 1
+        if d.grantable:
+            if ctx.standing_policy is not None and len(ctx.standing_policy["rules"]) >= 1:
+                counts["rule_and_grantable"] += 1
+            if len(ctx.requirements) >= 1:
+                counts["req_and_grantable"] += 1
+            for family, tightened in tighten_ops(ctx):
+                if family in flips and not evaluate_authorization(tightened).grantable:
+                    flips[family] += 1
 
     _sample()
-    fill_rate = counts["fill"] / counts["n"]
-    submit_rate = counts["submit"] / counts["n"]
-    assert fill_rate >= 0.40, f"grantable-at-FILL rate too low: {fill_rate:.1%} ({counts['fill']}/{counts['n']})"
-    assert submit_rate >= 0.40, f"grantable-at-SUBMIT rate too low: {submit_rate:.1%} ({counts['submit']}/{counts['n']})"
+    n = counts["n"]
+    fill_rate, submit_rate = counts["fill"] / n, counts["submit"] / n
+    rule_rate, req_rate = counts["rule_and_grantable"] / n, counts["req_and_grantable"] / n
+    assert fill_rate >= 0.30, f"grantable-at-FILL rate too low: {fill_rate:.1%} ({counts['fill']}/{n})"
+    assert submit_rate >= 0.30, f"grantable-at-SUBMIT rate too low: {submit_rate:.1%} ({counts['submit']}/{n})"
+    assert rule_rate >= 0.30, (
+        f"grantable-with->=1-rule rate too low: {rule_rate:.1%} ({counts['rule_and_grantable']}/{n})")
+    assert req_rate >= 0.30, (
+        f"grantable-with->=1-requirement rate too low: {req_rate:.1%} ({counts['req_and_grantable']}/{n})")
+    for family, floor in (("unknown", 20), ("answer", 20), ("ack", 20)):
+        assert flips[family] >= floor, f"{family} family flip count too low: {flips[family]} (floor {floor})"
 
 
 # ---------------------------------------------------------------------------
-# Fix round 2 item 4: properties for the new outputs (ruling O's
-# completion_blockers and decision_fingerprint).
+# Fix round 2/3 item 4 (item 2 in round 3): properties for the new outputs
+# (ruling O's completion_blockers and decision_fingerprint).
 #
-# completion_blockers property: comparing the same context with a blocking
-# requirement made *optional* is deliberately avoided -- ruling M means an
-# optional field is never a completion blocker to begin with, so that
-# comparison would conflate rulings M and O rather than isolate O. Instead:
-# completion_blockers and the required_field_unresolved capability reduction
-# are produced together, in the same unresolved_required loop in
+# completion_blockers pruning property: comparing the same context with a
+# blocking requirement made *optional* is deliberately avoided -- ruling M
+# means an optional field is never a completion blocker to begin with, so
+# that comparison would conflate rulings M and O rather than isolate O.
+# Instead: completion_blockers and the required_field_unresolved capability
+# reduction are produced together, in the same unresolved_required loop in
 # _apply_requirements (one CompletionBlocker and one reduce() call per
 # unresolved required field, from the same trigger conditions) -- so
 # *deleting* the requirements that produced a context's completion_blockers
 # entirely removes both their reduction and their REQUIRE_USER item, which
 # can only make the decision at least as permissive as before, never more
-# restrictive. This is a true, checkable consequence of ruling O's own
-# implementation and also confirms field_key correctly identifies the
-# offending requirement (pruning by exactly those keys is what lifts the
-# restriction).
+# restrictive. Kept unchanged from round 2 per the round-3 instruction.
 # ---------------------------------------------------------------------------
 
 @settings(max_examples=250, deadline=None)
@@ -689,24 +825,125 @@ def test_removing_completion_blocker_requirements_never_lowers_capability_or_gra
     assert not (before.grantable and not after.grantable)
 
 
+@settings(max_examples=250, deadline=None)
+@given(contexts(), st.sampled_from(WORST_TIER))
+def test_completion_blockers_match_ruling_o_at_every_stage(ctx, worst_choice):
+    """Fix round 3 item 2: round 2's completion_blockers property was
+    vacuous (blockers present in only 9.5% of examples, never at a FILL
+    decision, since it only ever *observed* whatever completion_blockers a
+    fully-random context happened to produce). This directly exercises
+    ruling O: add a REQUIRED field in a no-fillable-value state to an
+    otherwise baseline-grantable context (isolating ruling O's own effect --
+    skip when the baseline isn't independently grantable at both FILL and
+    SUBMIT, so unrelated restrictions already in ctx can't muddy the
+    assertions) and check the exact stage-by-stage contract.
+
+    "contradicted" is the one state whose REQUIRE_USER item already surfaces
+    at FILL too (raise_at_fill=True in _apply_requirements -- pre-existing,
+    spec-mandated, confirmed by test_contradiction_requires_user_even_at_fill
+    in test_autonomy_gate_representation.py and documented since round 1):
+    completion_blockers still records it at FILL regardless (ruling O is
+    stage-independent once requirements are evaluated at all), but result/
+    grantable at FILL differ for that one state, unlike missing/unclassified/
+    sensitive, which stay silent (SUBMIT-only items) at FILL."""
+    name, factory = worst_choice
+    required_worst = factory("blocked_required", True)
+    optional_worst = factory("blocked_optional", False)
+    expired_required = _req_expired("blocked_expired", True)
+    reqs = ctx.requirements + (required_worst, optional_worst, expired_required)
+
+    baseline_fill = evaluate_authorization(dataclasses.replace(ctx, requested_stage=Capability.FILL))
+    baseline_submit = evaluate_authorization(dataclasses.replace(ctx, requested_stage=Capability.SUBMIT))
+    if not (baseline_fill.grantable and baseline_submit.grantable):
+        return
+
+    def at(stage):
+        return evaluate_authorization(dataclasses.replace(ctx, requested_stage=stage, requirements=reqs))
+
+    fill_d, submit_d, prepare_d = at(Capability.FILL), at(Capability.SUBMIT), at(Capability.PREPARE)
+    fill_keys = {b.field_key for b in fill_d.completion_blockers}
+    submit_keys = {b.field_key for b in submit_d.completion_blockers}
+
+    assert fill_d.effective_capability == Capability.FILL
+    assert "blocked_required" in fill_keys
+    if name == "contradicted":
+        assert fill_d.result is ResultKind.REQUIRE_USER and not fill_d.grantable
+    else:
+        assert fill_d.result is ResultKind.ALLOW and fill_d.grantable
+
+    assert submit_d.effective_capability == Capability.FILL
+    assert not submit_d.grantable
+    assert "blocked_required" in submit_keys
+
+    assert prepare_d.completion_blockers == ()
+
+    # blockers do not block FILL (they never affect result/effective/grantable
+    # on their own beyond ruling O's own FILL cap, already asserted above) --
+    # and optional / expired-required fields never produce one.
+    assert "blocked_optional" not in fill_keys and "blocked_optional" not in submit_keys
+    assert "blocked_expired" not in fill_keys and "blocked_expired" not in submit_keys
+
+    # Every blocker corresponds to a required requirement actually present.
+    req_by_key = {r.key: r for r in reqs}
+    for b in set(fill_d.completion_blockers) | set(submit_d.completion_blockers):
+        assert b.field_key in req_by_key and req_by_key[b.field_key].required
+
+
+# ---------------------------------------------------------------------------
+# Fix round 3 item 3: decision_fingerprint must be EXACTLY the canonical hash
+# of every other AuthorizationDecision field (derived from dataclasses.fields
+# so a new field can't be silently skipped), and sensitive to each of them
+# individually -- round 2's property only checked "if the tuple of outputs
+# differs, the fingerprint differs", which in practice was satisfied entirely
+# by input_fingerprint differing (a near-certainty between a context and its
+# tightened variant) rather than by isolating any single decision field.
+# ---------------------------------------------------------------------------
+
+def _decision_payload(d):
+    return {f.name: getattr(d, f.name) for f in dataclasses.fields(d) if f.name != "decision_fingerprint"}
+
+
+def _recompute_fingerprint(d):
+    return canonical_hash("autonomy-decision", "v1", _decision_payload(d))
+
+
+def _alternate_for_field(name, value):
+    if name == "mode":
+        return Mode.DRY_RUN if value != Mode.DRY_RUN else Mode.SHADOW
+    if name == "result":
+        return ResultKind.BLOCK if value != ResultKind.BLOCK else ResultKind.DENY
+    if name in ("requested_stage", "effective_capability"):
+        return Capability.NONE if value != Capability.NONE else Capability.SUBMIT
+    if name in ("grantable", "retryable"):
+        return not value
+    if name == "deny_reason":
+        return "sentinel_alt" if value != "sentinel_alt" else "sentinel_alt2"
+    if name == "reasons":
+        return value + (make_reason("sentinel_marker"),)
+    if name == "require_user_items":
+        return value + (RequireUserItem("sentinel_kind", "sentinel_ref"),)
+    if name == "completion_blockers":
+        return value + (CompletionBlocker("sentinel_field", None, "missing_answer", Capability.SUBMIT),)
+    if name == "retry_at":
+        return NOW if value != NOW else NOW + timedelta(seconds=1)
+    if name in ("input_fingerprint", "engine_version"):
+        return (value or "") + "_alt"
+    if name in ("policy_version_hash", "subject_policy_hash"):
+        return ((value or "") + "_alt") if value is not None else "sentinel_hash_alt"
+    raise AssertionError(f"no alternate value defined for AuthorizationDecision field {name!r}")
+
+
 @settings(max_examples=200, deadline=None)
 @given(contexts())
-def test_decision_fingerprint_determinism_and_sensitivity(ctx):
-    a = evaluate_authorization(ctx)
-    b = evaluate_authorization(ctx)
-    assert a.decision_fingerprint == b.decision_fingerprint
-    for tighter in tighten_ops(ctx):
-        d = evaluate_authorization(tighter)
-        # Same outputs (every AuthorizationDecision field except the two
-        # fingerprints, which are hashes *of* the context/outputs, not
-        # outputs to compare for "did anything change") -> fingerprint may
-        # coincide; different outputs -> decision_fingerprint must differ,
-        # since it is a canonical hash over every other decision field
-        # (spec §9.5).
-        same_outputs = (dataclasses.replace(a, decision_fingerprint="", input_fingerprint="")
-                         == dataclasses.replace(d, decision_fingerprint="", input_fingerprint=""))
-        if not same_outputs:
-            assert a.decision_fingerprint != d.decision_fingerprint
+def test_decision_fingerprint_matches_recomputed_hash_and_is_sensitive_to_every_field(ctx):
+    d = evaluate_authorization(ctx)
+    base_hash = _recompute_fingerprint(d)
+    assert base_hash == d.decision_fingerprint
+    for f in dataclasses.fields(d):
+        if f.name == "decision_fingerprint":
+            continue
+        altered = dataclasses.replace(d, **{f.name: _alternate_for_field(f.name, getattr(d, f.name))})
+        assert _recompute_fingerprint(altered) != base_hash, f.name
 
 
 # ---------------------------------------------------------------------------
