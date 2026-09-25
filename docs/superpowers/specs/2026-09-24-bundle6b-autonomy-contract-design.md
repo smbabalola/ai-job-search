@@ -672,7 +672,7 @@ A fixed path under the application-data directory (`<data_dir>/AUTONOMY_HALT`), 
 - *Precedence:* every combination of terminal conditions resolves per §9.4; all reasons retained.
 - *Relevance:* `REQUIRE_USER` is raised only when resolution could reach the requested stage.
 
-**Policy validation:** rejects unknown attributes/operators, missing `on_unknown`, `NO_EFFECT` on BLOCK rules, granting effects, missing timezone.
+**Policy validation:** rejects unknown attributes/operators, missing `on_unknown`, `NO_EFFECT` or `REDUCE_TO` as `on_unknown` on BLOCK rules, granting effects, missing timezone.
 
 **Concurrency** (real SQLite, multiple threads/connections): two workers consuming one SUBMIT grant → exactly one succeeds; two workers taking the last limit slot → exactly one; two intents for one identity → exactly one; kill switch engaged concurrently with a pre-click transaction → either no click (engaged first) or recorded post-commit engagement, never both outcomes lost.
 
