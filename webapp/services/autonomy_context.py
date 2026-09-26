@@ -105,6 +105,12 @@ def canonical_target_url(url: str | None) -> str | None:
     return job_identity({"source_url": url}).canonical_url_key if url else None
 
 
+def apply_target_url(conn, *, workspace_id: str, account_id: str) -> str | None:
+    """Canonical URL of the current apply target, for grant bindings."""
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=account_id)
+    return canonical_target_url(target.url) if target is not None else None
+
+
 def day_window(now: datetime, tz_name: str) -> tuple[str, datetime]:
     tz = ZoneInfo(tz_name)
     local = now.astimezone(tz)

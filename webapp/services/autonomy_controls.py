@@ -4,7 +4,7 @@ resume_all, with the sentinel absent, makes applications eligible for fresh
 evaluation.
 
 Deviations from the task-12 brief:
-  1. _in_transaction refuses to run while the connection already has an open
+  1. run_immediate refuses to run while the connection already has an open
      transaction, instead of failing on BEGIN or committing the caller's
      half-done work. Callers holding a transaction use the *_in_transaction
      variants.
@@ -36,7 +36,7 @@ def sentinel_present(path: Path | str) -> bool:
     return Path(path).exists()
 
 
-def _in_transaction(conn: sqlite3.Connection, work):
+def run_immediate(conn: sqlite3.Connection, work):
     if conn.in_transaction:
         raise RuntimeError("autonomy control called inside an open transaction; use the *_in_transaction variant")
     conn.execute("BEGIN IMMEDIATE")
@@ -62,7 +62,7 @@ def engage_kill_switch_in_transaction(conn, *, account_id: str, actor: str, reas
 
 
 def engage_kill_switch(conn, *, account_id: str, actor: str, reason: str, now: datetime) -> dict[str, Any]:
-    return _in_transaction(conn, lambda: engage_kill_switch_in_transaction(
+    return run_immediate(conn, lambda: engage_kill_switch_in_transaction(
         conn, account_id=account_id, actor=actor, reason=reason, now=now))
 
 
@@ -80,7 +80,7 @@ def release_kill_switch(conn, *, account_id: str, actor: str, reason: str, now: 
             return {"recorded": False}
         record_kill_switch(conn, account_id=account_id, engaged=False, reason=reason, actor=actor, now=now, commit=False)
         return {"recorded": True}
-    return _in_transaction(conn, work)
+    return run_immediate(conn, work)
 
 
 def resume_all(conn, *, account_id: str, actor: str, reason: str, now: datetime, sentinel_path: Path) -> dict[str, Any]:
@@ -96,7 +96,7 @@ def resume_all(conn, *, account_id: str, actor: str, reason: str, now: datetime,
         )
         woken = wake_queue_items(conn, account_id=account_id, now=now)
         return {"event_id": event["id"], "woken": woken}
-    return _in_transaction(conn, work)
+    return run_immediate(conn, work)
 
 
 def _control(conn, action: str, *, account_id, scope_type, scope_id, actor, reason, now) -> dict[str, Any]:
@@ -107,7 +107,7 @@ def _control(conn, action: str, *, account_id, scope_type, scope_id, actor, reas
             conn.execute("UPDATE autonomy_queue_items SET paused = ? WHERE application_workspace_id = ?",
                          (1 if action == "PAUSE" else 0, scope_id))
         return event
-    return _in_transaction(conn, work)
+    return run_immediate(conn, work)
 
 
 def pause(conn, **kwargs) -> dict[str, Any]:
@@ -141,4 +141,4 @@ def enable_autonomous_preparation(conn, *, account_id: str, actor: str, timezone
                                 created_by=actor, now=now, commit=False)
             written.append("standing_policy")
         return {"written": written}
-    return _in_transaction(conn, work)
+    return run_immediate(conn, work)
