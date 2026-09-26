@@ -7,10 +7,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-from product.autonomy_contract import canonical_json, to_utc_iso
+from product.autonomy_contract import Capability, canonical_json, to_utc_iso
+from webapp.persistence.autonomy_ledger import upsert_queue_item
 
 
 def _id(prefix: str) -> str:
@@ -363,3 +364,97 @@ def cycle_failures(conn, *, subject_type: str, subject_id: str, step_kind: str, 
             continue
         break
     return count
+
+
+# ---- queues and fenced leases (mutable coordination state) -----------------
+
+QUEUES = {
+    "APPLICATION": ("autonomy_queue_items", "application_workspace_id"),
+    "CANDIDATE": ("autonomy_candidate_queue", "candidate_id"),
+}
+
+
+def enqueue_application(conn, *, application_workspace_id: str, account_id: str, now: datetime) -> None:
+    upsert_queue_item(conn, application_workspace_id=application_workspace_id, account_id=account_id,
+                      next_stage=Capability.PREPARE, next_eligible_at=now, now=now)
+
+
+def enqueue_candidate(conn, *, candidate_id: str, account_id: str, search_workspace_id: str, now: datetime) -> None:
+    conn.execute(
+        "INSERT INTO autonomy_candidate_queue (candidate_id, account_id, search_workspace_id, next_eligible_at, "
+        "updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(candidate_id) DO UPDATE SET "
+        "next_eligible_at = excluded.next_eligible_at, updated_at = excluded.updated_at",
+        (candidate_id, account_id, search_workspace_id, to_utc_iso(now), to_utc_iso(now)),
+    )
+
+
+def wake(conn, *, queue: str, item_id: str, now: datetime) -> bool:
+    table, key = QUEUES[queue]
+    cur = conn.execute(f"UPDATE {table} SET next_eligible_at = ?, updated_at = ? WHERE {key} = ?",
+                       (to_utc_iso(now), to_utc_iso(now), item_id))
+    return cur.rowcount == 1
+
+
+def wake_account(conn, *, account_id: str, now: datetime, queues=("APPLICATION", "CANDIDATE")) -> int:
+    total = 0
+    for queue in queues:
+        table, _ = QUEUES[queue]
+        total += conn.execute(f"UPDATE {table} SET next_eligible_at = ?, updated_at = ? WHERE account_id = ?",
+                              (to_utc_iso(now), to_utc_iso(now), account_id)).rowcount
+    return total
+
+
+def set_dormant(conn, *, queue: str, item_id: str, now: datetime) -> None:
+    table, key = QUEUES[queue]
+    conn.execute(f"UPDATE {table} SET next_eligible_at = NULL, updated_at = ? WHERE {key} = ?",
+                 (to_utc_iso(now), item_id))
+
+
+def due_items(conn, *, queue: str, now: datetime, limit: int) -> list[dict[str, Any]]:
+    table, key = QUEUES[queue]
+    t = to_utc_iso(now)
+    rows = conn.execute(
+        f"SELECT {key} AS item_id, account_id FROM {table} WHERE next_eligible_at IS NOT NULL "
+        f"AND next_eligible_at <= ? AND (lease_holder IS NULL OR lease_expires_at <= ?) "
+        f"ORDER BY next_eligible_at, {key} LIMIT ?", (t, t, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def acquire_lease(conn, *, queue: str, item_id: str, worker_id: str, now: datetime, ttl: timedelta) -> int | None:
+    table, key = QUEUES[queue]
+    t = to_utc_iso(now)
+    cur = conn.execute(
+        f"UPDATE {table} SET lease_holder = ?, lease_generation = lease_generation + 1, lease_expires_at = ?, "
+        f"updated_at = ? WHERE {key} = ? AND next_eligible_at IS NOT NULL AND next_eligible_at <= ? "
+        f"AND (lease_holder IS NULL OR lease_expires_at <= ?)",
+        (worker_id, to_utc_iso(now + ttl), t, item_id, t, t))
+    if cur.rowcount != 1:
+        return None
+    return conn.execute(f"SELECT lease_generation FROM {table} WHERE {key} = ?", (item_id,)).fetchone()[0]
+
+
+def lease_is_held(conn, *, queue: str, item_id: str, worker_id: str, generation: int, now: datetime) -> bool:
+    table, key = QUEUES[queue]
+    return conn.execute(
+        f"SELECT 1 FROM {table} WHERE {key} = ? AND lease_holder = ? AND lease_generation = ? AND lease_expires_at > ?",
+        (item_id, worker_id, generation, to_utc_iso(now))).fetchone() is not None
+
+
+def finalize_lease(conn, *, queue: str, item_id: str, worker_id: str, generation: int, now: datetime,
+                   next_eligible_at: datetime | None) -> bool:
+    table, key = QUEUES[queue]
+    cur = conn.execute(
+        f"UPDATE {table} SET lease_holder = NULL, lease_expires_at = NULL, next_eligible_at = ?, updated_at = ? "
+        f"WHERE {key} = ? AND lease_holder = ? AND lease_generation = ? AND lease_expires_at > ?",
+        (to_utc_iso(next_eligible_at) if next_eligible_at else None, to_utc_iso(now), item_id, worker_id,
+         generation, to_utc_iso(now)))
+    return cur.rowcount == 1
+
+
+def release_lease(conn, *, queue: str, item_id: str, worker_id: str, generation: int, now: datetime) -> bool:
+    table, key = QUEUES[queue]
+    cur = conn.execute(
+        f"UPDATE {table} SET lease_holder = NULL, lease_expires_at = NULL, updated_at = ? "
+        f"WHERE {key} = ? AND lease_holder = ? AND lease_generation = ? AND lease_expires_at > ?",
+        (to_utc_iso(now), item_id, worker_id, generation, to_utc_iso(now)))
+    return cur.rowcount == 1
