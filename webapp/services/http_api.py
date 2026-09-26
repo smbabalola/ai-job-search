@@ -7,6 +7,7 @@ and restoration of current-artifact pointers after a failed processing stage.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -142,6 +143,7 @@ def understand_job(
     execute_understanding_policy(
         conn, workspace_id=workspace_id, understanding_artifact=artifact,
     )
+    _wake_if_enrolled(conn, workspace_id)
     return artifact
 
 
@@ -164,6 +166,7 @@ def fit_job(
         ),
     )
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=artifact)
+    _wake_if_enrolled(conn, workspace_id)
     return artifact
 
 
@@ -182,7 +185,25 @@ def generate_application_intelligence(
     execute_application_intelligence_policy(
         conn, workspace_id=workspace_id, intelligence_artifact=artifact,
     )
+    _wake_if_enrolled(conn, workspace_id)
     return artifact
+
+
+def _after_user_review(conn: sqlite3.Connection, workspace_id: str, account_id: str) -> None:
+    """Bundle 6C: a USER review decision latches an already system-confirmed
+    revision (never an unconfirmed one) and wakes the application."""
+    from webapp.services.autonomy_prepare import on_user_review_decision
+    on_user_review_decision(conn, workspace_id=workspace_id, account_id=account_id,
+                            now=datetime.now(timezone.utc))
+
+
+def _wake_if_enrolled(conn: sqlite3.Connection, workspace_id: str) -> None:
+    """Bundle 6C: a manual rerun changes artifacts an enrolled application's
+    next step is derived from, so the scheduler must re-derive it."""
+    from webapp.persistence.autonomy_prepare import is_enrolled, wake
+    if is_enrolled(conn, workspace_id):
+        wake(conn, queue="APPLICATION", item_id=workspace_id, now=datetime.now(timezone.utc))
+        conn.commit()
 
 
 def record_review_decision(
@@ -201,11 +222,14 @@ def record_review_decision(
         profile_workspace_id,
     }:
         raise PipelineError("review source artifact does not belong to this workflow")
-    return save_review_decision(
+    saved = save_review_decision(
         conn, workspace_id=workspace_id, review_item_type=review_item_type,
         source_artifact_id=source_artifact_id, domain_item_id=domain_item_id,
         disposition=disposition, note=note, commit=commit,
     )
+    if commit:
+        _after_user_review(conn, workspace_id, account_id)
+    return saved
 
 
 def record_review_decisions(
@@ -232,6 +256,7 @@ def record_review_decisions(
             for item in decisions
         ]
         conn.commit()
+        _after_user_review(conn, workspace_id, account_id)
         return saved
     except Exception:
         conn.rollback()
