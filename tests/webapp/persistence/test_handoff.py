@@ -17,6 +17,7 @@ from webapp.persistence.migrations import (
     SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
     DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
     AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
+    AUTONOMY_CONTRACT_MIGRATION_ID,
 )
 
 
@@ -162,8 +163,22 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     conn.execute("DROP TABLE extension_credentials")
     conn.execute("DROP TABLE pairing_secrets")
     conn.execute("DROP TABLE discovery_source_settings")
+    # Bundle 6B autonomy contract (016): drop all its tables too, so this
+    # simulated "upgrade from 004" DB has none of the schema added after 004.
+    # All these tables are empty here, so FK-enforced drops succeed regardless
+    # of order (SQLite only blocks a DROP TABLE when a referencing row exists).
+    for autonomy_table in (
+        "submission_attempt_events", "dry_run_case_agreements", "dry_run_submission_cases",
+        "submission_attempts", "intent_overrides", "submission_intents", "limit_reservations",
+        "autonomy_grant_events", "autonomy_grants", "autonomy_decisions",
+        "apply_target_confirmations", "rule_acknowledgements", "proposed_answers",
+        "answer_confirmations", "approved_answers", "standing_policy_versions",
+        "autonomy_run_ends", "autonomy_runs", "autonomy_control_events",
+        "autonomy_kill_switch", "autonomy_authorizations", "autonomy_queue_items",
+    ):
+        conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -176,6 +191,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             SEMANTIC_SUBJECT_KEY_MIGRATION_ID,
             DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
             AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
+            AUTONOMY_CONTRACT_MIGRATION_ID,
         ),
     )
     conn.commit()
@@ -218,6 +234,10 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     assert conn.execute(
         "SELECT 1 FROM schema_migrations WHERE id = ?",
         (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (AUTONOMY_CONTRACT_MIGRATION_ID,),
     ).fetchone() is not None
     assert conn.execute(
         "SELECT COUNT(*) FROM discovery_source_settings WHERE enabled = 1"

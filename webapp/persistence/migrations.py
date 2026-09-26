@@ -31,6 +31,15 @@ BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID = "012_blocker_resolution_history"
 SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
 DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
 AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
+AUTONOMY_CONTRACT_MIGRATION_ID = "016_autonomy_contract"
+AUTONOMY_APPEND_ONLY_TABLES = (
+    "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
+    "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
+    "answer_confirmations", "proposed_answers", "rule_acknowledgements",
+    "apply_target_confirmations", "autonomy_decisions", "autonomy_grant_events",
+    "intent_overrides", "submission_attempts", "submission_attempt_events",
+    "dry_run_submission_cases", "dry_run_case_agreements",
+)
 
 
 def _now() -> str:
@@ -67,6 +76,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (SEMANTIC_SUBJECT_KEY_MIGRATION_ID, _migrate_semantic_subject_key, False),
         (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, _migrate_discovery_source_registry, False),
         (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID, _migrate_airswift_discovery_source, False),
+        (AUTONOMY_CONTRACT_MIGRATION_ID, _migrate_autonomy_contract, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1109,3 +1119,310 @@ def _backfill_application_origins(conn: sqlite3.Connection, promoted_at: str) ->
                 promoted_at,
             ),
         )
+
+
+def _migrate_autonomy_contract(conn: sqlite3.Connection) -> None:
+    # Bundle 6B autonomy contract (spec section 15). Every append-only table
+    # carries seq INTEGER PRIMARY KEY AUTOINCREMENT and every "current"
+    # projection orders by seq, never created_at (spec section 2 invariant
+    # 13). Status tables (grants, reservations, intents, queue items) are the
+    # only mutable ones.
+    #
+    # Deviations from the task-8 brief, per user rulings made after the brief
+    # was written (these override the brief SQL for autonomy_decisions):
+    #   1. mode / requested_stage are nullable -- an invalid_input decision
+    #      (product/autonomy_gate.py) may carry no valid mode/stage. A
+    #      table-level CHECK restricts NULL to deny_reason = invalid_input.
+    #   2. completion_blockers_json (NOT NULL) added -- AuthorizationDecision
+    #      .completion_blockers, spec section 9.5.
+    #   3. decision_fingerprint (NOT NULL) added -- spec section 9.5/15.1.
+    #   4. retryable (NOT NULL, 0/1) added -- AuthorizationDecision.retryable,
+    #      spec section 9.5.
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE autonomy_authorizations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            scope_type TEXT NOT NULL CHECK (scope_type IN ('ACCOUNT_MAX', 'DEFAULT_WORKSPACE_CEILING', 'WORKSPACE_CEILING')),
+            scope_id TEXT NOT NULL,
+            capability TEXT NOT NULL CHECK (capability IN ('NONE', 'PREPARE', 'FILL', 'SUBMIT')),
+            set_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_autonomy_authorizations_scope
+            ON autonomy_authorizations(account_id, scope_type, scope_id);
+
+        CREATE TABLE autonomy_kill_switch (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            engaged INTEGER NOT NULL CHECK (engaged IN (0, 1)),
+            reason TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_control_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            scope_type TEXT NOT NULL CHECK (scope_type IN ('APPLICATION', 'SEARCH_WORKSPACE', 'ACCOUNT')),
+            scope_id TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('PAUSE', 'RESUME', 'RESUME_ALL')),
+            kill_switch_seq_acknowledged INTEGER,
+            actor TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_runs (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            started_by TEXT NOT NULL CHECK (started_by IN ('SCHEDULER', 'USER')),
+            started_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_run_ends (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL UNIQUE REFERENCES autonomy_runs(run_id),
+            end_reason TEXT NOT NULL,
+            ended_at TEXT NOT NULL
+        );
+
+        CREATE TABLE standing_policy_versions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            policy_json TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE approved_answers (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            subject TEXT NOT NULL,
+            answer_kind TEXT NOT NULL CHECK (answer_kind IN ('STRUCTURED', 'FREE_TEXT')),
+            value_json TEXT NOT NULL,
+            reach TEXT NOT NULL CHECK (reach IN ('EMPLOYER', 'SEARCH_WORKSPACE', 'ACCOUNT')),
+            scope_id TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            provenance TEXT NOT NULL CHECK (provenance IN ('USER', 'USER_EDITED_PROPOSAL')),
+            basis_json TEXT NOT NULL,
+            basis_profile_version_id TEXT,
+            supersedes_id TEXT REFERENCES approved_answers(id),
+            source_blocker_resolution_id TEXT REFERENCES blocker_resolutions(id),
+            approved_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_approved_answers_subject ON approved_answers(account_id, subject);
+
+        CREATE TABLE answer_confirmations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            approved_answer_id TEXT NOT NULL REFERENCES approved_answers(id),
+            confirmed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE proposed_answers (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            blocker_id TEXT NOT NULL REFERENCES application_blockers(id),
+            subject TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            provenance TEXT NOT NULL CHECK (provenance = 'SYSTEM_PROPOSED'),
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE rule_acknowledgements (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            rule_id TEXT NOT NULL,
+            rule_hash TEXT NOT NULL,
+            observed_fingerprint TEXT NOT NULL,
+            policy_version_hash TEXT NOT NULL,
+            disposition TEXT NOT NULL CHECK (disposition IN ('PROCEED', 'DO_NOT_PROCEED')),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE apply_target_confirmations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            job_identity_key TEXT,
+            canonical_url TEXT NOT NULL,
+            confirmed_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_decisions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            run_id TEXT,
+            mode TEXT CHECK (mode IS NULL OR mode IN ('LIVE', 'SHADOW', 'DRY_RUN')),
+            requested_stage TEXT CHECK (requested_stage IS NULL OR requested_stage IN ('PREPARE', 'FILL', 'SUBMIT', 'NONE')),
+            result TEXT NOT NULL CHECK (result IN ('ALLOW', 'REQUIRE_USER', 'BLOCK', 'DENY', 'DENY_TEMPORARY')),
+            deny_reason TEXT,
+            effective_capability TEXT NOT NULL CHECK (effective_capability IN ('NONE', 'PREPARE', 'FILL', 'SUBMIT')),
+            grantable INTEGER NOT NULL CHECK (grantable IN (0, 1)),
+            reasons_json TEXT NOT NULL,
+            require_user_json TEXT NOT NULL,
+            completion_blockers_json TEXT NOT NULL,
+            retry_at TEXT,
+            retryable INTEGER NOT NULL CHECK (retryable IN (0, 1)),
+            inputs_json TEXT NOT NULL,
+            input_fingerprint TEXT NOT NULL,
+            decision_fingerprint TEXT NOT NULL,
+            engine_version TEXT NOT NULL,
+            policy_version_hash TEXT,
+            subject_policy_hash TEXT,
+            grant_id TEXT,
+            created_at TEXT NOT NULL,
+            CHECK (
+                (mode IS NOT NULL AND requested_stage IS NOT NULL)
+                OR deny_reason = 'invalid_input'
+            )
+        );
+        CREATE INDEX idx_autonomy_decisions_workspace ON autonomy_decisions(application_workspace_id, seq);
+
+        CREATE TABLE autonomy_grants (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            decision_id TEXT NOT NULL UNIQUE REFERENCES autonomy_decisions(id),
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            stage TEXT NOT NULL CHECK (stage IN ('FILL', 'SUBMIT')),
+            nonce TEXT NOT NULL UNIQUE,
+            binding_json TEXT NOT NULL,
+            binding_fingerprint TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('ISSUED', 'CONSUMED', 'EXPIRED', 'REVOKED')),
+            consumed_at TEXT,
+            revoked_reason TEXT
+        );
+
+        CREATE TABLE autonomy_grant_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            grant_id TEXT NOT NULL REFERENCES autonomy_grants(id),
+            status TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE limit_reservations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            counter_name TEXT NOT NULL,
+            window_key TEXT NOT NULL,
+            amount TEXT NOT NULL,
+            grant_id TEXT REFERENCES autonomy_grants(id),
+            attempt_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('RESERVED', 'CONSUMED', 'RELEASED')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_limit_reservations_window
+            ON limit_reservations(account_id, counter_name, window_key, status);
+
+        CREATE TABLE submission_intents (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            job_identity_key TEXT NOT NULL,
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            state TEXT NOT NULL CHECK (state IN ('CLAIMED', 'CONFIRMED', 'RELEASED')),
+            source TEXT NOT NULL CHECK (source IN ('AUTONOMOUS', 'HUMAN_HANDOFF', 'HUMAN_APPLIED')),
+            overridden INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0, 1)),
+            attempt_id TEXT,
+            workflow_event_id TEXT REFERENCES workflow_events(id),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_submission_intents_live
+            ON submission_intents(account_id, job_identity_key)
+            WHERE state IN ('CLAIMED', 'CONFIRMED') AND overridden = 0;
+
+        CREATE TABLE intent_overrides (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            intent_id TEXT NOT NULL REFERENCES submission_intents(id),
+            actor TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE submission_attempts (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            grant_id TEXT NOT NULL UNIQUE REFERENCES autonomy_grants(id),
+            intent_id TEXT NOT NULL REFERENCES submission_intents(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            run_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE submission_attempt_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            attempt_id TEXT NOT NULL REFERENCES submission_attempts(id),
+            state TEXT NOT NULL CHECK (state IN (
+                'AUTHORIZED', 'CLICK_DISPATCHED', 'CONFIRMED_SUCCESS', 'SUBMISSION_AMBIGUOUS',
+                'SUBMISSION_FAILED', 'EXPIRED_UNCLICKED', 'DUPLICATE_SUPPRESSED'
+            )),
+            evidence_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('SERVER', 'EXECUTOR', 'USER')),
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE dry_run_submission_cases (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            decision_id TEXT NOT NULL REFERENCES autonomy_decisions(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            adapter_id TEXT NOT NULL,
+            adapter_version TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL,
+            verification_result TEXT NOT NULL CHECK (verification_result IN ('MATCH', 'MISMATCH')),
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE dry_run_case_agreements (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            case_id TEXT NOT NULL REFERENCES dry_run_submission_cases(id),
+            agreement TEXT NOT NULL CHECK (agreement IN ('AGREE', 'DISAGREE')),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_queue_items (
+            application_workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            next_stage TEXT NOT NULL CHECK (next_stage IN ('PREPARE', 'FILL', 'SUBMIT')),
+            next_eligible_at TEXT,
+            lease_holder TEXT,
+            lease_expires_at TEXT,
+            paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+            updated_at TEXT NOT NULL
+        )
+        """,
+    )
+    for table in AUTONOMY_APPEND_ONLY_TABLES:
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(
+                f"CREATE TRIGGER {table}_append_only_{action.lower()} "
+                f"BEFORE {action} ON {table} "
+                f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END"
+            )
