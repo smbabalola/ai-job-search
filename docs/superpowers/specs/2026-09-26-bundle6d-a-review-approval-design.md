@@ -77,8 +77,21 @@ Review state is **derived** (like 6B/6C lifecycle state). It is never stored as 
 | `NOT_READY` | No current confirmable application yet (6C still preparing, stopped for a human/operational reason before a pack exists, or no job/target). |
 | `READY_FOR_REVIEW` | A reviewable application exists and no approval has ever been recorded for this application. |
 | `NEEDS_REVIEW` | A previous approval exists but no longer matches the current binding (it was invalidated or revoked, or it expired), **or** open review deltas exist. Carries every reason. |
-| `APPROVED_FOR_FILL` | The latest approval is not revoked or expired, its `binding_hash` equals the current binding hash, and no review deltas are open. |
+| `APPROVED_FOR_FILL` | `approval_effective` holds (see below). |
 | `CLOSED` | The workflow status is past `drafted` (`applied`, …). Review no longer applies and history is kept. |
+
+Two predicates are kept distinct, and code must never treat the first as permission:
+
+- **`binding_matches`**: the latest approval's `binding_hash` equals the current binding hash. The content, target, fields and material warning state are unchanged.
+- **`approval_effective`**: all of the following hold:
+  - `binding_matches`;
+  - no current blocking issue;
+  - no unacknowledged ATTENTION warning;
+  - no open review delta;
+  - the approval isn't revoked;
+  - the approval isn't past its TTL.
+
+`APPROVED_FOR_FILL` is exactly `approval_effective`. 6D-B and 6E must check `approval_effective`, never hash equality alone.
 
 Later bundles derive further states *on top of* `APPROVED_FOR_FILL` (6D-B `FILLING`/`FILLED_AWAITING_SUBMISSION`; 6E-A `SUBMISSION_AUTHORIZED`/`SUBMITTED`). Each of them requires `APPROVED_FOR_FILL` to still hold at the moment it acts.
 
@@ -139,7 +152,7 @@ Warnings are derived with a stable `warning_key` (type + subject + fingerprint).
   - an identity conflict;
   - no apply target;
   - no exact files.
-- **ATTENTION:** approval requires an explicit acknowledgement, and acknowledged keys enter the binding. Examples:
+- **ATTENTION:** approval requires an explicit acknowledgement (a separate action, §16). Examples:
   - AI-derived (inferred) claims present;
   - FLAG/UNVERIFIED gates the user resolved;
   - a user-managed document not content-verified;
@@ -148,7 +161,12 @@ Warnings are derived with a stable `warning_key` (type + subject + fingerprint).
   - a newer AI draft being available (§7.4).
 - **INFO:** shown only. Examples: fit score, 6C preparation notes.
 
-A new ATTENTION warning appearing after approval changes the acknowledgement set, so the binding changes and the approval is invalidated.
+**Warnings are bound as material state.** The binding carries every BLOCKING and ATTENTION warning as `(warning_key, level, acknowledged)`. INFO warnings stay outside it. So:
+- a new ATTENTION or BLOCKING warning changes the binding immediately, even though nobody has acknowledged it;
+- an answer expiring or becoming stale changes the binding immediately, through the warning it raises, even though the value hash is unchanged;
+- acknowledging an ATTENTION warning changes the binding again, to a state the user can then approve.
+
+Acknowledgement is always its own explicit action. The page re-renders with the new binding hash, and approval never acknowledges anything implicitly.
 
 ## 7. Documents
 
@@ -236,7 +254,7 @@ Labels are derived from recorded sources and never from wording. A label the sys
   "fields": [{"answer_key": "...", "subject": "...", "required": true, "disposition": "ANSWER|OMIT",
               "source_kind": "EVIDENCE|APPROVED_ANSWER|null", "source_ref": "...|null", "value_hash": "...|null",
               "permitted_transforms": ["..."]}],
-  "acknowledged_warnings": ["warning_key", "..."],
+  "review_warnings": [{"warning_key": "...", "level": "BLOCKING|ATTENTION", "acknowledged": false}],
   "review_contract_version": "review-contract.v1"
 }
 ```
@@ -244,13 +262,13 @@ Labels are derived from recorded sources and never from wording. A label the sys
 All lists are sorted canonically. The pack referenced must already exist for the exact current selection revisions (I-7).
 
 **Claim provenance digest.** For each AI-generated document, `claim_provenance_hash = canonical_hash("claim-provenance", "v1", [...])` covers every claim shown beside it:
-- the claim or unit id and its item content hash;
-- its classification (Profile evidence / AI-derived / User supplied);
-- the sorted evidence references it cites.
+- the claim or unit id and its claim content hash;
+- its provenance classification (Profile evidence / AI-derived / User supplied);
+- for each cited evidence item (sorted by reference), both its `evidence_ref` and its immutable `evidence_basis_hash` (the hash of that evidence's content or basis as presented).
 
-If the evidence or provenance presented to the user changes, the approval is invalidated even when the document bytes are identical. User-managed documents carry `null` and keep the document-level "not content-verified" ATTENTION warning.
+The user reviews what the evidence says, not just which identifier it has. Binding the content hash keeps the contract safe even if evidence storage ever allows content to change under a stable id. If the evidence or provenance presented to the user changes, the approval is invalidated even when the document bytes are identical. User-managed documents carry `null` and keep the document-level "not content-verified" ATTENTION warning.
 
-**Component hashes.** The binding hash is computed over the whole document, and the server also derives one component hash per section: `job`, `apply_target`, `pack`, one per document, one per field (by `answer_key`), and `acknowledged_warnings`. They're used to show exactly which sections changed (§11.1, §13).
+**Component hashes.** The binding hash is computed over the whole document, and the server also derives one component hash per section: `job`, `apply_target`, `pack`, one per document, one per field (by `answer_key`), and `review_warnings`. They're used to show exactly which sections changed (§11.1, §13).
 
 Fields deliberately **excluded** (so they never invalidate): standing policy, capability settings, budgets, limits, kill switch, pause, fit score, 6C notes. Those govern *authority* and are re-checked by 6B at every stage (I-2).
 
@@ -264,7 +282,14 @@ All of the following happens in one `BEGIN IMMEDIATE` transaction:
    - there are blocking issues;
    - the request's `displayed_binding_hash ≠ current binding_hash` (409 *"this application changed since you reviewed it"*).
 3. Insert `application_approvals` (§14) with `scope = 'FILL'`, the binding JSON and hash, `supersedes_id` (the previous approval), `batch_id` (bulk) and actor, and append an `APPROVED` review event. No pack, document, selection or answer is written by this transaction.
-4. Record the review deltas this binding resolves. Wake the application's 6C queue item (wake-only, which is harmless while paused or halted).
+4. If this approval resolves open review deltas, write exactly one `DELTA_RESOLVED` event per resolved delta. Wake the application's 6C queue item (wake-only, which is harmless while paused or halted).
+
+**Write contract.**
+- A normal approval writes one `application_approvals` row and one `APPROVED` event, plus the queue wake.
+- A re-approval that resolves deltas additionally writes exactly one `DELTA_RESOLVED` event per resolved delta.
+- Approval never writes packs, documents, selections, answers, dispositions, warning acknowledgements or any other application content.
+
+The request carries only `displayed_binding_hash`.
 
 ### 9.3 Stale-view protection
 
@@ -278,8 +303,8 @@ The review page renders the binding hash it displayed. Every approve (single or 
 ## 10. Bulk review and approval
 
 - The Prepared Applications list offers **Approve selected (N)**. There is never an "approve all" or "submit all".
-- An application is eligible for bulk approval only if the user has **opened its full review page at its current binding hash**: a `REVIEW_OPENED` event carrying that hash (Decision D5). The list shows which selected items are ineligible and why.
-- The request carries, per application, the displayed binding hash from the review the user opened. Each application goes through §9.2 **independently**, with one approval record each and a shared `batch_id` for audit. A refusal for one application doesn't affect the others. The response reports each outcome.
+- An application is eligible for bulk approval only if its full human-facing review page has been **presented at its current binding hash**: a `REVIEW_PRESENTED` event carrying that hash (Decision D5). `REVIEW_PRESENTED` is recorded only by the server-rendered review page route when it renders the full review. It is never recorded by the data API, prefetches or background processes. The list shows which selected items are ineligible and why.
+- The request carries, per application, the displayed binding hash from the review page that was presented. Each application goes through §9.2 **independently**, with one approval record each and a shared `batch_id` for audit. A refusal for one application doesn't affect the others. The response reports each outcome.
 
 ## 11. Review deltas (contract that 6D-B consumes)
 
@@ -307,7 +332,7 @@ Let `P` be the previous approved binding and `C` the current binding. A review i
 - every component hash of `C` equals the same component hash in `P`, **except** the field entries whose `answer_key` belongs to an open or just-resolved delta; and
 - `C` adds no other components and removes none of `P`'s components.
 
-Any other difference (document, claim provenance, target, job, pack, another field, acknowledged warnings) means it isn't delta-only. The page then shows those sections in full, marked as changed.
+Any other difference (document, claim provenance, target, job, pack, another field, review warnings) means it isn't delta-only. The page then shows those sections in full, marked as changed.
 
 This check is a pure function over recorded bindings (`delta_only(P, C, delta_keys) -> bool`, plus the changed components). The user is told something is unchanged only when the hashes prove it.
 
@@ -328,7 +353,7 @@ This check is a pure function over recorded bindings (`delta_only(P, C, delta_ke
 ## 13. Audit and history
 
 Every event is an append-only row with actor, time and `seq`:
-- `REVIEW_OPENED` (with the binding hash);
+- `REVIEW_PRESENTED` (with the binding hash; recorded only by the human-facing review page);
 - `DOCUMENT_REPLACED` / `DOCUMENT_EDITED` / `SELECTION_CHANGED`;
 - `PACK_CONFIRMED` (Save changes produced a new immutable pack);
 - `ANSWER_EDITED` / `PROPOSAL_ACCEPTED` / `FIELD_DISPOSITION_SET` (`ANSWER` | `OMIT`);
@@ -366,14 +391,15 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
 
 **API:**
 - `GET /api/applications/prepared` returns the list, with derived review state, blocking/attention counts and eligibility for bulk.
-- `GET /api/workspaces/{id}/review` returns the reviewable application plus the binding hash. It records `REVIEW_OPENED`.
+- `GET /api/workspaces/{id}/review` returns the reviewable application plus the binding hash. It is **read-only** and records nothing.
+- `GET /workspaces/{id}/review` is the human-facing review page (server-rendered HTML). Rendering the full review records `REVIEW_PRESENTED(binding_hash)`, which is the only evidence D5 accepts.
 - `GET /api/workspaces/{id}/review/documents/{kind}/preview` returns a rendered preview. The exact-bytes download stays the existing v2 route.
 - `POST .../review/documents/{kind}` handles replace (the v2 upload) and select.
 - `POST .../review/save` is **Save changes**: the user's v2 confirmation of the exact current selection revisions, producing the immutable pack. The page re-renders with the new binding hash.
 - `POST .../review/answers` handles answer or accept-proposal (6B path).
 - `POST .../review/fields/{answer_key}/disposition` sets `ANSWER` or `OMIT` (optional fields only).
 - `POST .../review/warnings/ack` acknowledges a warning.
-- `POST .../review/approve` takes `{displayed_binding_hash, acknowledged_warnings}`.
+- `POST .../review/approve` takes `{displayed_binding_hash}` only. It never acknowledges warnings (acknowledgement is its own action above).
 - `POST .../review/revoke` revokes an approval.
 - `POST /api/applications/approve-selected` takes `{items: [{workspace_id, displayed_binding_hash}]}`.
 - `POST /api/workspaces/{id}/review/deltas` is the internal intake for 6D-B.
@@ -389,8 +415,8 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
   - the converted PDF can't be filled or uploaded until it has been reviewed and re-approved.
 - **D3 — In-app content editing: deferred from the core.** The initial delivery is preview → download → edit externally → replace → Save changes → review → approve. Structured in-app editing is a separable follow-on and doesn't delay the approval boundary.
 - **D4 — Approval TTL 14 days: approved.** It can be configured shorter, never silently longer. Expiry removes permission to fill. It deletes no approval or history.
-- **D5 — Bulk eligibility: approved.** Each application must have been individually opened at its current binding. The action is `Approve selected (N)`, never "Approve all".
-- **D6 — BLOCKING / ATTENTION / INFO: approved.** ATTENTION acknowledgements stay bound into the approval.
+- **D5 — Bulk eligibility: approved.** Each application's full review page must have been presented at its current binding (`REVIEW_PRESENTED`; never granted by a data API GET). The action is `Approve selected (N)`, never "Approve all".
+- **D6 — BLOCKING / ATTENTION / INFO: approved.** The material warning state (every BLOCKING and ATTENTION warning, with its acknowledgement) is bound into the approval. INFO is not.
 - **D7 — SUBMIT impossible now: approved with adjustment.** An unconditional hard refusal with no placeholder authorization model (G2), which 6E-A replaces. The existing human extension flow is regression-tested before the guard is added.
 - **D8 — "Ready for review": approved.** The wording and link only, with no 6C behaviour change.
 
@@ -401,7 +427,11 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
    - the `displayed_binding_hash` is stale;
    - there are blocking issues;
    - there is no immutable pack for the exact current selection revisions.
-3. **Approval doesn't create the pack (I-7).** A successful approval writes exactly one approval record and one `APPROVED` event, and writes no pack, document, selection, answer or disposition. Test: a DB diff around the approve call shows only those two rows (plus the 6C wake).
+3. **Approval's write contract (I-7).** Tested with a DB diff around the approve call:
+   - a normal approval writes exactly one approval row and one `APPROVED` event, plus the 6C queue wake;
+   - a delta re-approval additionally writes exactly one `DELTA_RESOLVED` event per resolved delta;
+   - no approval writes a pack, document, selection, answer, disposition or warning acknowledgement;
+   - an approve request never acknowledges a warning. With an unacknowledged ATTENTION warning, approval is refused.
 4. **Pack before approval.** Changing a selection without Save changes makes the page non-approvable. Save changes creates exactly one immutable v2 pack for the exact revisions, and the re-rendered binding hash is the one that can be approved.
 5. **Invalidation.** Each of these, after approval, derives `NEEDS_REVIEW` with the changed component(s) as the reason, and records `APPROVAL_INVALIDATED` once:
    - replacing a document or changing a selection (followed by Save);
@@ -410,7 +440,7 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
    - changing a field disposition;
    - a change to the apply target URL or provenance;
    - a job posting or identity change;
-   - a new ATTENTION warning;
+   - a new ATTENTION or BLOCKING warning, including one raised by an answer expiring or becoming stale with an unchanged value hash;
    - a review delta;
    - revocation;
    - TTL expiry.
@@ -419,7 +449,7 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
 6. **Approval while automation is stopped.** With automation paused or the kill switch engaged, review, edit, Save changes and approve all succeed. No FILL grant or execution is possible (6B refuses; 6D-B honours it).
 7. **Delta-only re-approval (§11.1).**
    - When only delta fields differ from the previous approval, the page shows only the deltas plus "everything else unchanged" with the previous hash.
-   - When any other component differs (a document, claim provenance, target, job, another field, acknowledgements), that section is shown in full and marked as changed.
+   - When any other component differs (a document, claim provenance, target, job, another field, review warnings), that section is shown in full and marked as changed.
    - Property test: `delta_only` is true exactly when all non-delta component hashes are equal.
    
    Re-approval produces a complete superseding binding that lists the resolved deltas.
@@ -428,26 +458,30 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
    - An optional field without a disposition blocks approval.
    - `OMIT` is bound in the binding.
    - A delta intake for an `OMIT` field reported as mandatory opens a delta and gives `NEEDS_REVIEW`.
-9. **Bulk.** N selected give N independent outcomes and N approval records sharing one `batch_id`. Ineligible items (not opened at the current hash, blocking issues, or stale) are refused individually.
+9. **Bulk.** N selected give N independent outcomes and N approval records sharing one `batch_id`. Ineligible items (no `REVIEW_PRESENTED` at the current hash, blocking issues, or stale) are refused individually. A data API GET of the review never makes an item eligible.
 10. **User-owned content.** A pipeline rerun or 6C activity never changes a selection, answer or disposition. A newer AI draft appears only as an ATTENTION warning with an explicit **Use the new draft**.
 11. **Approval ≠ submission.**
     - The `scope` CHECK rejects anything but FILL.
     - `request_grant(SUBMIT)` and the SUBMIT pre-click path are refused unconditionally, even with a SUBMIT ceiling and policy.
     - The Phase 3 human extension handoff regression test passes before and after the guard.
     - The structural test passes, and no "Submit" control is rendered.
-12. **Exact files.** v1 applications, and any application while CV-v2 is disabled, show "exact document files required" as a blocking issue and can't be approved.
-13. **Audit.** Every action in §13 appears in order (by `seq`) in the review history and the dossier Approvals section.
-14. **Concurrency.**
+12. **Binding match vs effective approval.**
+    - `APPROVED_FOR_FILL` holds only when `approval_effective` holds.
+    - A test constructs each case where `binding_matches` is true but the approval isn't effective: a blocking issue, an unacknowledged ATTENTION warning, an open delta, revocation, TTL expiry. Each gives `NEEDS_REVIEW`.
+13. **Claim provenance by content.** Changing a cited evidence item's content/basis hash, while its `evidence_ref` and the document bytes stay the same, changes `claim_provenance_hash` and invalidates the approval.
+14. **Exact files.** v1 applications, and any application while CV-v2 is disabled, show "exact document files required" as a blocking issue and can't be approved.
+15. **Audit.** Every action in §13 appears in order (by `seq`) in the review history and the dossier Approvals section.
+16. **Concurrency.**
     - Two approvals of one application racing (same hash) give exactly one record; the other is a no-op or 409.
     - Approve racing Save changes gives either a refusal as stale, or an approval of the earlier pack that is immediately invalid. Never a partial state.
-15. **No 6C regression.** 6C scheduling behaviour is unchanged. The existing 6B/6C suites pass unchanged, apart from the added SUBMIT-refusal tests.
+17. **No 6C regression.** 6C scheduling behaviour is unchanged. The existing 6B/6C suites pass unchanged, apart from the added SUBMIT-refusal tests.
 
 ## 19. Testing strategy
 
 - **Pure:**
   - binding and component hashes, the claim-provenance digest, state derivation, warning derivation, provenance labelling, invalidation reasons, `delta_only`;
-  - Hypothesis properties: hash sensitivity to bound fields and insensitivity to excluded ones; claim-provenance sensitivity at identical bytes; `delta_only` iff the non-delta components are equal; derivation monotonicity (adding a delta or warning never yields a more permissive state).
-- **Services:** Save changes (pack creation), approval (stale, blocking, no pack, nothing but approval rows written), approve while paused or halted, revoke, expiry, dispositions, deltas, bulk, user-ownership rules, G2 refusal, and the human extension handoff regression.
+  - Hypothesis properties: hash sensitivity to bound fields (including BLOCKING/ATTENTION warning state) and insensitivity to excluded ones (INFO warnings included); claim-provenance sensitivity to evidence content at identical bytes and identical refs; `delta_only` iff the non-delta components are equal; derivation monotonicity (adding a delta or warning never yields a more permissive state); `approval_effective` implies `binding_matches`, never the reverse.
+- **Services:** Save changes (pack creation), approval (stale, blocking, no pack, the write contract by DB diff including `DELTA_RESOLVED`), acknowledgement as its own action, `REVIEW_PRESENTED` only from the page route (not the data API), approve while paused or halted, revoke, expiry, dispositions, deltas, bulk, user-ownership rules, G2 refusal, and the human extension handoff regression.
 - **Concurrency:** separate connections, WAL, run 20×.
 - **Browser (Playwright, committed):** review page, preview, replace + Save, answer edit, Leave blank, approve, stale-view refusal, delta-only view, bulk, no submit control.
 - **Migrations:** `019` fresh, plus upgrade from a pre-6D DB built by `master@fc316ee` code.

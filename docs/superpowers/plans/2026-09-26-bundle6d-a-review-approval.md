@@ -28,12 +28,14 @@ D1–D8 were resolved at review (spec §17). D3 in-app editing is deferred out o
 
 ## Phase 2 — Pure review contract (`product/review_contract.py`)
 
-- `approval_binding(reviewable) -> dict`, `binding_hash(binding) -> str`, `component_hashes(binding) -> dict[str, str]`, `claim_provenance_hash(claims) -> str`, `derive_review_state(snapshot) -> ReviewState(state, reasons, blocking)`, `derive_warnings(...)`, `provenance_label(...)`, `invalidation_reasons(old_binding, new_binding) -> list[str]` (changed component names), `delta_only(previous, current, delta_keys) -> (bool, changed_components)`.
+- `approval_binding(reviewable) -> dict`, `binding_hash(binding) -> str`, `component_hashes(binding) -> dict[str, str]`, `claim_provenance_hash(claims) -> str`, `binding_matches(approval, current) -> bool`, `approval_effective(snapshot) -> bool` (binding matches, no blocking issue, no unacknowledged ATTENTION, no open delta, not revoked, not expired), `derive_review_state(snapshot) -> ReviewState(state, reasons, blocking)`, `derive_warnings(...)`, `provenance_label(...)`, `invalidation_reasons(old_binding, new_binding) -> list[str]` (changed component names), `delta_only(previous, current, delta_keys) -> (bool, changed_components)`.
 - There are no `webapp` imports (structural test).
 - **Tests:**
   - table tests for every state and reason;
   - Hypothesis: the hash changes for every bound field and is unchanged for excluded ones (policy, capability, budget, pause, kill switch, fit);
-  - Hypothesis: the claim-provenance digest changes when provenance changes with identical document bytes;
+  - Hypothesis: the claim-provenance digest changes when provenance, or a cited evidence item's content/basis hash, changes with identical document bytes and refs;
+  - Hypothesis: a new BLOCKING/ATTENTION warning (e.g. from answer expiry) changes the binding, INFO doesn't, and acknowledging changes it again;
+  - `approval_effective` implies `binding_matches`, never the reverse;
   - Hypothesis: `delta_only` is true exactly when all non-delta component hashes are equal;
   - adding a delta or warning never yields a more permissive state;
   - reason diffs are exact.
@@ -54,16 +56,17 @@ D1–D8 were resolved at review (spec §17). D3 in-app editing is deferred out o
 ## Phase 4 — Approval, revocation, expiry, invalidation and deltas (`webapp/services/review_approval.py`)
 
 - **Save changes**: the user's v2 confirmation of the exact current selection revisions (the existing user Gate 4), creating the immutable pack and recording `PACK_CONFIRMED`.
-- The approval transaction (spec §9.2) writes the approval record and event only. It refuses a stale view, blocking issues, or no pack for the current revisions. It never creates or changes a pack. There is no pause or kill-switch check, delta resolution is recorded, and the 6C queue is woken.
+- The approval transaction (spec §9.2) takes only `displayed_binding_hash`. It writes the approval record, the `APPROVED` event, and exactly one `DELTA_RESOLVED` per resolved delta. It never acknowledges warnings (acknowledgement is its own route). It refuses a stale view, blocking issues, or no pack for the current revisions. It never creates or changes a pack. There is no pause or kill-switch check, delta resolution is recorded, and the 6C queue is woken.
 - Revoke; TTL expiry (the `JOBSEARCH_REVIEW_APPROVAL_TTL_DAYS` setting, lower-only).
 - The idempotent `APPROVAL_INVALIDATED` recorder (on read and in the 6C tick sweep as a reduce-only reconciliation).
 - The delta intake service.
-- **Bulk:** per-application independent transactions, a shared `batch_id`, and eligibility requiring `REVIEW_OPENED` at the current hash.
+- **Bulk:** per-application independent transactions, a shared `batch_id`, and eligibility requiring `REVIEW_PRESENTED` at the current hash, recorded only by the human-facing page route. A data API GET never counts.
 - **G2:** first, a regression test pins the existing Phase 3 human extension handoff flow. Then `request_grant(stage=SUBMIT)` and the SUBMIT pre-click path refuse unconditionally (`submission_not_available`), with no placeholder authorization model.
 - **Tests:**
   - every invalidation trigger in spec §18.5, both ways (material invalidates, non-material doesn't), including claim provenance at identical bytes;
   - approve succeeds while paused or halted;
-  - approve writes only the approval rows (DB diff);
+  - the approve write contract by DB diff: normal vs delta re-approval, and never content or acknowledgements;
+  - each `binding_matches`-but-not-effective case gives `NEEDS_REVIEW`;
   - delta-only vs full-section re-review (§11.1), and re-approval yields a complete superseding binding;
   - bulk partial outcomes;
   - concurrency (two approvals; approval vs document replacement), run 20×;
