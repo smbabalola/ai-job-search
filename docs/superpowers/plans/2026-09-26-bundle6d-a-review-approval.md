@@ -11,7 +11,7 @@
   - Save changes creates the immutable v2 pack;
   - the approval transaction writes only approval rows and events.
 - **Persistence:** append-only tables (migration `019_review_approval`) record approvals, review events, deltas and field dispositions. All current state is derived by `seq`.
-- **SUBMIT refusal:** `request_grant(SUBMIT)` and `pre_click_commit` refuse unconditionally.
+- **SUBMIT refusal:** public `request_grant(SUBMIT)` and public `pre_click_commit` refuse unconditionally. The submission engine is preserved and tested behind private cores that no production code can reach before 6E-A.
 
 **Tech Stack:** Python 3.13, SQLite (WAL), FastAPI + Jinja2 templates, pytest + Hypothesis 6.168.1, pytest-playwright.
 
@@ -29,7 +29,11 @@
 - **Effective approval:** `APPROVED_FOR_FILL` == `approval_effective` == `binding_matches` AND no blocking issue AND no unacknowledged ATTENTION AND no open delta AND not revoked AND not expired (TTL default 14 days, configurable shorter only).
 - **Bulk eligibility:** requires `REVIEW_PRESENTED(current_binding_hash)`, recorded only by the human-facing page route `GET /workspaces/{id}/review`. The data API GET is read-only.
 - **Exact files (D1):** approval requires the v2 exact-file pack. v1, or CV-v2 disabled (`JOBSEARCH_ENABLE_CV_QUALITY_V2` unset), is the BLOCKING issue `exact_files_required`.
-- **G2:** `request_grant(stage=SUBMIT)` and `pre_click_commit` refuse unconditionally with reason `submission_not_available`. There is no placeholder authorization model, and the Phase 3 human handoff flow is regression-pinned first.
+- **G2:** public `request_grant(stage=SUBMIT)` and public `pre_click_commit` refuse unconditionally with reason `submission_not_available`. There is no placeholder authorization model, and the Phase 3 human handoff flow is regression-pinned first. The existing submission engine moves, unchanged, into the private cores `_request_grant_core` and `_pre_click_commit_core`. The existing 6B success tests keep running against those cores, and structural tests prove no production caller reaches them. 6E-A later authorizes and invokes that preserved core.
+- **Per-application reach:** a new `Reach.APPLICATION` (scope = the application workspace id) is the narrowest reach. `REACH_ORDER` becomes APPLICATION < EMPLOYER < SEARCH_WORKSPACE < ACCOUNT, keeping the existing relative order. Sensitive answers always use APPLICATION reach.
+- **Shared applicability:** Review and the 6B authorization context use one applicability/usability rule (extracted from `product/autonomy_gate.py`). Review never adds its own ordering. Several distinct usable candidates at the same narrowest reach are BLOCKING (`ambiguous_answer`), never resolved by rowid or time.
+- **Warning keys** are `"<type>:<subject>:<fingerprint>"`, where the fingerprint hashes the exact material that caused the warning. A changed cause gives a new key, so an old acknowledgement never carries over.
+- **Atomic audited writes:** every user mutation (document replace/select, Save changes, answer/proposal edits, dispositions, acknowledgements) commits its DB change and its review event in the same `BEGIN IMMEDIATE`. Content-addressed blob publication may happen before the DB transaction; an orphaned blob on rollback is acceptable, but no DB mutation is ever visible without its audit event.
 - **Canonical hashing** uses `product.autonomy_contract.canonical_hash` (floats normalized to `Decimal` first). History tables are append-only (UPDATE/DELETE triggers). Never `ORDER BY created_at`.
 - **Out of bounds:** no browser automation, filling, extension or submission code, and no 6C scheduling behaviour change. D3 in-app editing is out of scope.
 - **Known Windows flakes** (rerun once and report): `test_latest_valid_answer_governs`, `test_list_artifact_history_newest_first`, `test_record_status_change_tracks_previous_status`, and the extension service-worker timeouts.
@@ -50,11 +54,13 @@
 | `webapp/persistence/review_approval.py` | append-only approvals/events/deltas/dispositions, current-state reads | 2 |
 | `product/review_contract.py` | pure binding, hashes, provenance, state, effectiveness, invalidation, delta-only | 3–4 |
 | `webapp/config.py` | `review_approval_ttl_days` | 4 |
+| `product/autonomy_contract.py`, `product/autonomy_gate.py`, `webapp/persistence/autonomy_answers.py`, `webapp/services/autonomy_context.py` | `Reach.APPLICATION`, the shared applicability rule, APPLICATION scope in the context | 5 |
+| `webapp/persistence/application_documents.py`, `webapp/services/application_documents.py`, `webapp/services/application_pack.py` | transaction-aware (`commit=False`) document primitives; an `on_confirmed` hook inside the v2 Gate 4 transaction | 7 |
 | `webapp/services/review_fields.py` | the planned field set | 5 |
 | `webapp/services/review_application.py` | reviewable application assembly + state snapshot | 6 |
 | `webapp/services/review_documents.py` | replace/select wrappers, Save changes, newer-draft warning | 7 |
 | `webapp/services/review_approval.py` | approve/revoke/expiry/invalidation recorder/deltas/bulk/presented | 8–10 |
-| `webapp/services/autonomy.py` | G2 SUBMIT refusal | 11 |
+| `webapp/services/autonomy.py` + the 6B SUBMIT tests (`tests/webapp/services/test_autonomy_preclick.py`, `test_autonomy_preclick_concurrency.py`, `test_autonomy_decide.py` and any other `Capability.SUBMIT` grant test) | G2 public refusal; private preserved cores; tests retargeted to the cores | 11 |
 | `webapp/services/review_answers.py` | answers, proposals, dispositions, acknowledgements | 12 |
 | `webapp/api/review_approval.py` (new), `webapp/api/applications.py` (new), `webapp/app.py` (router registration) | routes | 13 |
 | `webapp/services/docx_preview.py`, templates, `webapp/static/app.js`, `webapp/services/autonomy_inbox.py`, `webapp/services/autonomy_dossier.py` | UI, preview, 6C link, dossier Approvals | 14 |
@@ -71,7 +77,8 @@
 - Test: `tests/webapp/persistence/test_review_approval_migration.py`
 
 **Interfaces:**
-- Produces: `REVIEW_APPROVAL_MIGRATION_ID = "019_review_approval"`, `REVIEW_APPROVAL_APPEND_ONLY_TABLES`, `REVIEW_EVENTS` and `DELTA_KINDS`. Four tables: `application_approvals`, `application_review_events`, `review_deltas`, `application_field_dispositions`.
+- Produces: `REVIEW_APPROVAL_MIGRATION_ID = "019_review_approval"`, `REVIEW_APPROVAL_APPEND_ONLY_TABLES`, `REVIEW_EVENTS` and `DELTA_KINDS`. Four new tables: `application_approvals`, `application_review_events`, `review_deltas`, `application_field_dispositions`.
+- Also produces: `approved_answers.reach` accepts `'APPLICATION'`. The table is rebuilt with every row, index, trigger and FK preserved.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -132,7 +139,32 @@ def test_disposition_and_event_vocabularies_are_closed(conn):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO application_review_events (id, account_id, application_workspace_id, event, actor, "
                      "created_at) VALUES ('e', 'acct_default', ?, 'REVIEW_OPENED', 'u', 't')", (ws,))
+    conn.execute("INSERT INTO application_review_events (id, account_id, application_workspace_id, event, actor, "
+                 "created_at) VALUES ('e2', 'acct_default', ?, 'DOCUMENT_EDITED', 'u', 't')", (ws,))  # reserved for D3
+
+
+def test_approved_answers_accept_application_reach_and_keep_their_guards(conn):
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE tbl_name = 'approved_answers'")}
+    assert {"approved_answers_append_only_update", "approved_answers_append_only_delete"} <= names
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approved_answers'").fetchone()[0]
+    assert "'APPLICATION'" in sql and "'EMPLOYER'" in sql
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_rebuild_preserves_existing_answers(tmp_path):
+    # Build a 018-level DB with an approved answer and a confirmation, then upgrade.
+    from tests.webapp.persistence.review_migration_fixtures import pre_019_db_with_answers
+    db, before = pre_019_db_with_answers(tmp_path)
+    init_db(db)
+    c = connect(db)
+    after = [tuple(r) for r in c.execute("SELECT * FROM approved_answers ORDER BY seq")]
+    assert after == before
+    assert c.execute("SELECT COUNT(*) FROM answer_confirmations").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    c.close()
 ```
+
+`tests/webapp/persistence/review_migration_fixtures.py::pre_019_db_with_answers(tmp_path)` runs the migrations up to `018` only (by calling the registry with 019 filtered out, the same technique as the 6B pre-6B simulation test). It inserts one account-reach approved answer and one `answer_confirmations` row, and returns `(db_path, rows_before)`.
 
 - [ ] **Step 2: Run it and see it fail**
 
@@ -147,8 +179,8 @@ REVIEW_APPROVAL_MIGRATION_ID = "019_review_approval"
 REVIEW_APPROVAL_APPEND_ONLY_TABLES = (
     "application_approvals", "application_review_events", "review_deltas", "application_field_dispositions",
 )
-REVIEW_EVENTS = (
-    "REVIEW_PRESENTED", "PACK_CONFIRMED", "DOCUMENT_REPLACED", "SELECTION_CHANGED", "ANSWER_EDITED",
+REVIEW_EVENTS = (  # spec §13; DOCUMENT_EDITED is reserved for the deferred D3 follow-on
+    "REVIEW_PRESENTED", "PACK_CONFIRMED", "DOCUMENT_REPLACED", "DOCUMENT_EDITED", "SELECTION_CHANGED", "ANSWER_EDITED",
     "PROPOSAL_ACCEPTED", "FIELD_DISPOSITION_SET", "WARNING_ACKNOWLEDGED", "APPROVED", "APPROVAL_INVALIDATED",
     "REVOKED", "EXPIRED", "DELTA_OPENED", "DELTA_RESOLVED",
 )
@@ -157,8 +189,8 @@ DELTA_KINDS = (
     "OMIT_FIELD_REQUIRED", "DOCUMENT_CONVERSION",
 )
 
-# registry: append after the 018 entry
-        (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, False),
+# registry: append after the 018 entry (foreign keys disabled: approved_answers is rebuilt)
+        (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, True),
 
 
 def _migrate_review_approval(conn: sqlite3.Connection) -> None:
@@ -227,7 +259,35 @@ def _migrate_review_approval(conn: sqlite3.Connection) -> None:
         for action in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
                          f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+    _rebuild_approved_answers_with_application_reach(conn)
+
+
+def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -> None:
+    """SQLite can't alter a CHECK: the documented 12-step rebuild. Rows, seq
+    values, indexes and triggers are preserved; FKs are checked afterwards."""
+    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approved_answers'"
+                             ).fetchone()[0]
+    old_check = "CHECK (reach IN ('EMPLOYER', 'SEARCH_WORKSPACE', 'ACCOUNT'))"
+    assert old_check in table_sql, "approved_answers reach CHECK changed; update the 019 rebuild"
+    extras = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = 'approved_answers' AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL").fetchall()]
+    new_sql = table_sql.replace(old_check, "CHECK (reach IN ('APPLICATION', 'EMPLOYER', 'SEARCH_WORKSPACE', 'ACCOUNT'))")
+    new_sql = new_sql.replace("CREATE TABLE approved_answers", "CREATE TABLE approved_answers_019", 1)
+    conn.execute(new_sql)
+    conn.execute("INSERT INTO approved_answers_019 SELECT * FROM approved_answers")
+    conn.execute("DROP TABLE approved_answers")  # drops its indexes and triggers too
+    conn.execute("ALTER TABLE approved_answers_019 RENAME TO approved_answers")
+    for statement in extras:
+        conn.execute(statement)
+    problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if problems:
+        raise RuntimeError(f"019 approved_answers rebuild broke foreign keys: {problems}")
 ```
+
+Implementation notes for the rebuild:
+- Check the migration runner commits between migrations with FKs disabled for entries flagged `True`, as 016 did.
+- If `ALTER TABLE ... RENAME` rewrites FK references in `answer_confirmations` / `approved_answers.supersedes_id` under the runner's `legacy_alter_table` setting, keep the default (non-legacy) behaviour, so references follow the new name. The FK check plus `test_rebuild_preserves_existing_answers` pin this.
 
 Append `REVIEW_APPROVAL_MIGRATION_ID` to the expected id lists in the three existing migration tests. The 6B pre-6B simulation test no-ops 018. If it fails on 019 (whose tables reference only pre-6B tables, so it shouldn't), apply the same no-op and ledger a ruling.
 
@@ -483,6 +543,7 @@ def invalidation_recorded(conn, ws: str, approval_id: str, current_hash: str) ->
   - `component_hashes(binding) -> dict[str, str]`
   - `invalidation_reasons(old, new) -> list[str]`
   - `delta_only(previous, current, delta_keys) -> tuple[bool, tuple[str, ...]]`
+  - `warning_key(warning_type, subject, material) -> str`: `f"{warning_type}:{subject}:{fp}"`, where `fp` is the last 16 hex characters of `canonical_hash("review-warning-material", "v1", material)`
 - Constants: `BINDING_SCHEMA`, `REVIEW_CONTRACT_VERSION`.
 
 - [ ] **Step 1: Failing tests**
@@ -568,6 +629,14 @@ def test_every_bound_scalar_changes_the_hash(field, suffix):
     base = reviewable()
     changed = dataclasses.replace(base, **{field: getattr(base, field) + suffix})
     assert binding_hash(approval_binding(changed)) != binding_hash(approval_binding(base))
+
+
+def test_warning_key_changes_with_its_material():
+    from product.review_contract import warning_key
+    a = warning_key("user_managed", "cover_letter", {"document_version_id": "doc_cl", "sha256": "b" * 64})
+    b = warning_key("user_managed", "cover_letter", {"document_version_id": "doc_cl2", "sha256": "c" * 64})
+    assert a.startswith("user_managed:cover_letter:") and a != b
+    assert a == warning_key("user_managed", "cover_letter", {"sha256": "b" * 64, "document_version_id": "doc_cl"})
 
 
 def test_component_names():
@@ -750,6 +819,14 @@ def delta_only(previous: Mapping[str, Any], current: Mapping[str, Any],
     allowed = {f"field:{k}" for k in delta_keys}
     other = tuple(c for c in invalidation_reasons(previous, current) if c not in allowed)
     return not other, other
+
+
+def warning_key(warning_type: str, subject: str, material: Mapping[str, Any]) -> str:
+    """type + subject + a fingerprint of the exact material that caused the
+    warning (spec §6.1): changed material gives a new key, so an old
+    acknowledgement never acknowledges it."""
+    fp = canonical_hash("review-warning-material", "v1", _safe(dict(material)))[-16:]
+    return f"{warning_type}:{subject}:{fp}"
 ```
 
 - [ ] **Step 4:** `.venv/Scripts/python -m pytest tests/product/test_review_contract_binding.py -q`. Expected: PASS.
@@ -957,46 +1034,72 @@ def _parse_review_ttl() -> int:
 
 ---
 
-### Task 5: The planned field set (`webapp/services/review_fields.py`)
+### Task 5: `Reach.APPLICATION`, shared applicability, and the planned field set
 
-**Objective:** Derive every known field (spec §8.1, §8.4) with its disposition, source, value hash and provenance. It is pure read (no writes).
+**Objective:** Spec §8.1, §8.2, §8.4.
+- Add the per-application reach.
+- Extract one applicability/usability rule shared by the 6B gate and Review, so they can never disagree.
+- Derive every known field with its disposition, source, value hash and provenance. The field set is pure read.
 
-**Files:** Create `webapp/services/review_fields.py`. Create `tests/webapp/services/review_fixtures.py` (shared worlds; later tasks append). Test `tests/webapp/services/test_review_fields.py`.
+**Files:**
+- Modify: `product/autonomy_contract.py`: `Reach.APPLICATION = "APPLICATION"`; `REACH_ORDER = {APPLICATION: 0, EMPLOYER: 1, SEARCH_WORKSPACE: 2, ACCOUNT: 3}`; the field `AuthorizationContext.application_workspace_id` already exists and is used as the APPLICATION scope.
+- Modify: `product/autonomy_gate.py`:
+  - extract `usable_answer_candidates(req, entry, *, application_workspace_id, search_workspace_id, employer_key, employer_key_strength) -> tuple[list[AnswerCandidate], bool]`, returning the in-reach, not-context-different candidates and a `contradicted` flag, from the body at lines ~678–686;
+  - `_in_reach` gains `if cand.reach is Reach.APPLICATION: return cand.scope_id == application_workspace_id`;
+  - the gate calls the extracted function. Gate behaviour is otherwise unchanged. In particular, required sensitive fields still raise REQUIRE_USER at SUBMIT in the gate; how FILL consumes APPLICATION-reach sensitive answers belongs to 6D-B.
+- Modify: `webapp/persistence/autonomy_answers.py`: `_validate` accepts APPLICATION (`scope_id` required = the application workspace id); `approve_answer` stores it.
+- Create: `webapp/services/review_fields.py`; `tests/webapp/services/review_fixtures.py` (shared worlds; later tasks append).
+- Test: `tests/product/test_autonomy_gate_application_reach.py`, `tests/webapp/services/test_review_fields.py`.
 
 **Interfaces:**
-- Consumes: `product.review_contract` types; `autonomy_answers.current_approved_answers`; `review_approval.current_dispositions`, `open_deltas`; `product.fill_manifest.value_hash`; `product.representation_transforms.TRANSFORM_IDS`; `product.semantic_subject_policy.load_subject_policy`, `subject_entry`, `SENSITIVE_CLASSES`.
-- Produces: `planned_fields(conn, *, account_id, application_workspace_id, profile_payload, employer_key, search_workspace_id, now) -> tuple[tuple[PlannedField, ...], tuple[ReviewWarning, ...]]`, and `CONTACT_FIELDS = ("full_name", "email", "phone", "location")`.
+- Produces:
+  - `usable_answer_candidates(...)` (above);
+  - `planned_fields(conn, *, account_id, application_workspace_id, profile_payload, employer_key, employer_key_strength, search_workspace_id, now) -> tuple[tuple[PlannedField, ...], tuple[ReviewWarning, ...]]`;
+  - `CONTACT_FIELDS = ("full_name", "email", "phone", "location")`.
+- Consumes: `autonomy_context._candidates` (made public as `answer_candidates`, same body); `review_approval.current_dispositions`, `open_deltas`; `product.fill_manifest.value_hash`; `TRANSFORM_IDS`; `load_subject_policy`, `subject_entry`, `SENSITIVE_CLASSES`; `warning_key`.
 
 **Rules:**
-- **Sources:**
-  - Governing blockers: `application_blockers` rows for the workspace with a non-null `semantic_subject_key` and `status IN ('open', 'resolved')`. `answer_key = "subject:<semantic_subject_key>"`, `required=True`, `question` = the blocker question. The first blocker by rowid wins per subject.
-  - Contact evidence: profile claims whose `field` ∈ `CONTACT_FIELDS`, excluding `placeholder` and conflicted concept ids. `answer_key = "contact:<field>"`, `required=True`, `source_kind="EVIDENCE"`, `source_ref` = claim id, `value_hash = value_hash(claim["value"])`, `disposition="ANSWER"`, label `PROFILE_EVIDENCE`.
-  - Delta fields: every `review_deltas` row (open or resolved) whose `answer_key` isn't already planned. Unknown-subject deltas use `answer_key = "delta:<delta_id>"`, with the delta's `required` and `question`.
-- **Candidate for a subject:**
-  - The latest approved answer by precedence EMPLOYER (scope = `employer_key`) > SEARCH_WORKSPACE (scope = `search_workspace_id`) > ACCOUNT; within a reach, the latest by `seq`.
-  - The label is `USER_SUPPLIED` for `USER` / `USER_EDITED_PROPOSAL`, or `PROFILE_EVIDENCE` if `basis.kind == "EVIDENCE"`.
-  - `value_hash = value_hash(value)` and `source_ref` = the approved answer id.
-- **Warnings:**
-  - `confirmed_at + freshness_days <= now`: BLOCKING `answer_expired:<key>`;
-  - expiring in under 7 days: ATTENTION `answer_expiring:<key>`;
-  - a `proposed_answers` row for the subject's blocker with no approved answer newer than it: BLOCKING `proposal_unaccepted:<key>`;
-  - a subject in a sensitive class whose chosen answer isn't EMPLOYER-scoped to this employer: BLOCKING `sensitive_needs_this_application:<key>`.
+- **Governing requirements.** Every `application_blockers` row for the workspace with a non-null `semantic_subject_key` and `status IN ('open', 'resolved')` is a governing requirement for that subject: `answer_key = "subject:<subject>"`, `required=True`, `question` = the blocker question. Several blockers for one subject give one field, required if any is required. Their question texts are shown together, sorted by blocker id. Question text is display-only and not part of the binding.
+- **Delta requirements.** Every `review_deltas` row gives a requirement:
+  - with a subject: `answer_key = "subject:<subject>"` and the delta's `required`; this merges with a governing field, required if either is;
+  - unknown subject: `answer_key = "delta:<delta_id>"`;
+  - an `OMIT_FIELD_REQUIRED` delta marks its `answer_key` required.
+- **Contact fields.** Profile claims whose `field` ∈ `CONTACT_FIELDS` (excluding placeholder and conflicted concepts) give `answer_key = "contact:<field>"`, sourced `EVIDENCE` (`source_ref` = claim id, `value_hash = value_hash(claim["value"])`, label `PROFILE_EVIDENCE`).
+  - **Requiredness comes only from a governing requirement or delta whose subject equals the contact field name.** Otherwise the field is optional and needs the user's explicit disposition (`ANSWER` binds the evidence value, `OMIT` leaves it blank).
+- **Candidates for a subject field.**
+  - `answer_candidates(...)` (the 6B context function) gives the candidates, and `usable_answer_candidates(...)` filters them, with the application's workspace, search workspace and employer key.
+  - `contradicted` gives BLOCKING `contradicted_answer`.
+  - If usable candidates exist, the chosen one is the unique usable candidate at the **narrowest** reach (`REACH_ORDER`). Several distinct approved answers at that narrowest reach give BLOCKING `ambiguous_answer` (no rowid or time tie-break).
+  - The label is `USER_SUPPLIED` for `USER` / `USER_EDITED_PROPOSAL` provenance, and `PROFILE_EVIDENCE` for an `EVIDENCE` basis.
+- **Warnings** (keys via `warning_key`):
+  - expired (`confirmed_at + freshness_days <= now`): BLOCKING `warning_key("answer_expired", answer_key, {source_ref, value_hash, expires_at})`;
+  - expiring in under 7 days: ATTENTION `warning_key("answer_expiring", answer_key, {source_ref, value_hash, expires_at})`;
+  - a pending `proposed_answers` row for the subject's blocker: BLOCKING `warning_key("proposal_unaccepted", answer_key, {proposal_id})`;
+  - a sensitive subject whose chosen answer isn't APPLICATION-reach for this workspace: BLOCKING `warning_key("sensitive_needs_this_application", answer_key, {source_ref})`.
 - **Disposition:**
   - required with a value: `"ANSWER"`;
   - required without a value: `None`;
-  - optional: the stored disposition from `current_dispositions`, else `None`. A stored `ANSWER` with no value gives `None`.
-- `permitted_transforms = tuple(sorted(TRANSFORM_IDS))`, and `display_value = str(value)` for answers.
+  - optional: the stored disposition, else `None`. A stored `ANSWER` with no value gives `None`.
+- `permitted_transforms = tuple(sorted(TRANSFORM_IDS))`.
 
 **Tests (write first, see them fail, then implement):**
-- `test_blocker_subjects_and_contact_fields_are_planned` (6C `prepared_chain`).
-- `test_employer_answer_beats_account_answer`.
-- `test_expired_answer_raises_a_blocking_warning_with_unchanged_value_hash`.
-- `test_optional_field_without_disposition_is_undecided_and_omit_is_bound`.
-- `test_pending_proposal_is_blocking`.
-- `test_placeholder_or_conflicted_contact_claims_are_not_planned`.
-- `test_unknown_subject_delta_is_planned_under_delta_key`.
+- Gate:
+  - `test_application_reach_applies_only_to_its_own_application`;
+  - `test_reach_order_keeps_existing_relative_order`;
+  - `test_gate_behaviour_unchanged_for_existing_reaches` (the existing 6B gate property tests pass unchanged).
+- Fields:
+  - `test_blocker_subjects_are_required_and_contact_fields_optional_without_a_requirement`;
+  - `test_contact_field_required_when_a_delta_or_blocker_names_its_subject`;
+  - `test_narrowest_applicable_answer_is_chosen_via_the_shared_rule`;
+  - `test_two_answers_at_the_same_narrowest_reach_are_ambiguous`;
+  - `test_expired_answer_raises_a_blocking_warning_with_unchanged_value_hash`;
+  - `test_optional_field_without_disposition_is_undecided_and_omit_is_bound`;
+  - `test_pending_proposal_is_blocking`;
+  - `test_placeholder_or_conflicted_contact_claims_are_not_planned`;
+  - `test_unknown_subject_delta_is_planned_under_delta_key`.
+- `test_review_and_authorization_context_agree_on_usable_candidates`: for a matrix of reach/scope/context cases, `planned_fields` chooses only from what `usable_answer_candidates` returns for the same `AuthorizationContext`.
 
-Commit: `feat(review): derive the planned field set with dispositions and answer warnings`.
+Commit: `feat(review): add per-application answer reach, the shared candidate applicability rule and the planned field set`.
 
 ---
 
@@ -1034,6 +1137,16 @@ Commit: `feat(review): derive the planned field set with dispositions and answer
   - the newer-draft warning from Task 7.
 - `acknowledged = key in acknowledged_warning_keys(ws)`.
 - Pack fields: `artifact_id`, `content_hash = canonical_hash("application-pack-content", "v1", payload)` (float-safe), and `schema_version`.
+- **Warning keys (all via `warning_key`, material exactly as listed):**
+  - `user_managed:<kind>`: `{document_version_id, sha256}`;
+  - `ai_derived_claims:<kind>`: `{document_version_id, claim_provenance_hash}`;
+  - `unknown_source:<unit_id>`: `{document_version_id, unit content_hash, missing refs}`;
+  - `target_user_supplied:apply_target`: `{canonical_url, provenance}`;
+  - `no_apply_target:apply_target`: `{}`;
+  - `identity_conflict:job`: `{conflict ids}`;
+  - `save_document_changes:documents`: `{selected version ids, pack artifact id}`;
+  - `exact_files_required:documents`: `{pack schema_version, v2_enabled}`;
+  - newer AI draft: Task 7.
 
 **Tests:**
 - `test_v2_chain_builds_the_full_reviewable`.
@@ -1044,33 +1157,54 @@ Commit: `feat(review): derive the planned field set with dispositions and answer
 - `test_new_attention_warning_invalidates_immediately`.
 - `test_answer_expiry_invalidates_immediately`.
 - `test_policy_capability_budget_pause_and_kill_switch_do_not_change_the_hash`.
+- `test_acknowledgement_does_not_carry_to_changed_material`: acknowledge `user_managed` for document X, replace it with Y, Save. The warning for Y is unacknowledged.
 
 Commit: `feat(review): assemble the reviewable application with exact documents, claim provenance and warnings`.
 
 ---
 
-### Task 7: Documents: replace, select, Save changes (`webapp/services/review_documents.py`)
+### Task 7: Documents: replace, select, Save changes, with atomic audit
 
-**Objective:** Spec §7.2–7.4. Replacing or selecting records history. Save changes creates the immutable v2 pack. A newer AI draft only warns.
+**Objective:** Spec §7.2–7.4 and §13. Every document mutation and its review event commit together. Save changes creates the immutable v2 pack and records `PACK_CONFIRMED` in the same Gate 4 transaction. A newer AI draft only warns.
+
+**Files:**
+- Modify: `webapp/services/application_documents.py`. Split `upload_application_document` / `select_application_document` into:
+  - `store_upload_blob(...)`: validation plus content-addressed blob publication, with no DB writes;
+  - `record_uploaded_version(conn, ..., commit)` and `apply_selection(conn, ..., commit)`: the DB writes, using the existing `create_document_version(commit=...)` / `set_selection(commit=...)`.
+
+  The existing public functions keep their behaviour by composing these with `commit=True`. All existing tests pass unchanged.
+- Modify: `webapp/services/application_pack.py`. `confirm_application_pack(..., on_confirmed: Callable[[dict], None] | None = None)` passes through to `_confirm_application_pack_v2`, which calls `on_confirmed({"artifact": artifact, "workflow_event": event})` **after** the pack, dependency and workflow-event writes and **before** `conn.commit()`, inside the same `BEGIN IMMEDIATE`. An exception from the hook rolls everything back.
+- Create: `webapp/services/review_documents.py`.
+- Test: `tests/webapp/services/test_review_documents.py`.
 
 **Interfaces:**
-- `replace_document(conn, *, settings, account_id, application_workspace_id, kind, filename, content, actor, now) -> dict`: `upload_application_document` + `select_application_document`, plus `DOCUMENT_REPLACED`.
-- `select_document(conn, *, settings, account_id, application_workspace_id, kind, document_version_id, actor, now) -> dict`: `select_application_document` + `SELECTION_CHANGED`.
-- `save_changes(conn, *, settings, account_id, application_workspace_id, actor, now) -> dict`: `confirm_application_pack(conn, ws, effective_date=now.date().isoformat(), documents_root=settings.documents_root, account_id=account_id, document_selection_revisions={kind: get_selection(...)["revision"] for kind in ("cv", "cover_letter")})`. That is the user's own v2 Gate 4. Then `PACK_CONFIRMED` with `{pack_artifact_id}` and the new binding hash from `review_state`.
-- `newer_draft_warnings(conn, *, account_id, application_workspace_id) -> tuple[ReviewWarning, ...]`: ATTENTION `newer_ai_draft:<kind>` when an `ai_generated` version for the workspace has a greater `application_document_versions` rowid than the selected version. It never changes the selection. Task 6 includes these warnings.
+- `replace_document(conn, *, settings, account_id, application_workspace_id, kind, filename, content, actor, now) -> dict`:
+  1. `store_upload_blob` (outside the transaction).
+  2. `run_immediate`: `record_uploaded_version(commit=False)`, `apply_selection(commit=False)`, and `record_event(DOCUMENT_REPLACED, detail={kind, document_version_id, based_on_generation_artifact_id: <current application_document_generation artifact id or None>})`.
+- `select_document(conn, *, settings, account_id, application_workspace_id, kind, document_version_id, actor, now) -> dict`: in `run_immediate`, `apply_selection(commit=False)` plus `SELECTION_CHANGED` with the same `based_on_generation_artifact_id`.
+- `save_changes(conn, *, settings, account_id, application_workspace_id, actor, now) -> dict`: `confirm_application_pack(..., document_selection_revisions={kind: current revision}, on_confirmed=hook)`. The hook writes `PACK_CONFIRMED` (`detail={pack_artifact_id}`, `binding_hash` = the binding recomputed on the same connection inside the transaction).
+- `newer_draft_warnings(conn, *, account_id, application_workspace_id) -> tuple[ReviewWarning, ...]`:
+  - Take the current `application_document_generation` artifact (`get_current_artifact`), and for each kind the document version with `source_generation_artifact_id` equal to that artifact's id ("the current AI version").
+  - Warn (ATTENTION `warning_key("newer_ai_draft", kind, {selected_version_id, current_ai_version_id})`) when:
+    - the selected version is `ai_generated` and differs from the current AI version; or
+    - the selected version is user-supplied and the `based_on_generation_artifact_id` of its latest `DOCUMENT_REPLACED`/`SELECTION_CHANGED` event differs from the current generation artifact id.
+  - No rowids and no timestamps. The selection is never changed. Task 6 includes these warnings.
 
 **Rules:**
-- P1/P2: nothing in 6C or the pipeline calls these functions (checked by a grep-style structural assertion in Task 13).
+- P1/P2: nothing in 6C or the pipeline calls these functions (Task 13 structural check).
 - Save works whether paused or halted.
 
 **Tests:**
-- `test_replace_records_history_and_blocks_until_saved`.
+- `test_replace_and_its_event_are_atomic`: make `record_event` raise and assert no version or selection row exists (the blob may exist).
+- `test_select_and_its_event_are_atomic`.
+- `test_save_changes_pack_and_pack_confirmed_are_one_transaction`: a hook failure leaves no pack, no workflow event and no `PACK_CONFIRMED`.
 - `test_save_changes_creates_exactly_one_pack_for_the_current_revisions` (DB diff).
 - `test_save_changes_works_while_paused_and_halted`.
-- `test_pipeline_rerun_never_moves_a_selection` (the newer-draft warning appears).
+- `test_existing_document_api_behaviour_is_unchanged` (the existing v2 document tests pass).
+- `test_pipeline_rerun_never_moves_a_selection_and_the_newer_draft_is_detected_by_generation_pointer`.
 - `test_use_the_new_draft_is_an_explicit_selection`.
 
-Commit: `feat(review): add document replace/select history and Save changes that builds the exact pack`.
+Commit: `feat(review): add atomic audited document replace/select and Save changes inside the v2 Gate 4 transaction`.
 
 ---
 
@@ -1154,50 +1288,75 @@ Commit: `feat(review): add bulk approval with per-application records and presen
 
 ---
 
-### Task 11: G2: SUBMIT is unconditionally impossible (`webapp/services/autonomy.py`)
+### Task 11: G2: public SUBMIT refused, submission engine preserved
 
-**Objective:** Spec §12 G2, D7.
+**Objective:** Spec §12 G2, D7. The public authority to enter submission is impossible in 6D-A. The existing submission engine stays intact and tested, so 6E-A only adds the missing authorization gate.
 
 **Step order (mandatory):**
-1. Add `tests/webapp/test_handoff_human_flow_regression.py`, pinning the Phase 3 human flow: pairing generate/exchange → `POST /api/handoff/sessions` → events → user confirmation → a `submission_confirmations` row and `user_confirmed_submitted` status. Follow the existing `tests/webapp/test_handoff_browser_smoke.py::test_handoff_session_lifecycle_against_fixture_workspace`. Run it green on **unmodified** code and commit it on its own (`test(handoff): pin the human handoff flow before the SUBMIT guard`).
-2. Write failing tests in `tests/webapp/services/test_submit_refusal.py`:
-   - `request_grant(stage=SUBMIT)` with SUBMIT ceilings and policy raises `SubmissionNotAvailable` (`str(e) == "submission_not_available"`), and the row counts of `autonomy_decisions`, `autonomy_grants`, `limit_reservations`, `submission_intents` and `submission_attempts` are unchanged;
-   - `pre_click_commit(grant_id=<any>)` raises the same, with the same counts unchanged;
-   - a FILL `request_grant` is unaffected.
-3. Implement in `webapp/services/autonomy.py`:
+1. **Pin the human flow first.** Add `tests/webapp/test_handoff_human_flow_regression.py`, pinning pairing generate/exchange → `POST /api/handoff/sessions` → events → user confirmation → a `submission_confirmations` row and `user_confirmed_submitted`. Follow `tests/webapp/test_handoff_browser_smoke.py::test_handoff_session_lifecycle_against_fixture_workspace`. Run it green on **unmodified** code and commit it alone (`test(handoff): pin the human handoff flow before the SUBMIT guard`).
+2. **Preserve the engine (a pure refactor).** In `webapp/services/autonomy.py`:
+   - rename the current `request_grant` body to `_request_grant_core(conn, *, ...same parameters...)`;
+   - rename the current `pre_click_commit` body to `_pre_click_commit_core(conn, *, ...same parameters...)`.
+
+   Temporarily keep `request_grant = _request_grant_core` and `pre_click_commit = _pre_click_commit_core`, so every existing test passes unchanged. Run the 6B suites and commit (`refactor(autonomy): move the grant and pre-click engine into private cores`).
+3. **Retarget the success tests to the cores.** In the 6B tests that exercise a successful SUBMIT grant or pre-click (`tests/webapp/services/test_autonomy_preclick.py`, `test_autonomy_preclick_concurrency.py`, and the SUBMIT cases in `test_autonomy_decide.py` / `test_autonomy_ledger.py` / `test_autonomy_controls.py`, found with `grep -n "Capability.SUBMIT\|pre_click_commit"`), call `_request_grant_core` / `_pre_click_commit_core`. Nothing is skipped, deleted or weakened; only the entry point changes. FILL tests keep using public `request_grant`.
+4. **Write the failing public-refusal tests** in `tests/webapp/services/test_submit_refusal.py`:
+   - public `request_grant(stage=SUBMIT)` (SUBMIT ceilings and policy) raises `SubmissionNotAvailable("submission_not_available")`. The core is never called (monkeypatch `_request_grant_core` to fail if invoked), and the row counts of `autonomy_decisions`, `autonomy_grants`, `limit_reservations`, `submission_intents` and `submission_attempts` are unchanged;
+   - public `pre_click_commit(grant_id=<a real ISSUED SUBMIT grant created through _request_grant_core>)` raises the same, with the core never called and the counts unchanged;
+   - public `request_grant(stage=FILL)` still reaches the core and behaves as before.
+5. **Implement the public entry points:**
 
 ```python
 class SubmissionNotAvailable(PermissionError):
     """Bundle 6D-A (spec §12 G2): no SUBMIT authority exists before 6E-A.
-    6E-A replaces this unconditional refusal with validation of its
-    one-time submission_authorizations."""
+    6E-A replaces these refusals with validation of its one-time
+    submission_authorizations and then invokes the preserved cores."""
 
 
-# first statement of request_grant (before the manifest checks)
+def request_grant(conn, *, settings, account_id, application_workspace_id, stage, now, fill_manifest,
+                  requirements=(), observation=None, run_id=None, cost_estimates=None) -> GrantOutcome:
     if stage == Capability.SUBMIT:
         raise SubmissionNotAvailable("submission_not_available")
+    return _request_grant_core(conn, settings=settings, account_id=account_id,
+                               application_workspace_id=application_workspace_id, stage=stage, now=now,
+                               fill_manifest=fill_manifest, requirements=requirements, observation=observation,
+                               run_id=run_id, cost_estimates=cost_estimates)
 
-# first statement of pre_click_commit
+
+def pre_click_commit(conn, *, settings, grant_id, verification, now, requirements=(), observation=None,
+                     run_id=None) -> PreClickResult:
     raise SubmissionNotAvailable("submission_not_available")
 ```
 
-4. Update the existing 6B tests that exercised SUBMIT grants, pre-click success, or the flows built on them (search: `stage=Capability.SUBMIT`, `pre_click_commit(`). Each becomes an assertion of the refusal, or is marked as covering behaviour 6E-A will reinstate (`pytest.mark.skip(reason="6E-A: submission authorization replaces the 6D-A hard refusal")`). Every changed test is listed in the commit body and ledgered as a ruling. Re-run the handoff regression and the 6B/6C suites.
+(Keep the exact existing signatures and type hints.)
 
-Commit: `feat(autonomy): make SUBMIT grants and pre-click unconditionally unavailable until 6E-A`.
+6. **Structural guard** (in `tests/webapp/test_review_structure.py`, Task 13, or here if it runs first): an AST scan of every module under `webapp/` and `product/` proves that:
+   - `_pre_click_commit_core` is referenced only by its own definition in `webapp/services/autonomy.py` (no production caller);
+   - `_request_grant_core` is referenced only by its definition and by the public `request_grant`, after the SUBMIT check.
+
+   Tests may import the cores.
+7. Run the handoff regression, the 6B/6C suites and the new refusal tests.
+
+Commits:
+- `test(handoff): pin the human handoff flow before the SUBMIT guard`
+- `refactor(autonomy): move the grant and pre-click engine into private cores`
+- `feat(autonomy): refuse public SUBMIT grants and pre-click until 6E-A while preserving the tested core`
 
 ---
 
 ### Task 12: Answers, proposals, dispositions, acknowledgements (`webapp/services/review_answers.py`)
 
 **Interfaces:**
+All four actions run their DB mutation and review event in **one** `run_immediate` (`approve_answer(..., commit=False)`, `set_disposition` and `record_event` never commit).
+
 - `answer_field(conn, *, settings, account_id, application_workspace_id, answer_key, value, reach, actor, now) -> dict`:
   - resolves the field's subject;
-  - `approve_answer(..., provenance="USER", reach, scope_id, context, basis={"kind": "USER_ASSERTION"}, supersedes_id=<the current candidate at the same reach/scope, if any>)`;
-  - sensitive subjects are forced to `EMPLOYER` reach with `scope_id = employer_key` (or `ReviewRefused("sensitive_reach")` if the subject policy forbids it);
+  - `approve_answer(..., provenance="USER", reach, scope_id, context, basis={"kind": "USER_ASSERTION"}, supersedes_id=<the current candidate at the same reach/scope, if any>, commit=False)`;
+  - **sensitive subjects always use `Reach.APPLICATION` with `scope_id = application_workspace_id`**, whatever reach was requested;
   - records `ANSWER_EDITED` with `{answer_key, approved_answer_id}`.
-- `accept_proposal(conn, *, ..., proposal_id, edited_value=None, reach, actor, now)`: gives `USER_EDITED_PROPOSAL` and `PROPOSAL_ACCEPTED`.
+- `accept_proposal(conn, *, ..., proposal_id, edited_value=None, reach, actor, now)`: gives `USER_EDITED_PROPOSAL` and `PROPOSAL_ACCEPTED`. Sensitive subjects use APPLICATION reach.
 - `set_field_disposition(conn, *, ..., answer_key, disposition, actor, now)`: `OMIT` on a required field gives `ReviewRefused("required_field")`. Records the disposition and `FIELD_DISPOSITION_SET`.
-- `acknowledge_warning(conn, *, settings, account_id, application_workspace_id, warning_key, actor, now)`: only a current ATTENTION warning (else `ReviewRefused("not_attention")`). Records `WARNING_ACKNOWLEDGED` with `{warning_key}`.
+- `acknowledge_warning(conn, *, settings, account_id, application_workspace_id, warning_key, actor, now)`: only a warning whose exact current key is an ATTENTION warning (else `ReviewRefused("not_attention")`). Records `WARNING_ACKNOWLEDGED` with `{warning_key}`.
 
 **Tests:**
 - `test_answer_supersedes_and_invalidates`.
@@ -1205,7 +1364,8 @@ Commit: `feat(autonomy): make SUBMIT grants and pre-click unconditionally unavai
 - `test_omit_refused_for_required`.
 - `test_acknowledge_only_attention_and_it_changes_the_binding`.
 - `test_system_proposal_never_supersedes_a_user_answer`.
-- `test_sensitive_subject_is_answered_for_this_application_only`.
+- `test_sensitive_answer_for_application_a_is_not_available_to_application_b_at_the_same_employer`: two applications at the same employer; a sensitive answer given in A is APPLICATION-reach, is usable in A, and isn't planned or usable in B (B still shows it as unanswered).
+- `test_each_action_and_its_event_are_atomic`: for every action, make `record_event` raise and assert no answer, disposition or acknowledgement row exists.
 
 Commit: `feat(review): add answer, proposal, disposition and acknowledgement actions`.
 
@@ -1238,7 +1398,8 @@ Commit: `feat(review): add answer, proposal, disposition and acknowledgement act
   - the AST of `review_*.py` modules and `webapp/api/review_approval.py` / `applications.py` has no `pre_click_commit` and no `request_grant`;
   - `product/review_contract.py` imports no `webapp`;
   - no `ORDER BY ... created_at` in the new modules;
-  - no 6C or pipeline module references `select_application_document`, `save_changes` or `set_selection` (P1).
+  - no 6C or pipeline module references `select_application_document`, `apply_selection`, `save_changes` or `set_selection` (P1);
+  - the private submission cores are unreachable from production code (Task 11 step 6), if that check wasn't already added in Task 11.
 
 Commit: `feat(review): expose review, approval, bulk and delta routes with structural boundary checks`.
 
@@ -1263,11 +1424,21 @@ Commit: `feat(review): expose review, approval, bulk and delta routes with struc
 - the delta-only banner ("Everything else is unchanged from your previous approval (hash …)") or changed-section markers;
 - **Save changes**, **Approve for filling** (copy: "Filling does not submit. Submission will ask you separately."), **Revoke approval**.
 
-No element text or value contains "Submit".
+There is no employer-submission action anywhere in 6D. The explanatory copy "Filling does not submit. Submission will ask you separately." is required.
 
 **Tests:**
 - `tests/webapp/services/test_docx_preview.py`: generated DOCX round trip; non-DOCX bytes give `ValueError`.
-- `tests/webapp/api/test_review_pages.py`: the page renders all sections; `test_page_route_records_presented_and_api_does_not`; the delta-only banner only in `delta_only` mode; `"Submit" not in html`; the inbox PREPARED entry links to the review page; the dossier Approvals section lists approvals and diffs.
+- `tests/webapp/api/test_review_pages.py`:
+  - the page renders all sections;
+  - `test_page_route_records_presented_and_api_does_not`;
+  - the delta-only banner appears only in `delta_only` mode;
+  - `test_no_submission_action_or_route_exists`:
+    - parse the review and Prepared pages; no `<form>` action or `data-*` action targets a submission path;
+    - no button carries a submit-application action (`data-action` values are drawn from the closed set `save|approve|revoke|acknowledge|answer|omit|replace|select|approve-selected`);
+    - no registered app route path contains `submit` except the pre-existing handoff/confirmation routes, which are listed explicitly;
+    - the explanatory copy is present;
+  - the inbox PREPARED entry links to the review page;
+  - the dossier Approvals section lists approvals and diffs.
 
 Commit: `feat(review): add Prepared Applications and review pages, DOCX preview, 6C Ready-for-review link and dossier Approvals`.
 
@@ -1295,7 +1466,11 @@ Commit: `feat(review): add Prepared Applications and review pages, DOCX preview,
    
    Throughout: zero FILL/SUBMIT grants, intents or attempts, and SUBMIT refused.
 3. **Browser** (`tests/webapp/test_review_approval_browser.py`, the pytest-playwright pattern of `tests/webapp/test_autonomy_6c_browser.py`): review page, preview, replace + Save, answer, Leave blank, acknowledge, approve, stale-tab refusal (two pages), delta-only banner, bulk from the Prepared list, and no Submit control.
-4. **Migrations:** a fresh DB gets 19 migrations and a re-run is a no-op. A pre-6D DB built by `master@fc316ee` code (`git archive fc316ee webapp product` into the scratchpad) with 6C and v2 document data upgrades through 019 with rows preserved; FK and integrity checks are clean; a re-run is a no-op.
+4. **Migrations:** a fresh DB gets 19 migrations and a re-run is a no-op. A pre-6D DB built by `master@fc316ee` code (`git archive fc316ee webapp product` into the scratchpad) with 6C data, v2 document data, **approved answers, answer confirmations and superseding answers** upgrades through 019:
+   - every `approved_answers` row is byte-identical, including `seq`;
+   - the `approved_answers` triggers and indexes are present;
+   - an APPLICATION-reach insert succeeds and an UPDATE is still rejected;
+   - FK and integrity checks are clean, and a re-run is a no-op.
 5. **Full suite** in the six chunks. Record totals.
 6. **Diff boundary** against `fc316ee`: only the File Map paths, plus the test updates listed in Task 11. No fill, browser-automation, extension or submission code.
 7. Commit `test(review): add 6D-A concurrency, acceptance and browser validation`. Then the single independent end-of-bundle review, and stop before the PR.
@@ -1310,7 +1485,7 @@ Commit: `feat(review): add Prepared Applications and review pages, DOCX preview,
   - §6 page: Tasks 6, 14.
   - §6.1 warnings: Tasks 3, 5, 6, 7.
   - §7 documents: Tasks 6, 7, 14.
-  - §8 fields and provenance: Tasks 5, 6, 12.
+  - §8 fields and provenance: Tasks 5, 6, 12 (per-application sensitive answers via `Reach.APPLICATION`, Tasks 1, 5, 12).
   - §9 binding, approval, stale view, revoke and TTL: Tasks 3, 4, 8.
   - §10 bulk: Task 10.
   - §11 deltas: Task 9.
@@ -1323,8 +1498,9 @@ Commit: `feat(review): add Prepared Applications and review pages, DOCX preview,
   - §18 criteria: 1 → T3/T6; 2 → T8; 3 → T8; 4 → T7; 5 → T6/T8/T12; 6 → T8; 7 → T9; 8 → T5/T12; 9 → T10; 10 → T7; 11 → T11/T13/T14; 12 → T4; 13 → T3/T6; 14 → T6; 15 → T8/T14; 16 → T15; 17 → T15.
   - §19 testing strategy: every task, plus Task 15.
 - **Carried decisions (ledgered as rulings by the executor):**
-  - contact fields are `required=True`, because spec §8.1(b) is silent on optionality and this avoids a system default for optional fields;
-  - unknown-subject deltas use `answer_key = "delta:<delta_id>"`;
-  - the newer-draft comparison is by document-version rowid, never by timestamp;
+  - contact fields are optional unless a governing requirement or delta names their subject, so they need an explicit disposition;
+  - unknown-subject deltas use `answer_key = "delta:<delta_id>"` (6D-B should make delta intake idempotent per observed field);
+  - "newer AI draft" is determined by the current `application_document_generation` pointer and the generation recorded on the user's selection events; never by rowid or time;
+  - several distinct usable answers at the narrowest reach are BLOCKING `ambiguous_answer`;
   - the `already_approved` refusal (Task 8) implements spec criterion 16's "the other is a no-op or 409" as a 409.
-- **Names** used consistently: `approval_binding`, `binding_hash`, `component_hashes`, `claim_provenance_hash`, `evidence_basis_hash`, `claim_content_hash`, `derive_review_state`, `binding_matches`, `approval_effective`, `planned_fields`, `build_reviewable`, `review_state`, `save_changes`, `approve`, `approve_selected`, `record_presented`, `open_review_delta`, `review_view_mode`, `reconcile_approvals`, `ReviewRefused`, `SubmissionNotAvailable`.
+- **Names** used consistently: `warning_key`, `usable_answer_candidates`, `answer_candidates`, `Reach.APPLICATION`, `_request_grant_core`, `_pre_click_commit_core`, `store_upload_blob`, `record_uploaded_version`, `apply_selection`, `on_confirmed`, `approval_binding`, `binding_hash`, `component_hashes`, `claim_provenance_hash`, `evidence_basis_hash`, `claim_content_hash`, `derive_review_state`, `binding_matches`, `approval_effective`, `planned_fields`, `build_reviewable`, `review_state`, `save_changes`, `approve`, `approve_selected`, `record_presented`, `open_review_delta`, `review_view_mode`, `reconcile_approvals`, `ReviewRefused`, `SubmissionNotAvailable`.
