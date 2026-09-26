@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Mapping
 
-from product.autonomy_contract import REACH_ORDER, Reach, canonical_json, to_utc_iso
+from product.autonomy_contract import REACH_ORDER, Reach, CanonicalHashError, canonical_json, to_utc_iso
 from product.semantic_subject_policy import load_subject_policy, subject_entry
 
 
@@ -28,7 +28,9 @@ def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate(subject: str, reach: Reach, scope_id: str | None, context: Mapping[str, Any],
-              basis: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+              basis: Mapping[str, Any], policy: Mapping[str, Any], provenance: str = "USER",
+              supersedes_id: str | None = None, conn: sqlite3.Connection | None = None,
+              account_id: str | None = None) -> dict[str, Any]:
     entry = subject_entry(policy, subject)
     if entry is None:
         raise AnswerValidationError(f"unknown subject {subject!r}")
@@ -47,8 +49,24 @@ def _validate(subject: str, reach: Reach, scope_id: str | None, context: Mapping
     elif basis.get("kind") == "EVIDENCE":
         if set(basis) != {"kind", "evidence_ids", "value_hash"} or not basis["evidence_ids"]:
             raise AnswerValidationError("EVIDENCE basis needs evidence_ids and value_hash")
+        value_hash = basis.get("value_hash")
+        if not isinstance(value_hash, str) or not value_hash.startswith("sha256:"):
+            raise AnswerValidationError(f"EVIDENCE basis value_hash must be a string starting with 'sha256:', got {value_hash!r}")
     else:
         raise AnswerValidationError("basis kind must be USER_ASSERTION or EVIDENCE")
+    if provenance not in ("USER", "USER_EDITED_PROPOSAL"):
+        raise AnswerValidationError(f"provenance must be USER or USER_EDITED_PROPOSAL, got {provenance!r}")
+    if supersedes_id and conn and account_id:
+        prev = conn.execute(
+            "SELECT account_id, subject FROM approved_answers WHERE id = ?",
+            (supersedes_id,)
+        ).fetchone()
+        if prev is None:
+            raise AnswerValidationError(f"supersedes_id {supersedes_id!r} does not exist")
+        if prev["account_id"] != account_id:
+            raise AnswerValidationError(f"supersedes_id {supersedes_id!r} belongs to different account")
+        if prev["subject"] != subject:
+            raise AnswerValidationError(f"supersedes_id {supersedes_id!r} has different subject")
     return entry
 
 
@@ -57,27 +75,38 @@ def approve_answer(conn: sqlite3.Connection, *, account_id: str, subject: str, v
                    now: datetime, provenance: str = "USER", basis_profile_version_id: str | None = None,
                    supersedes_id: str | None = None, source_blocker_resolution_id: str | None = None,
                    subject_policy: Mapping[str, Any] | None = None, commit: bool = True) -> dict[str, Any]:
-    entry = _validate(subject, Reach(reach), scope_id, context, basis, subject_policy or load_subject_policy())
     try:
-        answer = _insert(conn, "approved_answers", {
-            "id": _id("ans"), "account_id": account_id, "subject": subject,
-            "answer_kind": entry["answer_kind"], "value_json": canonical_json(value),
-            "reach": Reach(reach).value, "scope_id": account_id if Reach(reach) is Reach.ACCOUNT else scope_id,
-            "context_json": canonical_json(context), "provenance": provenance,
-            "basis_json": canonical_json(basis), "basis_profile_version_id": basis_profile_version_id,
-            "supersedes_id": supersedes_id, "source_blocker_resolution_id": source_blocker_resolution_id,
-            "approved_by": approved_by, "created_at": to_utc_iso(now),
-        })
-        _insert(conn, "answer_confirmations", {
-            "id": _id("conf"), "approved_answer_id": answer["id"], "confirmed_by": approved_by,
-            "created_at": to_utc_iso(now),
-        })
-        if commit:
-            conn.commit()
+        entry = _validate(subject, Reach(reach), scope_id, context, basis, subject_policy or load_subject_policy(),
+                         provenance=provenance, supersedes_id=supersedes_id, conn=conn, account_id=account_id)
+    except CanonicalHashError as e:
+        raise AnswerValidationError(str(e)) from e
+
+    conn.execute("SAVEPOINT approve_answer")
+    try:
+        try:
+            answer = _insert(conn, "approved_answers", {
+                "id": _id("ans"), "account_id": account_id, "subject": subject,
+                "answer_kind": entry["answer_kind"], "value_json": canonical_json(value),
+                "reach": Reach(reach).value, "scope_id": account_id if Reach(reach) is Reach.ACCOUNT else scope_id,
+                "context_json": canonical_json(context), "provenance": provenance,
+                "basis_json": canonical_json(basis), "basis_profile_version_id": basis_profile_version_id,
+                "supersedes_id": supersedes_id, "source_blocker_resolution_id": source_blocker_resolution_id,
+                "approved_by": approved_by, "created_at": to_utc_iso(now),
+            })
+            _insert(conn, "answer_confirmations", {
+                "id": _id("conf"), "approved_answer_id": answer["id"], "confirmed_by": approved_by,
+                "created_at": to_utc_iso(now),
+            })
+        except CanonicalHashError as e:
+            raise AnswerValidationError(str(e)) from e
+        conn.execute("RELEASE approve_answer")
     except Exception:
-        if commit:
-            conn.rollback()
+        conn.execute("ROLLBACK TO approve_answer")
+        conn.execute("RELEASE approve_answer")
         raise
+
+    if commit:
+        conn.commit()
     return answer
 
 
