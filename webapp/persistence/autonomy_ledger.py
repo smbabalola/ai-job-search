@@ -45,11 +45,14 @@ def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
 
 # ---- decisions -------------------------------------------------------------
 
-def _inputs_payload(ctx: AuthorizationContext) -> dict[str, Any]:
+def decision_inputs_payload(ctx: AuthorizationContext) -> dict[str, Any]:
     payload = {name: getattr(ctx, name) for name in ctx.__dataclass_fields__}
     payload["standing_policy"] = policy_hash(ctx.standing_policy) if ctx.standing_policy is not None else None
     payload["subject_policy"] = subject_policy_hash(ctx.subject_policy)
     return payload
+
+
+_inputs_payload = decision_inputs_payload  # 6B name, kept for existing callers
 
 
 def insert_decision(conn, *, ctx: AuthorizationContext, decision: AuthorizationDecision,
@@ -210,36 +213,78 @@ def count_usage(conn, *, account_id: str, counter_name: str, window_key: str,
 
 
 def budget_usage(conn, *, account_id: str, counter_name: str, window_key: str) -> Decimal:
+    """RESERVED rows count at their full reserved amount (admission control);
+    CONSUMED rows count at their settled actual amount when settled."""
     rows = conn.execute(
-        "SELECT amount FROM limit_reservations WHERE account_id = ? AND counter_name = ? AND window_key = ? "
-        "AND status IN ('RESERVED', 'CONSUMED')", (account_id, counter_name, window_key),
+        "SELECT amount, settled_amount, status FROM limit_reservations WHERE account_id = ? AND counter_name = ? "
+        "AND window_key = ? AND status IN ('RESERVED', 'CONSUMED')", (account_id, counter_name, window_key),
     ).fetchall()
-    return sum((Decimal(r["amount"]) for r in rows), Decimal("0"))
+    total = Decimal("0")
+    for r in rows:
+        value = r["settled_amount"] if r["status"] == "CONSUMED" and r["settled_amount"] is not None else r["amount"]
+        total += Decimal(value)
+    return total
 
 
-def _reserve(conn, *, account_id, counter_name, window_key, amount: str, grant_id, attempt_id, now) -> str:
+def _reserve(conn, *, account_id, counter_name, window_key, amount: str, grant_id, attempt_id, now,
+             subject_type=None, subject_id=None) -> str:
     row = _insert(conn, "limit_reservations", {
         "id": _id("res"), "account_id": account_id, "counter_name": counter_name, "window_key": window_key,
         "amount": amount, "grant_id": grant_id, "attempt_id": attempt_id, "status": "RESERVED",
         "created_at": to_utc_iso(now), "updated_at": to_utc_iso(now),
+        "subject_type": subject_type, "subject_id": subject_id,
     })
     return row["id"]
 
 
 def try_reserve(conn, *, account_id: str, counter_name: str, window_key: str, limit: int, now: datetime,
                 since: datetime | None = None, amount: int = 1, grant_id: str | None = None,
-                attempt_id: str | None = None) -> str | None:
+                attempt_id: str | None = None, subject_type: str | None = None,
+                subject_id: str | None = None) -> str | None:
     used = count_usage(conn, account_id=account_id, counter_name=counter_name, window_key=window_key, since=since)
     if used + amount > limit:
         return None
     return _reserve(conn, account_id=account_id, counter_name=counter_name, window_key=window_key,
-                    amount=str(amount), grant_id=grant_id, attempt_id=attempt_id, now=now)
+                    amount=str(amount), grant_id=grant_id, attempt_id=attempt_id, now=now,
+                    subject_type=subject_type, subject_id=subject_id)
 
 
 def reserve_budget(conn, *, account_id: str, counter_name: str, window_key: str, amount: Decimal,
-                   grant_id: str | None, now: datetime) -> str:
+                   grant_id: str | None, now: datetime, subject_type: str | None = None,
+                   subject_id: str | None = None) -> str:
     return _reserve(conn, account_id=account_id, counter_name=counter_name, window_key=window_key,
-                    amount=str(amount), grant_id=grant_id, attempt_id=None, now=now)
+                    amount=str(amount), grant_id=grant_id, attempt_id=None, now=now,
+                    subject_type=subject_type, subject_id=subject_id)
+
+
+def reserve_within_cap(conn, *, account_id: str, counter_name: str, window_key: str, cap: Decimal, amount: Decimal,
+                       subject_type: str, subject_id: str, now: datetime, grant_id: str | None = None) -> str | None:
+    """Atomic under the caller's BEGIN IMMEDIATE: admit only if the reserved
+    hard maximum fits under the cap."""
+    if budget_usage(conn, account_id=account_id, counter_name=counter_name, window_key=window_key) + amount > cap:
+        return None
+    return _reserve(conn, account_id=account_id, counter_name=counter_name, window_key=window_key,
+                    amount=str(amount), grant_id=grant_id, attempt_id=None, now=now,
+                    subject_type=subject_type, subject_id=subject_id)
+
+
+def settlement_ref_for(attempt_id: str, reservation_id: str) -> str:
+    return canonical_hash("autonomy-settlement", "v1", {"attempt_id": attempt_id, "reservation_id": reservation_id})
+
+
+def settle_reservation(conn, *, reservation_id: str, attempt_id: str, amount: Decimal, now: datetime) -> bool:
+    """Exactly once; a settled row is immutable (spec §11.3)."""
+    cur = conn.execute(
+        "UPDATE limit_reservations SET settled_amount = ?, settlement_ref = ?, status = 'CONSUMED', updated_at = ? "
+        "WHERE id = ? AND settled_amount IS NULL AND status = 'RESERVED'",
+        (str(amount), settlement_ref_for(attempt_id, reservation_id), to_utc_iso(now), reservation_id),
+    )
+    return cur.rowcount == 1
+
+
+def get_reservation(conn, reservation_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM limit_reservations WHERE id = ?", (reservation_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def set_reservation_status(conn, *, reservation_id: str, status: str, now: datetime) -> None:

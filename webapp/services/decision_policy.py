@@ -616,14 +616,22 @@ def resolve_blocker(
     from webapp.persistence.application_blockers import resolve_application_blocker
 
     validate_answer_scope(conn, workspace_id=workspace_id, answer_scope=answer_scope)
-    return resolve_application_blocker(
+    resolution = resolve_application_blocker(
         conn,
         blocker_id=blocker_id,
         request_id=request_id,
         answer_value=answer_value,
         answer_scope=answer_scope,
         resolved_by=resolved_by,
+        commit=False,
     )
+    # Bundle 6C: the answered application re-derives its next step.
+    from datetime import datetime, timezone
+
+    from webapp.persistence.autonomy_prepare import wake
+    wake(conn, queue="APPLICATION", item_id=workspace_id, now=datetime.now(timezone.utc))
+    conn.commit()
+    return resolution
 
 
 def resume_job_fit_after_resolution(

@@ -4,6 +4,35 @@
 <section class="hero compact"><div><p class="eyebrow">Application dossier</p>
   <h1>{{ dossier.title }} — {{ dossier.company }}</h1>
   <p>Everything autonomy decided and did for this application. <a href="/api/workspaces/{{ dossier.application_workspace_id }}/autonomy/dossier">Export JSON</a></p></div></section>
+<section class="panel" data-dossier-section="current-state"><div class="panel-heading"><h2>Current state (derived)</h2></div>
+  <p>Recomputed now from the application's current facts; not a stored status.</p>
+  <p>{% if dossier.current_state_derived.enrolled %}Enrolled for autonomous preparation{% else %}Not enrolled{% endif %}
+    {% if dossier.current_state_derived.next %} · next: <code>{{ dossier.current_state_derived.next }}</code>{% endif %}
+    {% if dossier.current_state_derived.reason %} ({{ dossier.current_state_derived.reason }}){% endif %}</p>
+  <button class="button" type="button" data-autonomy-enrol>Enrol</button>
+  <button class="button secondary" type="button" data-autonomy-unenrol>Unenrol</button>
+  <button class="button secondary" type="button" data-autonomy-review-pack>I will review this pack myself</button>
+</section>
+<section class="panel" data-dossier-section="pack"><div class="panel-heading"><h2>Application pack</h2></div>
+  {% if dossier.pack %}<p>Pack <code>{{ dossier.pack.content_hash }}</code> · revision <code>{{ dossier.pack.pack_revision }}</code>
+    · {% if dossier.pack.system_confirmed %}system-confirmed{% else %}not system-confirmed{% endif %}</p>
+    <ul>{% for name, cid in dossier.pack.source_content_ids.items() %}<li>{{ name }}: <code>{{ cid }}</code></li>{% endfor %}</ul>
+    <p>Final documents ({{ dossier.pack.document_path }} path):</p>
+    <ul>{% for name, digest in dossier.pack.document_hashes.items() %}<li>{{ name }}: <code>{{ digest }}</code></li>{% endfor %}</ul>
+  {% else %}<p>No application pack yet.</p>{% endif %}
+</section>
+<section class="panel" data-dossier-section="system-review"><div class="panel-heading"><h2>System-confirmed review items</h2></div>
+  {% for r in dossier.system_review %}<article class="evidence-row"><div><strong>{{ r.review_item_type }} <code>{{ r.domain_item_id }}</code></strong>
+    <p>{{ r.system_basis.reason }} · content <code>{{ r.system_basis.item_content_hash }}</code></p></div></article>
+  {% else %}<p>No items were confirmed by the system.</p>{% endfor %}
+</section>
+<section class="panel" data-dossier-section="attempt-history"><div class="panel-heading"><h2>Attempt history (observational)</h2></div>
+  <p>A record of what ran; it never decides what runs next.</p>
+  {% for a in dossier.attempt_history_observational %}<article class="evidence-row"><div>
+    <strong>{{ a.step_kind }} · attempt {{ a.attempt_no }} · {{ a.event }}{% if a.error_class %} ({{ a.error_class }}{% if a.error_code %}: {{ a.error_code }}{% endif %}){% endif %}</strong>
+    <p>{{ a.created_at }}</p></div></article>
+  {% else %}<p>No preparation steps have run.</p>{% endfor %}
+</section>
 <section class="panel"><div class="panel-heading"><h2>Decisions</h2></div>
   {% for d in dossier.decisions %}<article class="evidence-row">
     <div><strong>{{ d.requested_stage }} · {{ d.mode }} → {{ d.result }}{% if d.deny_reason %} ({{ d.deny_reason }}){% endif %}</strong>
@@ -23,4 +52,20 @@
     {% endfor %}{% endfor %}</ul>{% endif %}</div></article>
   {% else %}<p>No grants issued.</p>{% endfor %}
 </section>
+<script>
+(function () {
+  const base = "/api/workspaces/{{ dossier.application_workspace_id }}/autonomy/";
+  async function post(path) {
+    const r = await fetch(base + path, {method: "POST"});
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); }
+    window.location.reload();
+  }
+  [["data-autonomy-enrol", "enrol"], ["data-autonomy-unenrol", "unenrol"], ["data-autonomy-review-pack", "review-pack"]]
+    .forEach(function (pair) {
+      document.querySelectorAll("[" + pair[0] + "]").forEach(function (button) {
+        button.addEventListener("click", function () { post(pair[1]); });
+      });
+    });
+})();
+</script>
 {% endblock %}

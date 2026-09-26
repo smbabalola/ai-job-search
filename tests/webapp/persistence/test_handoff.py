@@ -19,6 +19,7 @@ from webapp.persistence.migrations import (
     AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
     AUTONOMY_CONTRACT_MIGRATION_ID,
     AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
+    AUTONOMY_PREPARE_MIGRATION_ID,
 )
 
 
@@ -169,6 +170,10 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     # All these tables are empty here, so FK-enforced drops succeed regardless
     # of order (SQLite only blocks a DROP TABLE when a referencing row exists).
     for autonomy_table in (
+        "autonomy_candidate_exception_resolutions", "autonomy_candidate_exceptions",
+        "autonomy_candidate_promotions", "autonomy_candidate_screenings", "autonomy_prepare_steps",
+        "autonomy_review_latches", "autonomy_enrolments", "autonomy_retry_requests",
+        "autonomy_notification_events", "autonomy_candidate_queue",
         "submission_attempt_events", "dry_run_case_agreements", "dry_run_submission_cases",
         "submission_attempts", "intent_overrides", "submission_intents", "limit_reservations",
         "autonomy_grant_events", "autonomy_grants", "autonomy_decisions",
@@ -179,7 +184,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     ):
         conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -194,6 +199,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
             AUTONOMY_CONTRACT_MIGRATION_ID,
             AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
+            AUTONOMY_PREPARE_MIGRATION_ID,
         ),
     )
     conn.commit()
@@ -244,6 +250,10 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     assert conn.execute(
         "SELECT 1 FROM schema_migrations WHERE id = ?",
         (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (AUTONOMY_PREPARE_MIGRATION_ID,),
     ).fetchone() is not None
     assert conn.execute(
         "SELECT COUNT(*) FROM discovery_source_settings WHERE enabled = 1"

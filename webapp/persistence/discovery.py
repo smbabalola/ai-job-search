@@ -274,6 +274,7 @@ def set_discovery_candidate_status(
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     account_id: str = DEFAULT_ACCOUNT_ID,
+    commit: bool = True,
 ) -> dict[str, Any]:
     _require_writable_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -296,7 +297,8 @@ def set_discovery_candidate_status(
         "WHERE id = ? AND search_workspace_id = ?",
         (status, _now(), candidate_id, search_workspace_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_discovery_candidate(
         conn, candidate_id, search_workspace_id=search_workspace_id
     )
@@ -339,6 +341,7 @@ def complete_discovery_run(
     *,
     source_status: dict[str, Any],
     status: str,
+    commit: bool = True,
 ) -> dict[str, Any]:
     if status not in {"completed", "partial", "failed"}:
         raise ValueError("discovery run status must be completed, partial, or failed")
@@ -348,7 +351,8 @@ def complete_discovery_run(
     )
     if conn.total_changes == 0:
         raise ValueError(f"unknown discovery run {run_id!r}")
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_discovery_run(conn, run_id)
 
 

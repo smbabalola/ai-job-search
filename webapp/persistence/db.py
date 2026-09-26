@@ -19,6 +19,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Bundle 6C: the UI, the in-app scheduler thread and a CLI worker may
+    # write concurrently. WAL lets readers proceed while a writer is open;
+    # the busy timeout makes contending writers wait instead of failing with
+    # "database is locked".
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 

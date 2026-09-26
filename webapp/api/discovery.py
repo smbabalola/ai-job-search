@@ -98,6 +98,7 @@ def post_search(
             sources=body.sources, queries=body.queries,
             locations=body.locations, limit_per_source=body.limit_per_source,
             account_id=scope.account_id,
+            deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
         )
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc

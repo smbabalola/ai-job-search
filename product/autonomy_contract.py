@@ -221,6 +221,10 @@ class AuthorizationContext:
     executor_hard_stops: tuple[str, ...] = ()
     grant_binding_drift: tuple[str, ...] = ()
     run_id: str | None = None
+    # Monotonic identity of the latest kill-switch engagement (its seq). Not
+    # evaluated by the engine; it is a material input so no decision is
+    # reused across a halt/resume boundary (6C spec §2.8).
+    control_epoch: int | None = None
 
 
 @dataclass(frozen=True)

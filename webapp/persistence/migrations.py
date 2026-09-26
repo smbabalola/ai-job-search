@@ -33,6 +33,7 @@ DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
 AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
 AUTONOMY_CONTRACT_MIGRATION_ID = "016_autonomy_contract"
 AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID = "017_autonomy_human_intent_backfill"
+AUTONOMY_PREPARE_MIGRATION_ID = "018_autonomy_prepare"
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -79,6 +80,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID, _migrate_airswift_discovery_source, False),
         (AUTONOMY_CONTRACT_MIGRATION_ID, _migrate_autonomy_contract, False),
         (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, _migrate_autonomy_human_intent_backfill, False),
+        (AUTONOMY_PREPARE_MIGRATION_ID, _migrate_autonomy_prepare, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1453,3 +1455,199 @@ def _migrate_autonomy_human_intent_backfill(conn: sqlite3.Connection) -> None:
     for row in handoffs:
         record_human_intent(conn, workspace_id=row["workspace_id"], account_id=row["account_id"],
                             source="HUMAN_HANDOFF", now=now)
+
+
+AUTONOMY_6C_APPEND_ONLY_TABLES = (
+    "autonomy_candidate_screenings", "autonomy_candidate_promotions", "autonomy_candidate_exceptions",
+    "autonomy_candidate_exception_resolutions", "autonomy_prepare_steps", "autonomy_review_latches",
+    "autonomy_enrolments", "autonomy_retry_requests", "autonomy_notification_events",
+)
+
+
+def _migrate_autonomy_prepare(conn: sqlite3.Connection) -> None:
+    # Bundle 6C (spec §4). History/event tables are append-only; the candidate
+    # queue is mutable coordination state (no trigger).
+    _execute_statements(
+        conn,
+        """
+        CREATE TABLE autonomy_candidate_screenings (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            search_workspace_id TEXT NOT NULL REFERENCES search_workspaces(id),
+            candidate_id TEXT NOT NULL,
+            discovery_run_id TEXT,
+            discovery_fit_id TEXT,
+            outcome TEXT NOT NULL CHECK (outcome IN ('PROMOTE', 'REQUIRE_USER', 'BLOCK', 'NOT_ELIGIBLE', 'DENY', 'DENY_TEMPORARY')),
+            reason_code TEXT NOT NULL,
+            reasons_json TEXT NOT NULL,
+            require_user_json TEXT NOT NULL,
+            could_unlock INTEGER NOT NULL CHECK (could_unlock IN (0, 1)),
+            retry_at TEXT,
+            input_fingerprint TEXT NOT NULL,
+            authority_json TEXT NOT NULL,
+            policy_version_hash TEXT,
+            subject_policy_hash TEXT,
+            engine_version TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_candidate_screenings_candidate ON autonomy_candidate_screenings(candidate_id, seq);
+
+        CREATE TABLE autonomy_candidate_promotions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            screening_id TEXT REFERENCES autonomy_candidate_screenings(id),
+            candidate_id TEXT NOT NULL,
+            search_workspace_id TEXT NOT NULL REFERENCES search_workspaces(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            actor_type TEXT NOT NULL CHECK (actor_type IN ('SCHEDULER', 'USER')),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_candidate_exceptions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            search_workspace_id TEXT NOT NULL REFERENCES search_workspaces(id),
+            candidate_id TEXT NOT NULL,
+            screening_id TEXT NOT NULL REFERENCES autonomy_candidate_screenings(id),
+            items_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_candidate_exception_resolutions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            exception_id TEXT NOT NULL REFERENCES autonomy_candidate_exceptions(id),
+            resolution TEXT NOT NULL CHECK (resolution IN ('PROMOTE', 'DISMISS')),
+            actor TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_prepare_steps (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            attempt_id TEXT NOT NULL,
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('APPLICATION', 'CANDIDATE')),
+            subject_id TEXT NOT NULL,
+            step_kind TEXT NOT NULL CHECK (step_kind IN ('EVALUATE', 'UNDERSTAND', 'FIT', 'INTELLIGENCE', 'SYSTEM_REVIEW', 'GATE4')),
+            attempt_no INTEGER NOT NULL,
+            event TEXT NOT NULL CHECK (event IN ('STARTED', 'SUCCEEDED', 'REUSED', 'FAILED', 'ABANDONED')),
+            input_fingerprint TEXT NOT NULL,
+            authorization_decision_id TEXT REFERENCES autonomy_decisions(id),
+            retry_request_id TEXT,
+            lease_generation INTEGER NOT NULL,
+            worker_id TEXT NOT NULL,
+            run_id TEXT,
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            reservation_ids_json TEXT NOT NULL DEFAULT '[]',
+            cost_json TEXT NOT NULL DEFAULT '{}',
+            error_class TEXT CHECK (error_class IS NULL OR error_class IN ('TRANSIENT', 'HUMAN_FIXABLE', 'INTERNAL')),
+            error_code TEXT,
+            error_detail TEXT,
+            created_at TEXT NOT NULL,
+            CHECK (subject_type = 'CANDIDATE' OR authorization_decision_id IS NOT NULL),
+            CHECK (subject_type = 'APPLICATION' OR authorization_decision_id IS NULL)
+        );
+        CREATE INDEX idx_prepare_steps_subject ON autonomy_prepare_steps(subject_type, subject_id, seq);
+        CREATE INDEX idx_prepare_steps_attempt ON autonomy_prepare_steps(attempt_id, seq);
+
+        CREATE TABLE autonomy_review_latches (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            pack_revision TEXT NOT NULL,
+            reason TEXT NOT NULL CHECK (reason IN ('EXPLICIT_REVIEW', 'REOPENED_CONFIRMED')),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_enrolments (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            action TEXT NOT NULL CHECK (action IN ('ENROL', 'UNENROL')),
+            actor_type TEXT NOT NULL CHECK (actor_type IN ('USER', 'SCHEDULER')),
+            actor TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_retry_requests (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            subject_type TEXT NOT NULL CHECK (subject_type IN ('APPLICATION', 'CANDIDATE')),
+            subject_id TEXT NOT NULL,
+            step_kind TEXT NOT NULL,
+            input_fingerprint TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE autonomy_notification_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            notification_key TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('NEEDS_USER', 'CANDIDATE_QUESTION', 'PREPARED', 'OPERATIONAL_ERROR', 'BLOCKED')),
+            subject_type TEXT NOT NULL,
+            subject_id TEXT NOT NULL,
+            event TEXT NOT NULL CHECK (event IN ('CREATED', 'SEEN', 'RESOLVED')),
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_notification_events_key ON autonomy_notification_events(account_id, notification_key, seq);
+
+        CREATE TABLE autonomy_candidate_queue (
+            candidate_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            search_workspace_id TEXT NOT NULL REFERENCES search_workspaces(id),
+            next_eligible_at TEXT,
+            lease_holder TEXT,
+            lease_generation INTEGER NOT NULL DEFAULT 0,
+            lease_expires_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        """,
+    )
+
+    # Column additions are idempotent: the "upgrade from 004" test re-runs
+    # 016-018 while review_decisions / limit_reservations survive.
+    def add_column(table: str, name: str, ddl: str) -> None:
+        if name not in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+    add_column("autonomy_queue_items", "lease_generation", "lease_generation INTEGER NOT NULL DEFAULT 0")
+    add_column("review_decisions", "decision_provenance",
+               "decision_provenance TEXT NOT NULL DEFAULT 'USER' "
+               "CHECK (decision_provenance IN ('USER', 'SYSTEM_AUTO_CONFIRMED'))")
+    add_column("review_decisions", "system_basis_json", "system_basis_json TEXT")
+    add_column("limit_reservations", "subject_type",
+               "subject_type TEXT CHECK (subject_type IS NULL OR subject_type IN ('APPLICATION', 'CANDIDATE'))")
+    add_column("limit_reservations", "subject_id", "subject_id TEXT")
+    add_column("limit_reservations", "settled_amount", "settled_amount TEXT")
+    add_column("limit_reservations", "settlement_ref", "settlement_ref TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_reservations_settlement_ref "
+                 "ON limit_reservations(settlement_ref) WHERE settlement_ref IS NOT NULL")
+    for action in ("INSERT", "UPDATE"):
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS limit_reservations_subject_pair_{action.lower()} "
+                     f"BEFORE {action} ON limit_reservations "
+                     "WHEN (NEW.subject_type IS NULL) != (NEW.subject_id IS NULL) "
+                     "BEGIN SELECT RAISE(ABORT, 'subject_type and subject_id must both be set or both be NULL'); END")
+        # A system review decision always carries its basis; a user decision never does.
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS review_decisions_provenance_basis_{action.lower()} "
+                     f"BEFORE {action} ON review_decisions "
+                     "WHEN (NEW.decision_provenance = 'SYSTEM_AUTO_CONFIRMED') != (NEW.system_basis_json IS NOT NULL) "
+                     "BEGIN SELECT RAISE(ABORT, 'system_basis_json is required exactly for SYSTEM_AUTO_CONFIRMED'); END")
+    for table in AUTONOMY_6C_APPEND_ONLY_TABLES:  # same form as 016
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(
+                f"CREATE TRIGGER {table}_append_only_{action.lower()} "
+                f"BEFORE {action} ON {table} "
+                f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END"
+            )
