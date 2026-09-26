@@ -341,7 +341,7 @@ git commit -m "feat(review): add migration 019 for approvals, review events, del
   - `open_deltas(conn, ws) -> list[dict]`
   - `set_disposition(conn, *, account_id, application_workspace_id, answer_key, disposition, actor, now) -> dict`
   - `current_dispositions(conn, ws) -> dict[str, str]`
-  - `invalidation_recorded(conn, ws, approval_id, current_hash) -> bool`
+  - `invalidation_recorded(conn, ws, approval_id, reasons) -> bool` (dedup by the exact reason set only)
 
 - [ ] **Step 1: Failing tests**
 
@@ -396,14 +396,16 @@ def test_deltas_open_until_resolved_and_dispositions_latest_wins(conn):
     assert ra.current_dispositions(conn, ws) == {"k": "ANSWER"}
 
 
-def test_invalidation_recorded_is_per_approval_and_hash(conn):
+def test_invalidation_recorded_is_per_approval_and_exact_reason_set(conn):
     ws = make_workspace(conn)
     a = _approve(conn, ws, "sha256:a")
     ra.record_event(conn, account_id=ACCOUNT, application_workspace_id=ws, event="APPROVAL_INVALIDATED",
-                    binding_hash="sha256:n", detail={"approval_id": a["id"], "current_hash": "sha256:n"}, actor="system",
-                    now=NOW)
-    assert ra.invalidation_recorded(conn, ws, a["id"], "sha256:n")
-    assert not ra.invalidation_recorded(conn, ws, a["id"], "sha256:m")
+                    binding_hash="sha256:n",
+                    detail={"approval_id": a["id"], "reasons": ["binding_changed", "field:k"],
+                            "previous_hash": "sha256:a", "current_hash": "sha256:n"}, actor="system", now=NOW)
+    # the reason set alone deduplicates: order-insensitive, hash-insensitive
+    assert ra.invalidation_recorded(conn, ws, a["id"], ["field:k", "binding_changed"])
+    assert not ra.invalidation_recorded(conn, ws, a["id"], ["revoked"])
 ```
 
 - [ ] **Step 2: Run it and see it fail** (`ModuleNotFoundError`).
@@ -524,8 +526,11 @@ def current_dispositions(conn, ws: str) -> dict[str, str]:
     return out
 
 
-def invalidation_recorded(conn, ws: str, approval_id: str, current_hash: str) -> bool:
-    return any(e["detail"].get("approval_id") == approval_id and e["detail"].get("current_hash") == current_hash
+def invalidation_recorded(conn, ws: str, approval_id: str, reasons: list[str]) -> bool:
+    """Once per approval per exact reason set (spec §13): the dedup key is the
+    sorted reason set only, never a binding/provisional hash."""
+    key = sorted(set(reasons))
+    return any(e["detail"].get("approval_id") == approval_id and sorted(set(e["detail"].get("reasons", []))) == key
                for e in _events_of(conn, ws, "APPROVAL_INVALIDATED"))
 ```
 
@@ -657,6 +662,7 @@ def test_effective_delta_key():
     from product.review_contract import effective_delta_key
     assert effective_delta_key({"id": "dlt_1", "answer_key": None}) == "delta:dlt_1"
     assert effective_delta_key({"id": "dlt_1", "answer_key": "subject:salary"}) == "subject:salary"
+    assert effective_delta_key({"id": "dlt_1", "answer_key": None, "subject": "salary"}) == "subject:salary"
 
 
 def test_warning_key_changes_with_its_material():
@@ -861,7 +867,9 @@ NON_FIELD_DELTA_KINDS = frozenset({"NEW_UPLOAD", "DOCUMENT_CONVERSION", "TARGET_
 def effective_delta_key(delta: Mapping[str, Any]) -> str:
     """The one canonical key of a delta (spec §11): its answer_key, or
     delta:<id> when it has none."""
-    return delta.get("answer_key") or f"delta:{delta['id']}"
+    if delta.get("answer_key"):
+        return delta["answer_key"]
+    return f"subject:{delta['subject']}" if delta.get("subject") else f"delta:{delta['id']}"
 
 
 def warning_key(warning_type: str, subject: str, material: Mapping[str, Any]) -> str:
@@ -1118,7 +1126,7 @@ def _parse_review_ttl() -> int:
 - **Delta requirements.** Only **field** deltas (`kind ∈ FIELD_DELTA_KINDS`) give requirements, under `effective_delta_key(delta)`:
   - with a subject: `answer_key = "subject:<subject>"` and the delta's `required`; this merges with a governing field, required if either is;
   - unclassified (no subject): `answer_key = "delta:<delta_id>"`. It can't be answered. Required gives disposition `None` and BLOCKING `warning_key("unclassified_required_question", key, {delta_id})`. Optional accepts only an `OMIT` disposition;
-  - a later field delta with a subject for the same observed field (6D-B's classification, matched on `observed.field_key`) supersedes the unclassified one for planning;
+  - an unclassified delta resolved with `reason == "classified"` (spec §11 R7) is excluded from planning; its classified successor plans under `subject:<subject>`;
   - an `OMIT_FIELD_REQUIRED` delta marks its key required.
 
   Non-field deltas never become fields (Task 9).
@@ -1311,7 +1319,7 @@ Commit: `feat(review): add atomic audited document replace/select and Save chang
 
     This covers `binding_changed`, `open_deltas`, `revoked`, `expired`, `blocking_issues` and `unacknowledged_attention` alike.
   - Additionally, TTL passed and no `EXPIRED` for this approval yet: `EXPIRED`. (`REVOKED` is written by `revoke`.)
-  - `invalidation_recorded(conn, ws, approval_id, reasons_fingerprint)` compares `canonical_hash` of the sorted reasons plus the current provisional hash.
+  - Deduplication is by the **exact reason set only**: `invalidation_recorded(conn, ws, approval_id, reasons)`. The event payload still carries `previous_hash` and `current_hash` for audit. A changed hash with an unchanged reason set writes nothing; a changed reason set writes one new event.
 - `reconcile_approvals(conn, *, settings, now) -> int`: for every workspace with an approval, run `record_invalidation_if_needed` in its own short transaction. Reduce-only (events only). One additive line in `autonomy_scheduler._sweeps`: `out["review_invalidations"] = reconcile_approvals(conn, settings=settings, now=now)`.
 
 **Tests:**
@@ -1320,6 +1328,7 @@ Commit: `feat(review): add atomic audited document replace/select and Save chang
 - `test_approval_never_acknowledges`.
 - `test_approve_while_paused_and_halted_succeeds`.
 - `test_stale_blocking_and_no_pack_refusals_write_nothing`.
+- `test_same_reason_set_with_a_new_provisional_hash_records_nothing`.
 - `test_invalidation_recorded_once_per_reason_set_for_every_cause` (binding change, open delta, revoke, expiry, new blocking and unacknowledged ATTENTION each record exactly one `APPROVAL_INVALIDATED`; re-observing records nothing).
 - `test_revoke_and_expiry`.
 - `test_second_approval_at_the_same_hash_is_already_approved_and_writes_nothing`.
@@ -1334,7 +1343,13 @@ Commit: `feat(review): add the approval transaction with its exact write contrac
 **Objective:** Spec §11, §11.1.
 
 **Interfaces:**
-- `open_review_delta(conn, *, account_id, application_workspace_id, kind, answer_key, subject, required, question, observed, source, now) -> dict`: `insert_delta` + `DELTA_OPENED` in one `run_immediate`. For `kind="OMIT_FIELD_REQUIRED"`, the `answer_key` must be a field currently bound `OMIT` (else `ReviewRefused("not_an_omitted_field")`), and the delta is `required=True`.
+- `open_review_delta(conn, *, account_id, application_workspace_id, kind, answer_key, subject, required, question, observed, source, now) -> dict`: `insert_delta` + `DELTA_OPENED` in one `run_immediate`.
+  - A field delta with a `subject` and no `answer_key` is stored with `answer_key = f"subject:{subject}"`.
+  - **Classification (spec §11 R7):** when a classified field delta arrives whose `observed.field_key` matches an **open unclassified** field delta, the same transaction:
+    1. inserts the successor;
+    2. records its `DELTA_OPENED`;
+    3. records exactly one `DELTA_RESOLVED` for the predecessor, with `{"delta_id": predecessor, "reason": "classified", "successor_delta_id": new id}`.
+  - **Idempotent retry:** if an open field delta with the same `observed.field_key` and the same subject already exists (the successor, found by `seq`), return it and write nothing. For `kind="OMIT_FIELD_REQUIRED"`, the `answer_key` must be a field currently bound `OMIT` (else `ReviewRefused("not_an_omitted_field")`), and the delta is `required=True`.
 - `review_view_mode(conn, *, settings, account_id, application_workspace_id, now) -> dict` returns `{"mode": "first_review" | "delta_only" | "full", "changed_sections": [...], "delta_keys": [...], "previous_hash": str | None}`.
   - With no approval it's `first_review`.
   - Any open or just-resolved **non-field** delta gives `full`, with the affected sections (documents or `apply_target`) marked.
@@ -1353,6 +1368,12 @@ Commit: `feat(review): add the approval transaction with its exact write contrac
 - `test_omit_field_reported_mandatory_is_a_delta_and_cannot_be_omitted_again`.
 - `test_non_field_deltas_force_full_view_and_resolve_only_by_their_component` (`TARGET_CHANGE` resolved only when the bound target equals the observed one; `DOCUMENT_CONVERSION` only by a saved version of the required media type; `NEW_UPLOAD` of an unsupported kind stays open).
 - `test_transform_failure_needs_a_different_value_or_omit`.
+- The classification lifecycle:
+  - `test_unclassified_required_delta_blocks`;
+  - `test_classified_successor_closes_only_its_predecessor`;
+  - `test_classified_successor_stays_open_with_subject_key`;
+  - `test_successor_resolves_after_answer_and_approval_leaving_no_open_delta`;
+  - `test_retried_classification_writes_nothing`.
 - `test_unclassified_required_delta_stays_open_after_approval_attempt` (approval refused as blocking).
 - `test_approve_from_a_stale_tab_is_refused` (Review Focus): compute hash A, `save_changes` after a replacement, `approve(displayed=A)` gives `stale`, and the DB diff is empty.
 

@@ -322,7 +322,7 @@ When a later stage (6D-B filling, or a re-ingested job) finds something that isn
 **Field and non-field deltas.**
 - **Field deltas** concern one field: a new or changed question, a declaration or attestation, a value that fails its transforms, and an `OMIT` field found to be mandatory.
 - **Non-field deltas** concern a document or the target: a new upload requirement, a document conversion, and an apply-target change. They never become fields.
-- **Effective key:** a delta's stored `answer_key`, or `delta:<delta_id>` when it has none. One canonical helper computes it everywhere.
+- **Effective key:** a delta's stored `answer_key`, or `delta:<delta_id>` when it has none. At intake, a field delta that has a `subject` but no `answer_key` is stored with `answer_key = subject:<subject>`. One canonical helper computes the key everywhere.
 
 **Rules:**
 - **R1.** An open delta makes the application `NEEDS_REVIEW` immediately, and any in-flight 6D-B session must stop before its next write. This is enforced by 6D-B through the binding re-check.
@@ -338,7 +338,11 @@ When a later stage (6D-B filling, or a re-ingested job) finds something that isn
 - **R4.** A delta for a required sensitive subject can only be answered for this application (never as a standing answer). Declarations and attestations always need explicit per-application answers.
 - **R5.** Deltas are append-only records with status derived from resolution events.
 - **R6.** An `OMIT` field later found to be mandatory is always a delta. Its only valid resolutions are an answer, or abandoning the application.
-- **R7.** An unclassified required question stays blocking until it's classified to a supported semantic subject. 6D-B supplies the classification, as a new delta carrying the subject for the same observed field. An unclassified optional question may only be omitted. No synthetic subject is ever invented.
+- **R7.** An unclassified required question stays blocking until it's classified to a supported semantic subject. An unclassified optional question may only be omitted. No synthetic subject is ever invented.
+  - 6D-B supplies the classification as a new field delta carrying the subject for the same observed field (its `observed.field_key`).
+  - Opening that classified successor supersedes the open unclassified predecessor. In the same transaction as the successor's insert and its `DELTA_OPENED`, exactly one `DELTA_RESOLVED` is recorded for the predecessor, with `{reason: "classified", successor_delta_id}`. The predecessor is then no longer open and no longer planned as a field.
+  - The successor stays open until its field is decided and a later approval resolves it normally (R3).
+  - A retried classification of the same observed field with the same subject, while its successor exists, writes nothing.
 
 ### 11.1 Proving "everything else is unchanged"
 
