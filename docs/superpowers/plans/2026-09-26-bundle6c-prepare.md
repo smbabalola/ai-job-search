@@ -1,6 +1,6 @@
 # Bundle 6C — Prepare Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution mode:** native, in the main session, sequentially task by task (superpowers:executing-plans). No `Agent(...)` subagents or background agents unless the user explicitly asks. One commit per task; focused tests after every task; the full suite after Task 1 and in Task 15; stop only for a genuine spec contradiction, an unsafe change, or a production change outside the approved boundary. One independent end-of-bundle review after Task 15. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Operate the PREPARE stage unattended inside the user's standing authority: evaluate and screen discovered candidates, auto-promote eligible ones, and prepare applications through to a genuinely system-confirmed Application Pack or an accurately derived stop.
 
@@ -24,15 +24,15 @@
 - A driver never overlaps its own ticks; concurrency only via independent drivers coordinated by fenced leases.
 - Retries: 3 automatic retries / 4 attempts per cycle, delays (60, 300, 900) s ±20 % jitter.
 - Clearing a halt never resumes: halt → explicit resume-all → fresh PREPARE authorization.
-- Known Windows timestamp-tie flakes (`test_record_status_change_tracks_previous_status` and the two listed in memory) may need one rerun; any other failure is a regression.
+- Known pre-existing Windows timestamp-tie flakes (coarse `datetime.now()` + `created_at` ordering on master): `tests/webapp/services/test_application_blockers.py::test_latest_valid_answer_governs`, `tests/webapp/persistence/test_artifacts.py::test_list_artifact_history_newest_first`, `tests/webapp/persistence/test_workflow.py::test_record_status_change_tracks_previous_status`. If one of these exact tests fails, rerun it once and report the rerun. Any other failure is a regression.
 
 ## Review Focus
 
-- **A provider call that outlives its lease** (slow model, laptop sleep) — the late worker must not commit anything; recovery settles the attempt as `ABANDONED` at the hard maximum. Pinned in Tasks 5 and 12 (`test_expired_lease_cannot_finalize_even_if_not_retaken`).
+- **A provider call that outlives its lease** (slow model, laptop sleep) — the late worker must not commit anything; recovery settles the attempt as `ABANDONED` at the hard maximum. Pinned in Tasks 5 and 13 (`test_expired_lease_cannot_finalize_even_if_not_retaken`).
 - **A user answering a judgment item while a tick is mid-review** — the user's decision must win and no system decision may be written for that item. Pinned in Task 11 (`test_system_review_never_overrides_or_duplicates_a_user_decision`).
 - **The same job rediscovered by a second run or source after the first was promoted** — must screen `NOT_ELIGIBLE(existing_application)`, never a second application. Pinned in Task 10 (`test_rediscovered_identity_is_not_promoted_twice`).
 - **Standing policy saved mid-pipeline** — the next step must use a fresh PREPARE decision, not the reused one. Pinned in Task 9 (`test_policy_change_invalidates_reuse`).
-- **The app restarted with policy/extension files changed on disk** — dormant items must re-derive on driver start. Pinned in Task 12 (`test_driver_start_wakes_all_enrolled_and_candidates`).
+- **The app restarted with policy/extension files changed on disk** — dormant items must re-derive on driver start. Pinned in Task 13 (`test_driver_start_wakes_all_enrolled_and_candidates`).
 
 ## File Map
 
@@ -50,10 +50,10 @@
 | `webapp/services/autonomy_prepare_auth.py` | material fingerprint, validity horizon, PREPARE authorization reuse (Task 9) |
 | `webapp/services/autonomy_candidates.py` | candidate enqueue, admission, evaluation, screening, promotion, exceptions (Task 10) |
 | `webapp/services/autonomy_prepare.py` | snapshot, paid steps, system review, system Gate 4, latch, enrolment (Task 11) |
-| `webapp/services/autonomy_inbox.py` | inbox, notifier, reconciliation, propagation, wake hooks (Task 13) |
-| `webapp/services/autonomy_scheduler.py` | `run_tick` (Task 12) |
+| `webapp/services/autonomy_inbox.py` | inbox, notifier, reconciliation, propagation, wake hooks (Task 12) |
+| `webapp/services/autonomy_scheduler.py` | `run_tick` (Task 13) |
 | existing services | wake hooks (Tasks 10–13) |
-| `webapp/autonomy_worker.py`, `webapp/app.py` | drivers (Task 12) |
+| `webapp/autonomy_worker.py`, `webapp/app.py` | drivers (Task 13) |
 | `webapp/services/autonomy_dossier.py` | dossier additions (Task 14) |
 | `webapp/api/autonomy.py`, templates, `webapp/static/app.js` | API + inbox UI + badge (Task 14) |
 | `tests/webapp/services/test_autonomy_6c_concurrency.py` | concurrency (Task 15) |
@@ -62,7 +62,7 @@
 
 ## Shared test fixtures (created in Task 4, extended later)
 
-`tests/webapp/services/autonomy_6c_fixtures.py` is the one place the 6C tests build worlds. Every later task imports from it; its full content is given in Task 4 and extended (never rewritten) in Tasks 7 and 10–12.
+`tests/webapp/services/autonomy_6c_fixtures.py` is the one place the 6C tests build worlds. Every later task imports from it; its full content is given in Task 4 and extended (never rewritten) in Tasks 7 and 10–13.
 
 ---
 
@@ -256,11 +256,33 @@ def test_settlement_ref_is_unique_only_when_set(conn):
         conn.execute(base, ("r4", "s1"))
 
 
-def test_subject_columns_are_both_or_neither(conn):
+def test_subject_columns_are_both_or_neither_on_insert_and_update(conn):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO limit_reservations (id, account_id, counter_name, window_key, amount, status, "
                      "created_at, updated_at, subject_type) VALUES ('r9', 'account_local', 'c', 'w', '1', "
                      "'RESERVED', 'x', 'x', 'CANDIDATE')")
+    conn.execute("INSERT INTO limit_reservations (id, account_id, counter_name, window_key, amount, status, "
+                 "created_at, updated_at, subject_type, subject_id) VALUES ('r8', 'account_local', 'c', 'w', '1', "
+                 "'RESERVED', 'x', 'x', 'CANDIDATE', 'cand_1')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE limit_reservations SET subject_id = NULL WHERE id = 'r8'")
+
+
+def test_system_basis_is_required_exactly_for_system_decisions(conn):
+    from tests.webapp.persistence.autonomy_db import make_workspace
+    from webapp.persistence.artifacts import save_artifact
+    ws = make_workspace(conn)
+    art = save_artifact(conn, workspace_id=ws, artifact_type="job_fit_result", payload={"x": 1})
+    insert = ("INSERT INTO review_decisions (id, workspace_id, review_item_type, source_artifact_id, domain_item_id, "
+              "disposition, note, created_at, decision_provenance, system_basis_json) "
+              "VALUES (?, ?, 't', ?, NULL, 'acknowledged_and_proceed', NULL, 'x', ?, ?)")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(insert, ("s1", ws, art["id"], "SYSTEM_AUTO_CONFIRMED", None))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(insert, ("s2", ws, art["id"], "USER", '{"reason": "x"}'))
+    conn.execute(insert, ("s3", ws, art["id"], "SYSTEM_AUTO_CONFIRMED", '{"reason": "x"}'))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE review_decisions SET system_basis_json = NULL WHERE id = 's3'")
 
 
 def test_rerun_is_a_noop(conn, tmp_path):
@@ -455,10 +477,16 @@ def _migrate_autonomy_prepare(conn: sqlite3.Connection) -> None:
     add_column("limit_reservations", "settlement_ref", "settlement_ref TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_reservations_settlement_ref "
                  "ON limit_reservations(settlement_ref) WHERE settlement_ref IS NOT NULL")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS limit_reservations_subject_pair_insert "
-                 "BEFORE INSERT ON limit_reservations "
-                 "WHEN (NEW.subject_type IS NULL) != (NEW.subject_id IS NULL) "
-                 "BEGIN SELECT RAISE(ABORT, 'subject_type and subject_id must both be set or both be NULL'); END")
+    for action in ("INSERT", "UPDATE"):
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS limit_reservations_subject_pair_{action.lower()} "
+                     f"BEFORE {action} ON limit_reservations "
+                     "WHEN (NEW.subject_type IS NULL) != (NEW.subject_id IS NULL) "
+                     "BEGIN SELECT RAISE(ABORT, 'subject_type and subject_id must both be set or both be NULL'); END")
+        # A system review decision always carries its basis; a user decision never does.
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS review_decisions_provenance_basis_{action.lower()} "
+                     f"BEFORE {action} ON review_decisions "
+                     "WHEN (NEW.decision_provenance = 'SYSTEM_AUTO_CONFIRMED') != (NEW.system_basis_json IS NOT NULL) "
+                     "BEGIN SELECT RAISE(ABORT, 'system_basis_json is required exactly for SYSTEM_AUTO_CONFIRMED'); END")
     for table in AUTONOMY_6C_APPEND_ONLY_TABLES:  # same form as 016
         for action in ("UPDATE", "DELETE"):
             conn.execute(
@@ -2127,7 +2155,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces:
   - `product.candidate_promotion`: `ENGINE_VERSION = "candidate-promotion.v1"`; `ScreeningOutcome`; `CandidateContext` (fields listed in the code); `AdmissionResult(admitted, reasons)`; `ScreeningResult(outcome, reason_code, reasons, require_user, could_unlock, retry_at, input_fingerprint, policy_version_hash, authority)`; `candidate_input_fingerprint(ctx)`; `admit_candidate_evaluation(ctx)`; `evaluate_candidate_promotion(ctx)`
   - `webapp.services.autonomy_providers`: `ProviderSet(understanding, semantic_adapter, intelligence)`; `default_providers()`; `providers_from_app_state(state)`; `CostMeter` protocol `actual_cost(step_kind: str, *, reserved: Decimal) -> Decimal | None`; `NoCostEvidence`
-  - `webapp.services.autonomy_prepare_auth`: `PrepareAuthorization(permitted, decision_id, result, effective_capability, reused, deny_reason, require_user_items, reasons)`; `material_fingerprint(inputs: Mapping) -> str`; `validity_horizon(created_at, standing_policy) -> datetime | None`; `authorize_prepare(conn, *, settings, account_id, application_workspace_id, now) -> PrepareAuthorization` (raises 6B `AutonomyPaused` when paused)
+  - `webapp.services.autonomy_prepare_auth`: `PrepareAuthorization(permitted, decision_id, result, effective_capability, reused, deny_reason, require_user_items, reasons)`; `material_fingerprint(inputs: Mapping) -> str`; `validity_horizon(created_at, ctx: AuthorizationContext) -> datetime | None` (earliest temporal boundary; `None` = no reuse); `authorize_prepare(conn, *, settings, account_id, application_workspace_id, now) -> PrepareAuthorization` (raises 6B `AutonomyPaused` when paused)
 
 - [ ] **Step 1: Write the failing pure tests**
 
@@ -2507,6 +2535,26 @@ def test_validity_horizon_forces_fresh_evaluation_after_local_midnight(conn, set
     assert not later.reused and later.decision_id != first.decision_id
 
 
+def test_horizon_is_the_earliest_temporal_boundary_not_just_midnight():
+    from datetime import timedelta
+    from product.autonomy_contract import AnswerCandidate, Reach, RepresentationRequirement
+    from tests.product.autonomy_fixtures import make_ctx
+    from webapp.services.autonomy_prepare_auth import validity_horizon
+    ctx = make_ctx()
+    assert validity_horizon(NOW, ctx) is not None  # next local midnight
+    expiring = AnswerCandidate(approved_answer_id="a", subject="employment.availability_start", reach=Reach.ACCOUNT,
+                               scope_id=None, context={}, confirmed_at=NOW - timedelta(days=30) + timedelta(hours=1),
+                               basis_kind="USER_ASSERTION", basis_hash_at_approval=None, basis_hash_current=None,
+                               contradicted=False)
+    req = RepresentationRequirement(key="start", subject="employment.availability_start", required=True,
+                                    evidence_available=False, candidates=(expiring,))
+    assert validity_horizon(NOW, make_ctx(requirements=(req,))) == NOW + timedelta(hours=1)  # freshness beats midnight
+    unknown = RepresentationRequirement(key="x", subject="not.a.subject", required=True, evidence_available=False,
+                                        candidates=(expiring.__class__(**{**expiring.__dict__, "subject": "not.a.subject"}),))
+    assert validity_horizon(NOW, make_ctx(requirements=(unknown,))) is None  # unreliable -> no reuse
+    assert validity_horizon(NOW, make_ctx(standing_policy=None)) is None
+
+
 def test_allow_none_is_never_permission(conn, settings, seeded):
     decision = _auth(conn, settings, seeded)  # no authority configured -> NONE
     assert decision.permitted is False and decision.effective_capability == "NONE"
@@ -2608,10 +2656,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
-from product.autonomy_contract import Capability, Mode, canonical_hash, canonical_json, parse_utc
+from product.autonomy_contract import (
+    AuthorizationContext, Capability, Mode, canonical_hash, canonical_json, parse_utc,
+)
 from product.autonomy_gate import evaluate_authorization
 from webapp.config import Settings
 from webapp.persistence.autonomy_ledger import decision_inputs_payload
@@ -2639,12 +2689,26 @@ def material_fingerprint(inputs: Mapping[str, Any]) -> str:
                           {k: v for k, v in inputs.items() if k not in _NON_MATERIAL})
 
 
-def validity_horizon(created_at: datetime, standing_policy: Mapping[str, Any] | None) -> datetime | None:
-    """Conservative: a PREPARE decision is valid at most until the next local
-    midnight (budget/limit windows roll over). No policy -> no reuse."""
-    if standing_policy is None:
+def validity_horizon(created_at: datetime, ctx: AuthorizationContext) -> datetime | None:
+    """The earliest temporal boundary of any time-sensitive PREPARE input
+    (spec §6.5): the budget/limit window end (next local midnight after the
+    decision), every counter/budget retry_at, and every answer candidate's
+    freshness expiry (confirmed_at + the subject's freshness_days). If any
+    boundary cannot be computed reliably (no standing policy, an answer whose
+    subject is not in the subject policy), return None -> no reuse."""
+    if ctx.standing_policy is None:
         return None
-    return day_window(created_at, standing_policy["timezone"])[1]
+    bounds = [day_window(created_at, ctx.standing_policy["timezone"])[1]]
+    bounds += [c.retry_at for c in ctx.counters if c.retry_at is not None]
+    bounds += [b.retry_at for b in ctx.budgets if b.retry_at is not None]
+    for requirement in ctx.requirements:
+        for candidate in requirement.candidates:
+            entry = ctx.subject_policy["subjects"].get(candidate.subject)
+            if entry is None:
+                return None
+            if entry["freshness_days"] is not None:
+                bounds.append(candidate.confirmed_at + timedelta(days=entry["freshness_days"]))
+    return min(bounds)
 
 
 def _latest_live_prepare(conn, application_workspace_id: str) -> dict[str, Any] | None:
@@ -2677,7 +2741,7 @@ def authorize_prepare(conn, *, settings: Settings, account_id: str, application_
             and latest["policy_version_hash"] == fresh.policy_version_hash \
             and latest["subject_policy_hash"] == fresh.subject_policy_hash \
             and material_fingerprint(json.loads(latest["inputs_json"])) == current:
-        horizon = validity_horizon(parse_utc(latest["created_at"]), ctx.standing_policy)
+        horizon = validity_horizon(parse_utc(latest["created_at"]), ctx)
         if horizon is not None and now < horizon:
             return _from_row(latest, reused=True)
     _, row = decide_and_record(conn, settings=settings, account_id=account_id,
@@ -2722,7 +2786,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - `candidate_identity(record) -> tuple[str | None, IdentityStrength]`; `existing_application_for(conn, *, account_id, record) -> str | None`; `existing_intent_for(conn, *, account_id, record) -> bool`
 - `build_candidate_context(conn, *, settings, account_id, search_workspace_id, candidate_id, now) -> CandidateContext`
 - `candidate_next_action(conn, ctx) -> str` — `EVALUATE | SCREEN | PROMOTE | DONE`
-- `run_candidate_evaluation(conn, *, settings, providers, ctx, request_id) -> dict` (the paid call; wraps `evaluate_discovery_candidate` with `active_extensions=[]`)
+- `run_candidate_evaluation(conn, *, settings, providers, ctx, request_id) -> dict` — **only** the paid model call (wraps `evaluate_discovery_candidate` with `active_extensions=[]`); it never reserves, records attempts or settles
 - `screen_candidate(conn, *, ctx, now) -> dict` (persists the screening; opens a candidate exception + `CANDIDATE_QUESTION` notification only when `could_unlock`; sets queue eligibility)
 - `promote_candidate(conn, *, settings, account_id, search_workspace_id, candidate_id, screening_id, actor_type, actor, now) -> dict | None`
 - `resolve_candidate_question(conn, *, settings, exception_id, resolution, actor, reason, now) -> dict`; `CandidatePromotionRefused(Exception)`
@@ -2732,7 +2796,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 2. Identity from `product.job_identity.job_identity(record)`: source key > canonical URL; neither → WEAK. "Existing application" = any job workspace **on the account** whose `application_workspace_job_identities` row has the same source or URL key. "Existing intent" = a live/confirmed intent (6B `live_intent`) for either key.
 3. Context attributes: `fit.overall_score` (int, or Decimal via `Decimal(str(float))`; missing/non-finite → `UNKNOWN`), `fit.verdict`, `job.employment_type` (`normalize_employment_type`), `job.location`, `job.title`, `company.key` (`normalized_employer_key`), `workspace.id`, `identity.strength`. **Floats never reach a hashed payload** (canonical hashing rejects floats): normalize to `Decimal` first.
 4. `llm_budget_configured` = standing policy has `limits.budgets.LLM.per_day`; `budget_available` = day usage + `EVALUATE` envelope ≤ cap; `promotions_available` = `promotions:day` usage < `settings.autonomy_max_promotions_per_day` (retry at next local midnight).
-5. **Paid EVALUATE:** runs only after a fresh `admit_candidate_evaluation` in the reservation transaction; failures reserve and spend nothing (budget-only → dormant until the budget window rolls; halt/pause/scheduler → release; structural → screen and record `NOT_ELIGIBLE`). The attempt row has `authorization_decision_id = NULL` and an input fingerprint that binds the admission inputs. Deterministic request id: `f"auto-eval-{candidate_id}-{fingerprint[-12:]}"`.
+5. **Paid EVALUATE — single owner:** the scheduler (Task 13) owns reservation, the `STARTED`/terminal attempt rows, retries, finalization and settlement for **all** paid steps, candidate EVALUATE included. This service builds the candidate context and exposes `admit_candidate_evaluation`, which the scheduler re-runs **inside its short reservation/`STARTED` transaction immediately before spend**, and performs the call itself via `run_candidate_evaluation`. Failures reserve and spend nothing (budget-only → dormant until the budget window rolls; halt/pause/scheduler → release; structural → screen and record `NOT_ELIGIBLE`). The attempt row has `authorization_decision_id = NULL` and an input fingerprint that binds the admission inputs. Deterministic request id: `f"auto-eval-{candidate_id}-{fingerprint[-12:]}"`.
 6. **Screening** is pure-then-persist: `evaluate_candidate_promotion` returns; this service writes the immutable row. Anti-noise: exception + notification only when `could_unlock`; never a second open exception for the same candidate.
 7. **Promotion** (one `run_immediate` transaction): re-check halt/sentinel and search-workspace pause; rebuild the context; SCHEDULER requires `PROMOTE` **and** the same input fingerprint as the screening; USER accepts `PROMOTE` or `REQUIRE_USER` with the promotions cap ignored (a user promotion never consumes it). Then `_promote_candidate_in_transaction`; if it reports `created: False` (an existing workspace), raise to roll back → `None`. Write `autonomy_candidate_promotions`, `autonomy_enrolments` (`SCHEDULER`/`USER`, `ENROL`), enqueue the application (`next_eligible_at = now`), consume one `promotions:day` unit (SCHEDULER only; a lost cap race rolls everything back), make the candidate queue row dormant.
 8. **Human resolution:** `PROMOTE` runs the USER promotion in the same transaction and records the resolution only if it succeeds (else `CandidatePromotionRefused`, nothing written); `DISMISS` sets the candidate `dismissed` and records the resolution. Resolving an already-resolved exception is an error.
@@ -2740,7 +2804,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Tests (write first):**
 - enqueue: completed/partial enqueued, failed not, below-PREPARE workspace not, promoted/dismissed not.
 - `test_rediscovered_identity_is_not_promoted_twice` (Review Focus): promote once; a second candidate with the same source key from another run screens `NOT_ELIGIBLE(existing_application)`.
-- admission failures reserve nothing (`limit_reservations` count unchanged) for each failing reason; a successful evaluation settles one `CANDIDATE` reservation and records `authorization_decision_id IS NULL`.
+- admission is pure and side-effect free for each failing reason; `run_candidate_evaluation` itself writes no reservation or attempt row (the scheduler-owned reservation/attempt/settlement path is tested in Task 13, including `authorization_decision_id IS NULL` for candidate attempts).
 - screening persistence, anti-noise (structural + REQUIRE_USER → no exception), single open exception.
 - promotion revalidation: change each of policy, ceiling, kill switch, pause, identity/dedupe, candidate state, promotions cap between screening and promotion → no promotion, no workspace, no enrolment, no reservation.
 - user Promote: creates `USER/ENROL`, wakes the application, does **not** consume `promotions:day`; refused when a structural obstacle appeared; Dismiss sets `dismissed`.
@@ -2789,38 +2853,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 12: Scheduler engine and drivers
-
-**Objective:** `run_tick` and its two drivers (spec §6, §10, §11).
-
-**Files:**
-- Create: `webapp/services/autonomy_scheduler.py`, `webapp/autonomy_worker.py`
-- Modify: `webapp/app.py` (lifespan starts/stops the in-app driver thread when `settings.autonomy_scheduler_enabled`)
-- Test: `tests/webapp/services/test_autonomy_scheduler.py`, `tests/webapp/test_autonomy_worker.py`
-
-**Interfaces produced:**
-- `TickReport(sweeps: dict, processed: list[dict])`
-- `run_tick(conn, *, settings, providers, now, rng, worker_id, cost_meter=None) -> TickReport`
-- `run_driver(settings, providers, *, stop: threading.Event, clock, rng, worker_id)` (loop: tick to completion, then wait ≈ `autonomy_tick_interval`; never overlaps itself; wakes all enrolled applications and candidate rows once on start)
-- CLI: `python -m webapp.autonomy_worker --once | --loop` (exits 0 doing nothing when the scheduler gate is off)
-
-**Required behaviour and invariants:**
-1. **Sweeps first, always (even halted):** `expire_grants`, `expire_unclicked`, `mark_stale_dispatches_ambiguous(result_timeout=settings.autonomy_dispatch_result_timeout)`, notification reconciliation (Task 13), and orphan settlement for expired leases (append `ABANDONED`, settle each reservation once: provider-audited actual if the cost meter proves it, else the reserved maximum).
-2. Then stop if the scheduler gate is off or the item's account is halted (kill switch or sentinel): no new paid work, promotion, FILL or SUBMIT.
-3. **Fair selection:** alternate application and candidate due items 1:1 (applications first) up to `autonomy_max_items_per_tick`.
-4. **Per item:** lease with `ttl = step_timeout + lease_margin` → derive → authorize (applications: `authorize_prepare`, permission requires `grantable` and effective ≥ PREPARE; candidates: admission/screening/promotion per Task 10) → **re-check** pause, enrolment, halt and scheduler gate right before the step (fail → release, no decision, no attempt) → for paid steps reserve the hard maximum within the day cap (and the application cap for application steps) **in the same transaction as the `STARTED` row**, failing closed with `NEEDS_USER` when the budget or envelope is missing → run the step with no write transaction held → finalize in one transaction fenced by holder + generation + unexpired lease (terminal row, settlement per reservation with `settlement_ref_for`, outcome effects, `next_eligible_at`, lease release). A lost fence commits nothing.
-5. **Retries:** `TRANSIENT` → `retry_delay_seconds(cycle_failures(...) , settings.autonomy_retry_delays, rng, retry_after)`; `None` (4th failure) → escalate to `NEEDS_USER` when human-fixable in nature, else `OPERATIONAL_ERROR`; `HUMAN_FIXABLE` → `NEEDS_USER` immediately; `INTERNAL` → `OPERATIONAL_ERROR`, non-retrying. A retry request opens exactly one new cycle (attempts carry `retry_request_id`); a used request never reopens another. Cost overage: record and charge the true amount, raise `OPERATIONAL_ERROR`, refuse that step kind until its envelope changes.
-6. **Outcomes:** success → `next_eligible_at = now`; `DONE`/`PREPARED`/`NEEDS_USER`/`BLOCKED`/`OPERATIONAL_ERROR` → dormant plus the matching notification (Task 13); `DENY_TEMPORARY` → `retry_at`.
-7. **Halt during a step:** the in-flight step finishes and records truthfully; nothing further is scheduled until resume-all and a fresh authorization.
-8. The engine never calls `request_grant` or `pre_click_commit`.
-
-**Tests (write first):** one tick per step kind through the real chain with fake providers; `ALLOW(NONE)` runs nothing; race injection (pause, unenrol, halt) between lease and step → nothing starts, and during a step → truthful finish, nothing further; `test_expired_lease_cannot_finalize_even_if_not_retaken` at engine level (slow fake provider + injected clock) → no terminal row from the late worker, recovery writes `ABANDONED` and settles at maximum; retry cycle 60/300/900 then escalation on the 4th failure; one-shot retry request; overage path; missing budget and missing envelope fail closed with zero reservations; fairness with a large candidate backlog (applications still processed); sweeps run while halted; `test_driver_start_wakes_all_enrolled_and_candidates` (Review Focus); driver never overlaps itself (a tick that outlasts the interval delays the next); CLI `--once` returns 0 and does nothing with the gate off.
-
-**Commit:** `feat(autonomy): add the 6C scheduler engine with in-app and CLI drivers`
-
----
-
-### Task 13: Inbox, notifications, propagation, wake hooks and retry eligibility
+### Task 12: Inbox, notifications, propagation, wake hooks and retry eligibility
 
 **Objective:** The user-facing exception surface and every wake-up source (spec §6.2, §9, §10.2).
 
@@ -2840,11 +2873,42 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 3. **Badge = unresolved actionable + unseen informational**: `NEEDS_USER` (incl. human-fixable failures) and `CANDIDATE_QUESTION` count until resolved; `PREPARED`, `BLOCKED`, `OPERATIONAL_ERROR` count until seen. `SEEN` never implies `RESOLVED`; reconciliation writes `RESOLVED` only when the derived condition is gone.
 4. **Propagation is wake-only** and runs in the answer's transaction: ACCOUNT → enrolled applications of the account; SEARCH_WORKSPACE → enrolled applications of that search workspace; EMPLOYER → enrolled applications whose employer key matches; each only if waiting on that semantic subject (open blocker with that `semantic_subject_key`, or a REQUIRE_USER item for it in its current decision). It writes nothing but queue eligibility.
 5. **Retry eligibility:** `retry_failure` succeeds only for an exhausted `TRANSIENT` cycle of that step + current input fingerprint with no open cycle for it; direct `INTERNAL`/`INTEGRITY` failures and open cycles raise `RetryNotEligible`. It records the one-shot `autonomy_retry_requests` row and wakes the item.
-6. **Wake hooks** (each in the same transaction as its cause): answers/resolutions (own item + propagated siblings), enrolment, retry, resume/resume-all, policy saves, capability changes (both queues), new profile snapshot (all enrolled applications + candidate rows of the account), a new job posting snapshot for an enrolled application, manual reruns (Task 11), discovery completion (Task 10), driver start (Task 12).
+6. **Wake hooks** (each in the same transaction as its cause): answers/resolutions (own item + propagated siblings), enrolment, retry, resume/resume-all, policy saves, capability changes (both queues), new profile snapshot (all enrolled applications + candidate rows of the account), a new job posting snapshot for an enrolled application, manual reruns (Task 11), discovery completion (Task 10), driver start (Task 13).
 
 **Tests (write first):** inbox grouping and all-reasons listing; badge arithmetic for each kind (seen actionable still counts; seen informational drops); dedupe and recurrence; reconciliation resolves only vanished conditions; propagation per reach with **zero** sibling writes (row counts of blockers, resolutions, review decisions, approved answers unchanged); `answer_blocker` atomicity (a failure after resolution rolls back the resolution, the answer and the wakes); retry eligibility refusals (INTERNAL, open cycle, non-exhausted) and one-shot semantics; each wake hook sets `next_eligible_at` on dormant items in both queues where relevant.
 
 **Commit:** `feat(autonomy): add the 6C inbox, notifications, answer propagation and wake hooks`
+
+---
+
+### Task 13: Scheduler engine and drivers
+
+**Objective:** `run_tick` and its two drivers (spec §6, §10, §11).
+
+**Files:**
+- Create: `webapp/services/autonomy_scheduler.py`, `webapp/autonomy_worker.py`
+- Modify: `webapp/app.py` (lifespan starts/stops the in-app driver thread when `settings.autonomy_scheduler_enabled`)
+- Test: `tests/webapp/services/test_autonomy_scheduler.py`, `tests/webapp/test_autonomy_worker.py`
+
+**Interfaces produced:**
+- `TickReport(sweeps: dict, processed: list[dict])`
+- `run_tick(conn, *, settings, providers, now, rng, worker_id, cost_meter=None) -> TickReport`
+- `run_driver(settings, providers, *, stop: threading.Event, clock, rng, worker_id)` (loop: tick to completion, then wait ≈ `autonomy_tick_interval`; never overlaps itself; wakes all enrolled applications and candidate rows once on start)
+- CLI: `python -m webapp.autonomy_worker --once | --loop` (exits 0 doing nothing when the scheduler gate is off)
+
+**Required behaviour and invariants:**
+1. **Sweeps first, always (even halted):** `expire_grants`, `expire_unclicked`, `mark_stale_dispatches_ambiguous(result_timeout=settings.autonomy_dispatch_result_timeout)`, notification reconciliation (Task 12), and orphan settlement for expired leases (append `ABANDONED`, settle each reservation once: provider-audited actual if the cost meter proves it, else the reserved maximum).
+2. Then stop if the scheduler gate is off or the item's account is halted (kill switch or sentinel): no new paid work, promotion, FILL or SUBMIT.
+3. **Fair selection:** alternate application and candidate due items 1:1 (applications first) up to `autonomy_max_items_per_tick`.
+4. **Per item:** lease with `ttl = step_timeout + lease_margin` → derive → authorize (applications: `authorize_prepare`, permission requires `grantable` and effective ≥ PREPARE; candidates: screening/promotion per Task 10; for EVALUATE, `admit_candidate_evaluation` is re-run inside the reservation/`STARTED` transaction) → **re-check** pause, enrolment, halt and scheduler gate right before the step (fail → release, no decision, no attempt) → for paid steps reserve the hard maximum within the day cap (and the application cap for application steps) **in the same transaction as the `STARTED` row**, failing closed with `NEEDS_USER` when the budget or envelope is missing → run the step with no write transaction held → finalize in one transaction fenced by holder + generation + unexpired lease (terminal row, settlement per reservation with `settlement_ref_for`, outcome effects, `next_eligible_at`, lease release). A lost fence commits nothing.
+5. **Retries:** `TRANSIENT` → `retry_delay_seconds(cycle_failures(...) , settings.autonomy_retry_delays, rng, retry_after)`; `None` (4th failure) → escalate to `NEEDS_USER` when human-fixable in nature, else `OPERATIONAL_ERROR`; `HUMAN_FIXABLE` → `NEEDS_USER` immediately; `INTERNAL` → `OPERATIONAL_ERROR`, non-retrying. A retry request opens exactly one new cycle (attempts carry `retry_request_id`); a used request never reopens another. Cost overage: record and charge the true amount, raise `OPERATIONAL_ERROR`, refuse that step kind until its envelope changes.
+6. **Outcomes:** success → `next_eligible_at = now`; `DONE`/`PREPARED`/`NEEDS_USER`/`BLOCKED`/`OPERATIONAL_ERROR` → dormant plus the matching notification (Task 12, `notify_outcome`); `DENY_TEMPORARY` → `retry_at`.
+7. **Halt during a step:** the in-flight step finishes and records truthfully; nothing further is scheduled until resume-all and a fresh authorization.
+8. The engine never calls `request_grant` or `pre_click_commit`.
+
+**Tests (write first):** one tick per step kind through the real chain with fake providers; `ALLOW(NONE)` runs nothing; race injection (pause, unenrol, halt) between lease and step → nothing starts, and during a step → truthful finish, nothing further; `test_expired_lease_cannot_finalize_even_if_not_retaken` at engine level (slow fake provider + injected clock) → no terminal row from the late worker, recovery writes `ABANDONED` and settles at maximum; retry cycle 60/300/900 then escalation on the 4th failure; one-shot retry request; overage path; missing budget and missing envelope fail closed with zero reservations; fairness with a large candidate backlog (applications still processed); sweeps run while halted; `test_driver_start_wakes_all_enrolled_and_candidates` (Review Focus); driver never overlaps itself (a tick that outlasts the interval delays the next); CLI `--once` returns 0 and does nothing with the gate off.
+
+**Commit:** `feat(autonomy): add the 6C scheduler engine with in-app and CLI drivers`
 
 ---
 
@@ -2870,7 +2934,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Objective:** Prove the closure condition (spec §15–§16) and prepare the branch for review.
 
 **Files:**
-- Test: `tests/webapp/services/test_autonomy_6c_concurrency.py`, `tests/webapp/test_autonomy_prepare_acceptance.py`, `tests/webapp/test_autonomy_6c_structure.py`
+- Test: `tests/webapp/services/test_autonomy_6c_concurrency.py`, `tests/webapp/test_autonomy_prepare_acceptance.py`, `tests/webapp/test_autonomy_6c_structure.py`, `tests/webapp/test_autonomy_6c_browser.py`
 - Modify: `docs/superpowers/specs/2026-09-26-bundle6c-prepare-design.md` only if an implementation fact contradicts it (report first; no silent spec edits)
 
 **Steps:**
@@ -2879,7 +2943,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
    - **Halt/recovery sequence:** halt active → no new work starts → an in-flight step finishes truthfully → remove the halt → still no work → explicit resume-all → a fresh PREPARE decision is recorded → work resumes.
    - **Negative controls:** with the scheduler gate off, deployment ceiling `NONE`, the kill switch engaged, or no budget configured: no new paid/autonomous preparation work, promotion, FILL or SUBMIT occurs, while reduce-only expiry/reconciliation sweeps still run.
 3. **Structure test:** no `request_grant`/`pre_click_commit` in 6C modules (AST scan of `webapp/services/autonomy_candidates.py`, `autonomy_prepare.py`, `autonomy_scheduler.py`, `autonomy_inbox.py`, `autonomy_prepare_auth.py`, `webapp/autonomy_worker.py`); no `webapp` import in `product/`; no `ORDER BY ... created_at` in new modules.
-4. **Browser check** (headless Chromium via a scratchpad Playwright script like 6B Task 19): inbox renders, the badge updates after a notification, enrol/unenrol, candidate Promote/Dismiss, "Review this pack" latches.
+4. **Committed browser regression test** `tests/webapp/test_autonomy_6c_browser.py`, following the existing pytest-playwright pattern of `tests/webapp/test_handoff_browser_smoke.py` (live uvicorn server started by the test, headless Chromium): the inbox renders, the badge updates after a notification, enrol/unenrol, candidate Promote/Dismiss, and "Review this pack" writes a latch. A scratchpad script may be used for diagnosis only; acceptance relies on the committed test.
 5. **Migrations:** a fresh database gets 18 migrations and re-running is a no-op; a **pre-6C database built by `master@20979b9` code** (`git archive 20979b9 webapp product` into the scratchpad) with enrolled-looking data, pending reservations and review decisions upgrades through 018 with rows preserved, `review_decisions.decision_provenance = 'USER'`, FK and integrity checks clean, re-run no-op.
 6. **Full suite** in the six foreground chunks from Task 1; record totals and runtime.
 7. **Diff boundary** against `master@20979b9`: only 6C files and the hooks listed in this plan; no 6D/6E code.
@@ -2891,6 +2955,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ## Self-review
 
-- **Spec coverage:** §2 invariants → Global Constraints + Tasks 11–13, 15; §4 data model → Tasks 2, 4–7; §5 controls/enrolment → Tasks 11–13; §6 queue/tick/leases/authorization reuse → Tasks 5, 9, 12; §7 candidates → Tasks 9–10; §8 preparation/Gate 4/latch → Tasks 7–8, 11; §9 inbox/propagation/notifications → Tasks 4, 13–14; §10 recovery/retries/sweeps → Tasks 4, 8, 12, 13; §11 budget → Tasks 3, 6, 10, 12; §12 dossier → Task 14; §13 API → Task 14; §14 settings → Task 3; §15 testing → every task + Task 15; §16 closure → Task 15.
-- **Carried requirements:** float normalization to `Decimal` before canonical hashing (Tasks 8, 10); WAL as its own commit with a full-suite run (Task 1); one-shot retries and 3 retries / 4 attempts (Tasks 4, 8, 12, 13); lease expiry fence on both queues (Tasks 5, 12); per-reservation settlement refs (Tasks 6, 12); no-overlap drivers (Task 12); candidate attempts with NULL decision id (Tasks 2, 10); user Promote outside the cap (Task 10).
+- **Spec coverage:** §2 invariants → Global Constraints + Tasks 11–13, 15; §4 data model → Tasks 2, 4–7; §5 controls/enrolment → Tasks 11–13; §6 queue/tick/leases/authorization reuse → Tasks 5, 9, 13; §7 candidates → Tasks 9–10; §8 preparation/Gate 4/latch → Tasks 7–8, 11; §9 inbox/propagation/notifications → Tasks 4, 12, 14; §10 recovery/retries/sweeps → Tasks 4, 8, 12, 13; §11 budget → Tasks 3, 6, 10, 13; §12 dossier → Task 14; §13 API → Task 14; §14 settings → Task 3; §15 testing → every task + Task 15; §16 closure → Task 15.
+- **Carried requirements:** float normalization to `Decimal` before canonical hashing (Tasks 8, 10); WAL as its own commit with a full-suite run (Task 1); one-shot retries and 3 retries / 4 attempts (Tasks 4, 8, 12, 13); lease expiry fence on both queues (Tasks 5, 13); per-reservation settlement refs (Tasks 6, 13); no-overlap drivers (Task 13); single owner of reservations/attempts = the scheduler (Tasks 10, 13); DB-level provenance/basis and subject-pair triggers on INSERT and UPDATE (Task 2); earliest-boundary validity horizon (Task 9); candidate attempts with NULL decision id (Tasks 2, 10); user Promote outside the cap (Task 10).
 - **Names:** `run_immediate`, `decide_and_record`, `build_context`, `evaluate_authorization`, `decision_inputs_payload`, `live_intent`, `upsert_queue_item`, `system_confirm_application_pack`, `list_outstanding_review_items`, `mechanical_review`, `next_prepare_step`, `evaluate_candidate_promotion`, `admit_candidate_evaluation`, `authorize_prepare` are used consistently across tasks.
