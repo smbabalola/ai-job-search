@@ -192,3 +192,81 @@ def warning_key(warning_type: str, subject: str, material: Mapping[str, Any]) ->
     acknowledgement never acknowledges it."""
     fp = canonical_hash("review-warning-material", "v1", _safe(dict(material)))  # full SHA-256
     return f"{warning_type}:{subject}:{fp}"
+
+
+NOT_READY, READY_FOR_REVIEW, NEEDS_REVIEW, APPROVED_FOR_FILL, CLOSED = (
+    "NOT_READY", "READY_FOR_REVIEW", "NEEDS_REVIEW", "APPROVED_FOR_FILL", "CLOSED")
+_OPEN_WORKFLOW = (None, "drafted")
+
+
+@dataclass(frozen=True)
+class ReviewSnapshot:
+    reviewable: Reviewable | None
+    workflow_status: str | None
+    latest_approval: Mapping[str, Any] | None  # {"binding_hash", "created_at": datetime, "revoked": bool}
+    open_delta_keys: tuple[str, ...]
+    now: Any
+    ttl: Any
+    exact_pack: bool = True  # False: selections not represented by the exact immutable v2 pack (spec §7.2)
+
+
+@dataclass(frozen=True)
+class ReviewState:
+    state: str
+    reasons: tuple[str, ...]
+    blocking: tuple[str, ...]
+    binding_matches: bool
+    approval_effective: bool
+    binding: dict[str, Any] | None
+    binding_hash: str | None            # exposed/approvable; None without the exact pack
+    provisional_hash: str | None = None  # internal only: invalidation detection
+
+
+def blocking_issues(r: Reviewable) -> tuple[str, ...]:
+    issues = [w.key for w in r.warnings if w.level is WarningLevel.BLOCKING]
+    for f in r.fields:
+        if f.required and f.disposition != "ANSWER":
+            issues.append(f"field_unanswered:{f.answer_key}")
+        elif not f.required and f.disposition is None:
+            issues.append(f"field_undecided:{f.answer_key}")
+    return tuple(sorted(issues))
+
+
+def unacknowledged_attention(r: Reviewable) -> tuple[str, ...]:
+    return tuple(sorted(w.key for w in r.warnings if w.level is WarningLevel.ATTENTION and not w.acknowledged))
+
+
+def derive_review_state(s: ReviewSnapshot) -> ReviewState:
+    if s.workflow_status not in _OPEN_WORKFLOW:
+        return ReviewState(CLOSED, ("workflow_closed",), (), False, False, None, None)
+    if s.reviewable is None:
+        return ReviewState(NOT_READY, ("not_ready",), (), False, False, None, None)
+    binding = approval_binding(s.reviewable)
+    current = binding_hash(binding)
+    blocking = blocking_issues(s.reviewable)
+    unacked = unacknowledged_attention(s.reviewable)
+    latest = s.latest_approval
+    matches = latest is not None and latest["binding_hash"] == current
+    reasons: list[str] = []
+    if latest is not None:
+        if not matches:
+            reasons.append("binding_changed")
+        if latest["revoked"]:
+            reasons.append("revoked")
+        if s.now >= latest["created_at"] + s.ttl:
+            reasons.append("expired")
+    if s.open_delta_keys:
+        reasons.append("open_deltas")
+    if blocking:
+        reasons.append("blocking_issues")
+    if unacked:
+        reasons.append("unacknowledged_attention")
+    exposed = current if s.exact_pack else None  # spec §7.2: no approvable hash without the exact pack
+    effective = matches and not reasons and s.exact_pack
+    if effective:
+        state = APPROVED_FOR_FILL
+    elif latest is None and not s.open_delta_keys:
+        state = READY_FOR_REVIEW
+    else:
+        state = NEEDS_REVIEW
+    return ReviewState(state, tuple(reasons), blocking, matches, effective, binding, exposed, current)
