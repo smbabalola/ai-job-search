@@ -231,3 +231,21 @@ def test_decision_without_valid_identity_fails_before_any_authority(conn, accoun
     for table in ("autonomy_decisions", "autonomy_grants", "autonomy_grant_events", "limit_reservations",
                   "submission_intents", "submission_attempts"):
         assert conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0, table
+
+
+def test_unconsumed_submit_grant_releases_reservations_on_revoke_and_expiry_fill_keeps_them(conn):
+    ws = make_workspace(conn)
+    def reserve(g):
+        reserve_budget(conn, account_id=ACCOUNT, counter_name="budget:LLM:day", window_key="d",
+                       amount=Decimal("0.1"), grant_id=g["id"], now=NOW)
+    status = lambda g: [r["status"] for r in conn.execute(
+        "SELECT status FROM limit_reservations WHERE grant_id = ?", (g["id"],))]
+    revoked, expired, fill = _grant(conn, ws), _grant(conn, ws), _grant(conn, ws, stage=Capability.FILL)
+    for g in (revoked, expired, fill):
+        reserve(g)
+    revoke_issued_grants(conn, account_id=ACCOUNT, reason="kill_switch", now=NOW)
+    assert status(revoked) == ["RELEASED"] and status(expired) == ["RELEASED"] and status(fill) == ["RESERVED"]
+    again, fill2 = _grant(conn, ws), _grant(conn, ws, stage=Capability.FILL)
+    reserve(again), reserve(fill2)
+    expire_grants(conn, now=NOW + timedelta(seconds=121))
+    assert status(again) == ["RELEASED"] and status(fill2) == ["RESERVED"]

@@ -156,6 +156,17 @@ def consume_grant(conn, *, grant_id: str, now: datetime) -> bool:
     return False
 
 
+def _release_unused_submit_reservations(conn, grant_id: str, now: datetime) -> None:
+    """A SUBMIT grant that ends without being consumed authorized nothing, so
+    what was reserved with it (budgets at issuance) is released. A FILL
+    grant's reservations are kept: its session may already have run."""
+    stage = conn.execute("SELECT stage FROM autonomy_grants WHERE id = ?", (grant_id,)).fetchone()["stage"]
+    if stage != "SUBMIT":
+        return
+    conn.execute("UPDATE limit_reservations SET status = 'RELEASED', updated_at = ? "
+                 "WHERE grant_id = ? AND status = 'RESERVED'", (to_utc_iso(now), grant_id))
+
+
 def revoke_grant(conn, *, grant_id: str, reason: str, now: datetime) -> bool:
     cur = conn.execute(
         "UPDATE autonomy_grants SET status = 'REVOKED', revoked_reason = ? WHERE id = ? AND status = 'ISSUED'",
@@ -163,6 +174,7 @@ def revoke_grant(conn, *, grant_id: str, reason: str, now: datetime) -> bool:
     )
     if cur.rowcount == 1:
         _grant_event(conn, grant_id, "REVOKED", reason, now)
+        _release_unused_submit_reservations(conn, grant_id, now)
         return True
     return False
 
@@ -180,6 +192,7 @@ def expire_grants(conn, *, now: datetime) -> int:
     for grant_id in ids:
         conn.execute("UPDATE autonomy_grants SET status = 'EXPIRED' WHERE id = ? AND status = 'ISSUED'", (grant_id,))
         _grant_event(conn, grant_id, "EXPIRED", None, now)
+        _release_unused_submit_reservations(conn, grant_id, now)
     return len(ids)
 
 
