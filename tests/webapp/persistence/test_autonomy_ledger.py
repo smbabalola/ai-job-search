@@ -208,3 +208,25 @@ def test_expire_grants_counts_and_logs_only_changed_rows(conn):
     events = conn.execute("SELECT status FROM autonomy_grant_events WHERE grant_id = ? ORDER BY seq",
                           (g["id"],)).fetchall()
     assert [e["status"] for e in events] == ["ISSUED", "EXPIRED"]
+
+
+@pytest.mark.parametrize("account_id, workspace", [
+    (None, "ws"), ("acct_missing", "ws"), (ACCOUNT, None), (ACCOUNT, "ws_missing"),
+])
+def test_decision_without_valid_identity_fails_before_any_authority(conn, account_id, workspace):
+    # A decision whose account/application identity is missing or unknown is a
+    # programming/integration error: persisting it fails, and nothing that
+    # carries executable authority can be created from it.
+    import sqlite3
+    ws = make_workspace(conn)
+    ctx = make_ctx(account_id=account_id, application_workspace_id=ws if workspace == "ws" else workspace)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_decision(conn, ctx=ctx, decision=evaluate_authorization(ctx))
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):  # no decision row -> no grant can reference one
+        insert_grant(conn, decision_id="dec_missing", account_id=ACCOUNT, application_workspace_id=ws,
+                     stage=Capability.SUBMIT, binding={}, issued_at=NOW, expires_at=NOW + timedelta(seconds=60))
+    conn.rollback()
+    for table in ("autonomy_decisions", "autonomy_grants", "autonomy_grant_events", "limit_reservations",
+                  "submission_intents", "submission_attempts"):
+        assert conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0, table
