@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from tests.webapp.fixtures.application_material import completion_ready_pack_payload
 from webapp.persistence import migrations as migrations_module
 from webapp.persistence import workflow as workflow_module
@@ -150,3 +152,31 @@ def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     finally:
         c.close()
 
+
+
+@pytest.mark.parametrize("late", ["CONFIRMED_SUCCESS", "PROVEN_FAILURE", "AMBIGUOUS_THEN_NOT_SUBMITTED"])
+def test_late_attempt_result_never_releases_or_downgrades_a_human_confirmed_intent(conn, settings, seeded, late):
+    # Regression (6B closing review): the human confirms the job as applied while
+    # an autonomous attempt is already dispatched; whatever result arrives later,
+    # the human-confirmed intent stays CONFIRMED and keeps blocking autonomy.
+    from tests.webapp.services.test_autonomy_preclick import IDENT, T, click, submit_grant
+    from webapp.persistence.autonomy_ledger import record_human_intent
+    from webapp.services.autonomy import record_click_dispatched, record_submission_result, resolve_ambiguous
+    attempt = click(conn, settings, seeded, submit_grant(conn, settings, seeded)).attempt_id
+    assert record_click_dispatched(conn, attempt_id=attempt, now=T) is True
+    record_human_intent(conn, workspace_id=seeded, account_id=ACCOUNT, source="HUMAN_APPLIED", now=T)
+    conn.commit()
+    later = T + timedelta(minutes=1)
+    if late == "CONFIRMED_SUCCESS":
+        record_submission_result(conn, attempt_id=attempt, state="CONFIRMED_SUCCESS", source="EXECUTOR",
+                                 evidence={}, now=later)
+    elif late == "PROVEN_FAILURE":
+        assert record_submission_result(conn, attempt_id=attempt, state="SUBMISSION_FAILED", source="EXECUTOR",
+                                        evidence={"proven_not_submitted": True}, now=later) == "SUBMISSION_FAILED"
+    else:
+        assert record_submission_result(conn, attempt_id=attempt, state="SUBMISSION_FAILED", source="EXECUTOR",
+                                        evidence={}, now=later) == "SUBMISSION_AMBIGUOUS"
+        assert resolve_ambiguous(conn, attempt_id=attempt, submitted=False, actor="u", now=later) == "SUBMISSION_FAILED"
+    intents = conn.execute("SELECT state, overridden FROM submission_intents").fetchall()
+    assert [(r["state"], r["overridden"]) for r in intents] == [("CONFIRMED", 0)]
+    assert live_intent(conn, account_id=ACCOUNT, job_identity_key=IDENT)["state"] == "CONFIRMED"
