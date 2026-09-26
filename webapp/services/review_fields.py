@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from product.autonomy_contract import REACH_ORDER, EmployerKeyStrength, Reach, RepresentationRequirement
-from product.autonomy_gate import answer_readiness, usable_answer_candidates
+from product.autonomy_gate import answer_readiness, context_state, usable_answer_candidates
 from product.fill_manifest import value_hash
 from product.representation_transforms import TRANSFORM_IDS
 from product.review_contract import (
@@ -19,7 +19,7 @@ from product.review_contract import (
 from product.semantic_subject_policy import load_subject_policy, subject_entry
 from webapp.persistence import review_approval as ra
 from webapp.persistence.autonomy_answers import current_approved_answers
-from webapp.services.autonomy_context import answer_candidates
+from webapp.services.autonomy_context import answer_candidates, current_governing_blockers
 
 CONTACT_FIELDS = ("full_name", "email", "phone", "location")
 EXPIRING_WITHIN = timedelta(days=7)
@@ -30,26 +30,29 @@ def _requirements(conn, ws: str) -> dict[str, dict[str, Any]]:
     """Governing blockers and field deltas, merged by key (required if any source is)."""
     reqs: dict[str, dict[str, Any]] = {}
 
-    def add(key: str, subject: str | None, required: bool, question: str) -> dict[str, Any]:
+    def add(key: str, subject: str | None, required: bool, question: str,
+            job_context: Mapping[str, Any]) -> dict[str, Any]:
         r = reqs.setdefault(key, {"subject": subject, "required": False, "questions": [], "blocker_ids": [],
-                                  "unclassified": subject is None})
+                                  "unclassified": subject is None, "job_context": {}})
         r["required"] = r["required"] or required
         if question not in r["questions"]:
             r["questions"].append(question)
+        r["job_context"].update({k: v for k, v in (job_context or {}).items() if v is not None})
         return r
 
-    for b in conn.execute("SELECT id, semantic_subject_key, question FROM application_blockers WHERE workspace_id = ? "
-                          "AND semantic_subject_key IS NOT NULL AND status IN ('open', 'resolved') ORDER BY id",
-                          (ws,)).fetchall():
-        add(f"subject:{b['semantic_subject_key']}", b["semantic_subject_key"], True, b["question"])["blocker_ids"] \
-            .append(b["id"])
+    # Only blockers of the current governing artifacts govern (the 6B rule);
+    # older rows remain audit history.
+    for b in sorted(current_governing_blockers(conn, ws), key=lambda b: b["id"]):
+        if b.get("semantic_subject_key") and b["status"] in ("open", "resolved"):
+            add(f"subject:{b['semantic_subject_key']}", b["semantic_subject_key"], True, b["question"],
+                (b.get("context") or {}).get("job_context") or {})["blocker_ids"].append(b["id"])
     classified_away = {e["detail"].get("delta_id") for e in ra.events(conn, ws)
                        if e["event"] == "DELTA_RESOLVED" and e["detail"].get("reason") == "classified"}
     for d in ra.list_deltas(conn, ws):
         if d["kind"] not in FIELD_DELTA_KINDS or d["id"] in classified_away:
             continue
         required = bool(d["required"]) or d["kind"] == "OMIT_FIELD_REQUIRED"
-        add(effective_delta_key(d), d["subject"], required, d["question"])
+        add(effective_delta_key(d), d["subject"], required, d["question"], d["observed"].get("job_context") or {})
     return reqs
 
 
@@ -73,18 +76,22 @@ def _contact_fields(profile_payload: Mapping[str, Any], reqs: dict[str, dict[str
             continue  # any requirement for this subject stays a (blocking) field of its own
         requirement = reqs.pop(f"subject:{name}", None)  # a requirement naming the contact subject makes it required
         key = f"contact:{name}"
+        required = bool(requirement and requirement["required"])
+        question = " / ".join(requirement["questions"]) if requirement else name.replace("_", " ").capitalize()
         if len({repr(c.get("value")) for c in found}) > 1:
+            # Several different values: blocking, but the known field stays planned with no source.
             warnings.append(ReviewWarning(warning_key("ambiguous_answer", key, {"claim_ids": [c["id"] for c in found]}),
                                           WarningLevel.BLOCKING, f"{name}: several different profile values"))
+            out.append(PlannedField(key, name, required, question,
+                                    None if required else _optional_disposition(dispositions.get(key), False),
+                                    None, None, None, _TRANSFORMS, None, None, reach="EVIDENCE", freshness=None))
             continue
         claim = found[0]
-        required = bool(requirement and requirement["required"])
         disposition = "ANSWER" if required else _optional_disposition(dispositions.get(key), True)
         answering = disposition == "ANSWER"
         out.append(PlannedField(
             answer_key=key, subject=name, required=required,
-            question=" / ".join(requirement["questions"]) if requirement else name.replace("_", " ").capitalize(),
-            disposition=disposition, source_kind="EVIDENCE" if answering else None,
+            question=question, disposition=disposition, source_kind="EVIDENCE" if answering else None,
             source_ref=claim["id"] if answering else None,
             value_hash=value_hash(claim.get("value")) if answering else None,
             permitted_transforms=_TRANSFORMS, display_value=str(claim.get("value")),
@@ -130,10 +137,24 @@ def planned_fields(conn, *, account_id: str, application_workspace_id: str, prof
         cands = answer_candidates(conn, account_id=account_id, workspace_id=ws, subject=subject,
                                   profile_payload=profile_payload)
         req = RepresentationRequirement(key=key, subject=subject, required=required, evidence_available=False,
-                                        candidates=cands)
+                                        job_context=dict(r["job_context"]), candidates=cands)
         usable, contradicted = usable_answer_candidates(
             req, entry, application_workspace_id=ws, search_workspace_id=search_workspace_id,
             employer_key=employer_key, employer_key_strength=employer_key_strength)
+        if entry["context_keys"]:
+            # Fail closed: a standing answer binds only on a proven context match
+            # (an APPLICATION-reach answer was given for this application itself).
+            unproven = [c for c in usable if c.reach is not Reach.APPLICATION
+                        and context_state(c, req, entry) != "match"]
+            if unproven:
+                usable = [c for c in usable if c not in unproven]
+                if not usable:
+                    missing = sorted(k for k in entry["context_keys"] if r["job_context"].get(k) is None)
+                    warnings.append(ReviewWarning(
+                        warning_key("answer_context_unknown", key, {"missing_job_context": missing,
+                                                                    "candidates": sorted(c.approved_answer_id
+                                                                                         for c in unproven)}),
+                        WarningLevel.BLOCKING, f"{question}: the job's {', '.join(missing) or 'context'} is unknown"))
         if contradicted:
             warnings.append(ReviewWarning(warning_key("contradicted_answer", key,
                                                       {"candidates": sorted(c.approved_answer_id for c in cands)}),

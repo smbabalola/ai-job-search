@@ -201,3 +201,88 @@ def test_required_contact_requirement_without_a_profile_value_is_not_lost(conn):
     planned = fields(conn, ws, profile_payload=profile())
     assert by_key(planned)["subject:email"].required and by_key(planned)["subject:email"].disposition is None
     assert warning_types(planned)  # it blocks approval rather than disappearing
+
+
+# ---- A1 gate corrections --------------------------------------------------------
+
+SALARY = "compensation.salary_expectation"  # context keys: currency, region, employment_type
+UK = {"currency": "GBP", "region": "UK", "employment_type": "permanent"}
+
+
+def _salary_world(conn, job_context):
+    ws = make_workspace(conn)
+    delta(conn, ws, subject=SALARY, answer_key=f"subject:{SALARY}", required=True)
+    if job_context is not None:  # the governing job context arrives with the (classified) field requirement
+        ra.insert_delta(conn, account_id=ACCOUNT, application_workspace_id=ws, kind="CHANGED_QUESTION",
+                        answer_key=f"subject:{SALARY}", subject=SALARY, required=True, question="Salary?",
+                        observed={"field_key": "f1", "job_context": job_context}, source="FILL_SESSION:s1", now=NOW)
+    return ws
+
+
+def _salary_answer(conn, context):
+    from webapp.persistence.autonomy_answers import approve_answer
+    return approve_answer(conn, account_id=ACCOUNT, subject=SALARY, value="60000", reach=Reach.SEARCH_WORKSPACE,
+                          scope_id=SEARCH_WS, context=context, basis={"kind": "USER_ASSERTION"}, approved_by="u",
+                          now=NOW)
+
+
+def _six_b_usable(conn, ws, job_context):
+    from webapp.services.autonomy_context import answer_candidates
+    cands = answer_candidates(conn, account_id=ACCOUNT, workspace_id=ws, subject=SALARY, profile_payload={})
+    req = RepresentationRequirement(key=f"subject:{SALARY}", subject=SALARY, required=True, evidence_available=False,
+                                    job_context=job_context or {}, candidates=cands)
+    usable, _ = usable_answer_candidates(req, subject_entry(load_subject_policy(), SALARY),
+                                         application_workspace_id=ws, search_workspace_id=SEARCH_WS,
+                                         employer_key=EMPLOYER, employer_key_strength=EmployerKeyStrength.NORMALIZED_NAME)
+    return {c.approved_answer_id for c in usable}
+
+
+def test_same_context_answer_is_applicable_and_agrees_with_6b(conn):
+    ws = _salary_world(conn, UK)
+    a = _salary_answer(conn, UK)
+    field = by_key(fields(conn, ws))[f"subject:{SALARY}"]
+    assert field.source_ref == a["id"] and field.disposition == "ANSWER"
+    assert field.source_ref in _six_b_usable(conn, ws, UK)
+
+
+def test_known_different_context_is_not_bound_and_agrees_with_6b(conn):
+    ws = _salary_world(conn, UK)
+    a = _salary_answer(conn, {"currency": "USD", "region": "US", "employment_type": "permanent"})
+    field = by_key(fields(conn, ws))[f"subject:{SALARY}"]
+    assert field.source_ref is None and field.disposition is None
+    assert a["id"] not in _six_b_usable(conn, ws, UK)
+
+
+def test_unknown_job_context_never_becomes_a_context_match(conn):
+    ws = _salary_world(conn, None)  # no governing job context known
+    _salary_answer(conn, UK)
+    planned = fields(conn, ws)
+    field = by_key(planned)[f"subject:{SALARY}"]
+    assert field.source_ref is None and field.disposition is None
+    assert "answer_context_unknown" in warning_types(planned)
+
+
+def test_only_current_governing_blockers_create_fields(conn):
+    from webapp.persistence.application_blockers import list_application_blockers
+    from webapp.persistence.artifacts import save_artifact
+    ws = make_workspace(conn)
+    old = blocker(conn, ws, NOTICE)
+    save_artifact(conn, workspace_id=ws, artifact_type="job_fit_result", payload={"newer": True})  # now current
+    assert f"subject:{NOTICE}" not in by_key(fields(conn, ws))
+    assert old["id"] in {b["id"] for b in list_application_blockers(conn, ws)}  # audit history kept
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_ambiguous_contact_field_stays_planned_without_a_source(conn, required):
+    ws = make_workspace(conn)
+    if required:
+        delta(conn, ws, subject="email", answer_key="subject:email", required=True)
+    p = profile(claim("clm_1", "email", "a@b.test"), claim("clm_2", "email", "c@d.test"))
+    planned = fields(conn, ws, profile_payload=p)
+    field = by_key(planned)["contact:email"]
+    assert field.required is required and field.source_ref is None and field.value_hash is None
+    assert field.disposition is None and "ambiguous_answer" in warning_types(planned)
+    if not required:
+        ra.set_disposition(conn, account_id=ACCOUNT, application_workspace_id=ws, answer_key="contact:email",
+                           disposition="OMIT", actor="u", now=NOW)
+        assert by_key(fields(conn, ws, profile_payload=p))["contact:email"].disposition == "OMIT"

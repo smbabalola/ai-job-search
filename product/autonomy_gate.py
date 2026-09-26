@@ -596,6 +596,18 @@ def usable_answer_candidates(req: RepresentationRequirement, entry: dict, *, app
     return [c for c in in_reach if not _context_known_different(c, req, entry)], contradicted
 
 
+def context_state(cand: AnswerCandidate, req: RepresentationRequirement, entry: dict) -> str:
+    """The shared context rule (6B and Review): "different" when a declared
+    context key is known on both sides and differs, "unknown" when any
+    declared key is unknown on either side, else "match"."""
+    if _context_known_different(cand, req, entry):
+        return "different"
+    for key in entry["context_keys"]:
+        if cand.context.get(key) is None or _job_value(req, key) is None:
+            return "unknown"
+    return "match"
+
+
 @dataclass(frozen=True)
 class AnswerReadiness:
     expired: bool
@@ -647,9 +659,8 @@ def _submit_blocker(cand: AnswerCandidate, req: RepresentationRequirement, entry
         return "profile_basis_unverifiable"
     if readiness.basis != "ok":
         return "basis_changed"
-    for key in entry["context_keys"]:
-        if cand.context.get(key) is None or _job_value(req, key) is None:
-            return "context_unknown"
+    if context_state(cand, req, entry) != "match":
+        return "context_unknown"
     return None
 
 

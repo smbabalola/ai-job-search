@@ -142,16 +142,27 @@ def _score(value: Any) -> Any:
     return UNKNOWN
 
 
+def current_governing_blockers(conn, workspace_id: str) -> list[dict[str, Any]]:
+    """Blockers tied to the workspace's current governing artifacts, any
+    status. Blockers of superseded artifacts stay in audit history only
+    (shared by the authorization context and Review, 6D-A)."""
+    out: list[dict[str, Any]] = []
+    for artifact_type in GOVERNING_ARTIFACT_TYPES:
+        artifact = get_current_artifact(conn, workspace_id, artifact_type)
+        if artifact is not None:
+            out.extend(current_application_blockers(conn, workspace_id, artifact["id"]))
+    return out
+
+
 def _governing(conn, workspace_id: str) -> tuple[bool, tuple[str, ...]]:
-    auto_reject, open_ids = False, set()
+    auto_reject = False
     for artifact_type in GOVERNING_ARTIFACT_TYPES:
         artifact = get_current_artifact(conn, workspace_id, artifact_type)
         if artifact is None:
             continue
         decisions = current_policy_decisions(conn, workspace_id, artifact["id"])
         auto_reject = auto_reject or any(d["outcome"] == "AUTO_REJECT" for d in decisions)
-        open_ids |= {b["id"] for b in current_application_blockers(conn, workspace_id, artifact["id"])
-                     if b["status"] == "open"}
+    open_ids = {b["id"] for b in current_governing_blockers(conn, workspace_id) if b["status"] == "open"}
     return auto_reject, tuple(sorted(open_ids))
 
 

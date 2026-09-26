@@ -14,9 +14,10 @@ EMPLOYER = "name:acme"
 SEARCH_WS = "search_default"
 
 
-def blocker(conn, ws, subject, question="Question?"):
-    """A governing blocker for a semantic subject (the production path)."""
-    art = save_artifact(conn, workspace_id=ws, artifact_type="job_fit_result", payload={"subject": subject})
+def blocker(conn, ws, subject, question="Question?", *, artifact=None):
+    """A governing blocker for a semantic subject (the production path). Pass
+    `artifact` to add several blockers to one current governing artifact."""
+    art = artifact or save_artifact(conn, workspace_id=ws, artifact_type="job_fit_result", payload={"subject": subject})
     decision = save_policy_decision(
         conn, workspace_id=ws, stage="fit", source_artifact_id=art["id"], review_item_type="gate_flag",
         subject_key=subject, domain_item_id=subject, outcome="REQUIRE_USER",
