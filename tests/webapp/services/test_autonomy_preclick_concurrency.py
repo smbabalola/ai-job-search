@@ -5,7 +5,9 @@ import threading
 
 from product.autonomy_contract import Capability
 from webapp.persistence.db import connect
-from webapp.services.autonomy import pre_click_commit, request_grant
+# 6D-A: the preserved SUBMIT engine, tested through its private cores.
+from webapp.services.autonomy import _pre_click_commit_core as pre_click_commit
+from webapp.services.autonomy import _request_grant_core as request_grant
 from tests.webapp.persistence.autonomy_db import ACCOUNT, NOW, conn  # noqa: F401
 from tests.webapp.services.test_autonomy_context import patch_external_reads, seed_workspace, settings  # noqa: F401
 from tests.webapp.services.test_autonomy_decide import OBS, authorize_all, manifest

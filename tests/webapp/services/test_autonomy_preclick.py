@@ -10,9 +10,12 @@ from webapp.persistence.autonomy_authority import end_run, get_run, save_policy_
 from webapp.persistence.autonomy_ledger import (
     attempt_state, claim_intent, count_usage, get_grant, list_decisions, live_intent,
 )
+# 6D-A: the public SUBMIT entry points refuse; the preserved engine is tested through its private cores.
+from webapp.services.autonomy import _pre_click_commit_core as pre_click_commit  # noqa: E402
+from webapp.services.autonomy import _request_grant_core as request_grant  # noqa: E402
 from webapp.services.autonomy import (
-    expire_unclicked, mark_stale_dispatches_ambiguous, pre_click_commit, record_click_dispatched,
-    record_submission_result, request_grant, resolve_ambiguous,
+    expire_unclicked, mark_stale_dispatches_ambiguous, record_click_dispatched,
+    record_submission_result, resolve_ambiguous,
 )
 from webapp.services.autonomy_controls import engage_kill_switch
 from tests.webapp.persistence.autonomy_db import ACCOUNT, NOW, conn, make_workspace  # noqa: F401
