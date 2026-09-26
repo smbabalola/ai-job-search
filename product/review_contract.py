@@ -270,3 +270,29 @@ def derive_review_state(s: ReviewSnapshot) -> ReviewState:
     else:
         state = NEEDS_REVIEW
     return ReviewState(state, tuple(reasons), blocking, matches, effective, binding, exposed, current)
+
+
+def delta_resolved(delta: Mapping[str, Any], binding: Mapping[str, Any], *,
+                   document_media_types: Mapping[str, str]) -> bool:
+    """Per-kind resolution (spec §11 R3), judged against the binding being
+    approved. document_media_types: kind -> media type of the bound versions."""
+    kind, observed = delta["kind"], delta.get("observed") or {}
+    if kind in FIELD_DELTA_KINDS:
+        key = effective_delta_key(delta)
+        field = next((f for f in binding["fields"] if f["answer_key"] == key), None)
+        if field is None:
+            return False
+        if field["disposition"] == "OMIT":
+            return not field["required"]
+        if field["disposition"] != "ANSWER":
+            return False
+        if kind == "TRANSFORM_FAILURE":
+            return field["value_hash"] != observed.get("value_hash")
+        return True
+    if kind == "TARGET_CHANGE":
+        return binding["apply_target"]["canonical_url"] == observed.get("canonical_url")
+    if kind == "DOCUMENT_CONVERSION":
+        return document_media_types.get(observed.get("kind")) == observed.get("required_media_type")
+    if kind == "NEW_UPLOAD":
+        return any(d["kind"] == observed.get("kind") for d in binding["documents"])
+    return False

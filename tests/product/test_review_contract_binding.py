@@ -112,3 +112,32 @@ def test_component_names():
     assert set(component_hashes(approval_binding(reviewable()))) == {
         "job", "apply_target", "pack", "document:cv", "document:cover_letter", "field:subject:notice_period",
         "field:subject:relocate", "review_warnings"}
+
+
+def _bound(**kw):
+    return approval_binding(reviewable(**kw))
+
+
+def test_delta_resolved_per_kind():
+    from product.review_contract import delta_resolved
+    b = _bound()
+    field = {"id": "d1", "kind": "NEW_QUESTION", "answer_key": "subject:notice_period", "required": 1, "observed": {}}
+    assert delta_resolved(field, b, document_media_types={})
+    omitted_optional = {**field, "answer_key": "subject:relocate", "required": 0}
+    assert delta_resolved(omitted_optional, b, document_media_types={})
+    missing = {**field, "answer_key": "subject:salary"}
+    assert not delta_resolved(missing, b, document_media_types={})
+    failing = {**field, "kind": "TRANSFORM_FAILURE", "observed": {"value_hash": "sha256:v"}}
+    assert not delta_resolved(failing, b, document_media_types={})
+    assert delta_resolved({**failing, "observed": {"value_hash": "sha256:other"}}, b, document_media_types={})
+    target = {"id": "t", "kind": "TARGET_CHANGE", "answer_key": None, "required": 1,
+              "observed": {"canonical_url": "https://example.test/apply"}}
+    assert delta_resolved(target, b, document_media_types={})
+    assert not delta_resolved({**target, "observed": {"canonical_url": "https://elsewhere.test"}}, b,
+                              document_media_types={})
+    conversion = {"id": "c", "kind": "DOCUMENT_CONVERSION", "answer_key": None, "required": 1,
+                  "observed": {"kind": "cv", "required_media_type": "application/pdf"}}
+    assert not delta_resolved(conversion, b, document_media_types={"cv": "application/docx"})
+    assert delta_resolved(conversion, b, document_media_types={"cv": "application/pdf"})
+    upload = {"id": "u", "kind": "NEW_UPLOAD", "answer_key": None, "required": 1, "observed": {"kind": "portfolio"}}
+    assert not delta_resolved(upload, b, document_media_types={})

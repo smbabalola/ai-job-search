@@ -143,3 +143,35 @@ def table_counts(conn):
 
 def diff_counts(before, after):
     return {k: after[k] - before.get(k, 0) for k in after if after[k] != before.get(k, 0)}
+
+
+# ---- Task 8: bring the v2 world to an approvable state, and approve -----------------
+
+def _make_approvable(self, now=NOW):
+    """Explicit user choices, recorded like the UI would (persistence level):
+    leave undecided optional fields blank and acknowledge ATTENTION warnings."""
+    from product.review_contract import WarningLevel
+    from webapp.persistence import review_approval as ra
+    r = self.reviewable(now=now)
+    for f in r.fields:
+        if not f.required and f.disposition is None:
+            ra.set_disposition(self.conn, account_id=V2_ACCOUNT, application_workspace_id=self.ws,
+                               answer_key=f.answer_key, disposition="OMIT", actor="u", now=now)
+    for w in self.reviewable(now=now).warnings:
+        if w.level is WarningLevel.ATTENTION and not w.acknowledged:
+            ra.record_event(self.conn, account_id=V2_ACCOUNT, application_workspace_id=self.ws,
+                            event="WARNING_ACKNOWLEDGED", binding_hash=None, detail={"warning_key": w.key},
+                            actor="u", now=now)
+    self.conn.commit()
+    return self.state(now=now)
+
+
+def _approve(self, displayed=None, now=NOW, batch_id=None):
+    from webapp.services.review_approval import approve
+    return approve(self.conn, settings=self.settings, account_id=V2_ACCOUNT, application_workspace_id=self.ws,
+                   displayed_binding_hash=displayed if displayed is not None else self.state(now=now).binding_hash,
+                   actor="u", now=now, batch_id=batch_id)
+
+
+V2World.make_approvable = _make_approvable
+V2World.approve = _approve
