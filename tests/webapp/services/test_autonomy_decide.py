@@ -29,6 +29,14 @@ def manifest(ws):
                  "transform_id": "identity", "value_hash": value_hash("a@b.c"), "required": True}]}]}
 
 
+def _run(conn, run_id="run_1"):
+    # SUBMIT needs an active run when submit_per_run is configured (Task 15 ruling).
+    from webapp.persistence.autonomy_authority import get_run, start_run
+    if get_run(conn, run_id) is None:
+        start_run(conn, account_id=ACCOUNT, started_by="SCHEDULER", now=NOW, run_id=run_id)
+    return run_id
+
+
 def authorize_all(conn):
     enable_autonomous_preparation(conn, account_id=ACCOUNT, actor="u", timezone="Europe/London", now=NOW)
     for scope_type, scope_id in (("ACCOUNT_MAX", ACCOUNT), ("WORKSPACE_CEILING", "sw_1")):
@@ -66,7 +74,8 @@ def test_no_grant_when_not_grantable(conn, settings, seeded):
 def test_submit_grant_binds_manifest_target_identity_and_policy(conn, settings, seeded):
     authorize_all(conn)
     out = request_grant(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
-                        stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS)
+                        stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS,
+                        run_id=_run(conn))
     assert out.decision.grantable, out.decision.reasons
     binding = get_grant(conn, out.grant["id"])["binding"]
     assert set(binding) >= {"stage", "pack_artifact_id", "fill_manifest", "fill_manifest_hash", "answers",
@@ -170,7 +179,8 @@ def test_binding_includes_target_url_adapter_version_and_tenant(conn, settings, 
     from webapp.services.autonomy_context import canonical_target_url
     authorize_all(conn)
     out = request_grant(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
-                        stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS)
+                        stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS,
+                        run_id=_run(conn))
     target = get_grant(conn, out.grant["id"])["binding"]["apply_target"]
     assert target["canonical_url"] == canonical_target_url(URL)
     assert (target["adapter_version"], target["tenant_key"]) == ("1.0.0", None)
