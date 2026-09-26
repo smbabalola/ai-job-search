@@ -11,6 +11,9 @@ from webapp.persistence.autonomy_answers import (
     current_apply_target_confirmation, current_approved_answers, current_rule_acknowledgements,
     record_rule_acknowledgement, save_proposed_answer,
 )
+from webapp.persistence.artifacts import save_artifact
+from webapp.persistence.policy_decisions import save_policy_decision
+from webapp.persistence.application_blockers import save_application_blocker
 from webapp.persistence.db import connect
 from tests.webapp.persistence.autonomy_db import ACCOUNT, NOW, conn, make_workspace, db_path  # noqa: F401
 
@@ -164,32 +167,61 @@ def test_approve_commit_false_two_connection_isolation(db_path):
     conn2.close()
 
 
-def test_proposed_answer_separate_table(conn):
-    """save_proposed_answer stores in separate table with SYSTEM_PROPOSED provenance."""
-    # Create an approved answer
-    a = approve_answer(conn, account_id=ACCOUNT, subject="employment.notice_period", value="1 month",
-                      reach=Reach.ACCOUNT, scope_id=None, context={}, basis=ASSERT, approved_by="u", now=NOW)
+def test_save_proposed_answer_is_system_proposed_and_never_approved(conn):
+    """save_proposed_answer stores SYSTEM_PROPOSED provenance; proposed answers never in current_approved_answers."""
+    # Create workspace and parent objects using production helpers
+    ws = make_workspace(conn)
+    art = save_artifact(conn, workspace_id=ws, artifact_type="job_fit_result", payload={"x": 1})
 
-    # Insert a proposed_answer row directly (tests the table/provenance constraint, not FK validation)
-    # Disable FK temporarily to bypass blocker_id constraint since FK validation is not the focus
-    conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute(
-        'INSERT INTO proposed_answers (id, blocker_id, subject, value_json, provenance, created_at) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        ("prop_1", "block_1", "employment.notice_period", '"2 months"', "SYSTEM_PROPOSED", "2026-09-24T12:00:00.000000+00:00")
+    # Create policy decision with REQUIRE_USER outcome (creates a blocker)
+    decision = save_policy_decision(
+        conn,
+        workspace_id=ws,
+        stage="fit",
+        source_artifact_id=art["id"],
+        review_item_type="gate_flag",
+        subject_key="employment.notice_period",
+        domain_item_id="employment.notice_period",
+        outcome="REQUIRE_USER",
+        policy_version="application-decision-policy.v0",
+        policy_fingerprint="appdecpolicy_abc123",
+        evidence_ids=[],
+        supported_facts=[],
+        recorded_gaps=[],
+        reason_code="requires_user",
+        reason="Requires user answer",
+        confidence=None,
+        blocking=True,
     )
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
 
-    # Verify proposed_answers table has SYSTEM_PROPOSED provenance
-    rows = conn.execute("SELECT COUNT(*) as cnt FROM proposed_answers WHERE provenance = 'SYSTEM_PROPOSED'").fetchone()
-    assert rows[0] == 1
+    # Create blocker from policy decision
+    blocker = save_application_blocker(
+        conn,
+        workspace_id=ws,
+        policy_decision_id=decision["id"],
+        source_artifact_id=art["id"],
+        stage="fit",
+        blocker_type="gate_flag",
+        subject_key="employment.notice_period",
+        question="What is your notice period?",
+        resume_stage="fit",
+        allowed_scopes=["APPLICATION_ONLY"],
+        semantic_subject_key="employment.notice_period",
+    )
 
-    # current_approved_answers should only return the approved answer, not the proposed one
+    # Call production save_proposed_answer
+    row = save_proposed_answer(conn, blocker_id=blocker["id"], subject="employment.notice_period", value="1 month", now=NOW)
+
+    # Verify SYSTEM_PROPOSED provenance
+    assert row["provenance"] == "SYSTEM_PROPOSED"
+
+    # Verify row is in proposed_answers table
+    count = conn.execute("SELECT COUNT(*) FROM proposed_answers WHERE blocker_id = ?", (blocker["id"],)).fetchone()[0]
+    assert count == 1
+
+    # Verify proposed answer is NOT returned by current_approved_answers (separate table)
     current = current_approved_answers(conn, account_id=ACCOUNT, subject="employment.notice_period")
-    assert len(current) == 1
-    assert current[0]["id"] == a["id"]
-    assert current[0]["value"] == "1 month"
+    assert current == []
 
 
 def test_validation_non_canonicalizable_value(conn):
