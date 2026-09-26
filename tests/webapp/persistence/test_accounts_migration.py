@@ -230,6 +230,7 @@ def test_post_002_upgrade_backfills_default_owner_without_data_loss(tmp_path):
         "016_autonomy_contract",
         "017_autonomy_human_intent_backfill",
         "018_autonomy_prepare",
+        "019_review_approval",
     }
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     create_account(
