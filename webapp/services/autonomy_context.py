@@ -111,6 +111,33 @@ def apply_target_url(conn, *, workspace_id: str, account_id: str) -> str | None:
     return canonical_target_url(target.url) if target is not None else None
 
 
+def employer_identity(posting: Mapping[str, Any], workspace: Mapping[str, Any],
+                      observation: "ApplyTargetObservation | None" = None) -> tuple[str | None, EmployerKeyStrength]:
+    """The employer key and its strength (shared by the authorization context
+    and Review, 6D-A): an ATS tenant when observed, else the normalized name."""
+    if observation is not None and observation.tenant_key:
+        return f"tenant:{observation.adapter_id}:{observation.tenant_key}", EmployerKeyStrength.ATS_TENANT
+    key = normalized_employer_key(posting.get("company") or workspace.get("company"))
+    return key, EmployerKeyStrength.NORMALIZED_NAME if key else EmployerKeyStrength.UNKNOWN
+
+
+def apply_target_state(conn, *, workspace_id: str, account_id: str,
+                       identity_key: str | None) -> tuple[str | None, "ProvenanceTier | None"]:
+    """(canonical target URL, provenance tier) of the current apply target,
+    upgraded to user_confirmed_apply_target by a matching confirmation
+    (shared by the authorization context and Review, 6D-A)."""
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=account_id)
+    if target is None:
+        return None, None
+    canonical = canonical_target_url(target.url)
+    provenance = ProvenanceTier(target.provenance)
+    confirmation = current_apply_target_confirmation(conn, workspace_id)
+    if (confirmation and identity_key and confirmation["job_identity_key"] == identity_key
+            and confirmation["canonical_url"] == canonical):
+        provenance = ProvenanceTier.USER_CONFIRMED_APPLY_TARGET
+    return canonical, provenance
+
+
 def day_window(now: datetime, tz_name: str) -> tuple[str, datetime]:
     tz = ZoneInfo(tz_name)
     local = now.astimezone(tz)
@@ -287,12 +314,7 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     workspace = get_workspace(conn, ws, account_id=account_id) or {}
 
     identity_key, identity_strength, identity_conflict = workspace_identity(conn, ws)
-    if observation is not None and observation.tenant_key:
-        employer_key = f"tenant:{observation.adapter_id}:{observation.tenant_key}"
-        employer_strength = EmployerKeyStrength.ATS_TENANT
-    else:
-        employer_key = normalized_employer_key(posting.get("company") or workspace.get("company"))
-        employer_strength = EmployerKeyStrength.NORMALIZED_NAME if employer_key else EmployerKeyStrength.UNKNOWN
+    employer_key, employer_strength = employer_identity(posting, workspace, observation)
 
     verdict = fit.get("verdict")
     attributes = {
@@ -310,14 +332,7 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     pack_id, pack_ok = pack_readiness(conn, workspace_id=ws, account_id=account_id,
                                       extensions_dir=settings.extensions_dir, unresolved=unresolved)
 
-    target = resolve_apply_target(conn, workspace_id=ws, account_id=account_id)
-    provenance = None
-    if target is not None:
-        provenance = ProvenanceTier(target.provenance)
-        confirmation = current_apply_target_confirmation(conn, ws)
-        if (confirmation and identity_key and confirmation["job_identity_key"] == identity_key
-                and confirmation["canonical_url"] == canonical_target_url(target.url)):
-            provenance = ProvenanceTier.USER_CONFIRMED_APPLY_TARGET
+    _, provenance = apply_target_state(conn, workspace_id=ws, account_id=account_id, identity_key=identity_key)
     if observation is None:
         apply_target = ApplyTargetFacts(provenance=provenance)
     else:

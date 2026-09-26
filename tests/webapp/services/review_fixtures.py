@@ -58,3 +58,74 @@ def by_key(planned):
 
 def warning_types(planned):
     return sorted(w.key.split(":", 1)[0] for w in planned[1])
+
+
+# ---- Task 6: a real v2 chain (generate -> select -> user v2 confirm) --------------
+
+import dataclasses  # noqa: E402
+
+import pytest  # noqa: E402
+
+V2_ACCOUNT = "account_local"
+
+
+class V2World:
+    def __init__(self, conn, ws, settings, generated):
+        self.conn, self.ws, self.settings, self.generated = conn, ws, settings, generated
+
+    def state(self, now=NOW, **settings_overrides):
+        from webapp.services.review_application import review_state
+        s = dataclasses.replace(self.settings, **settings_overrides) if settings_overrides else self.settings
+        return review_state(self.conn, settings=s, account_id=V2_ACCOUNT, application_workspace_id=self.ws, now=now)
+
+    def reviewable(self, now=NOW):
+        from webapp.services.review_application import build_reviewable
+        return build_reviewable(self.conn, settings=self.settings, account_id=V2_ACCOUNT,
+                                application_workspace_id=self.ws, now=now)
+
+    def set_target(self, url="https://jobs.example.test/acme/123", provenance="user_supplied"):
+        """A new current job posting snapshot carrying an apply target URL."""
+        from webapp.persistence.artifacts import get_current_artifact, save_artifact
+        posting = dict(get_current_artifact(self.conn, self.ws, "job_posting_snapshot")["payload"])
+        posting["source_url"] = url
+        posting["metadata"] = {"ingestion": {"source_url_provenance": provenance}}
+        save_artifact(self.conn, workspace_id=self.ws, artifact_type="job_posting_snapshot", payload=posting)
+
+    def selection(self, kind):
+        from webapp.persistence.application_documents import get_selection
+        return get_selection(self.conn, self.ws, kind, account_id=V2_ACCOUNT)
+
+
+@pytest.fixture
+def v2_chain(tmp_path):
+    from tests.webapp.services.test_application_pack import _seed_completion_ready, _workspace
+    from webapp.config import Settings
+    from webapp.services.application_documents import generate_application_documents, select_application_document
+    from webapp.services.application_pack import confirm_application_pack
+    conn, ws = _workspace(tmp_path)
+    _seed_completion_ready(conn, ws)
+    settings = Settings(db_path=tmp_path / "jobsearch.sqlite3", documents_root=tmp_path / "docs",
+                        extensions_dir=tmp_path / "extensions", cv_quality_v2_enabled=True)
+    generated = generate_application_documents(conn, ws, documents_root=settings.documents_root,
+                                               extensions_dir=settings.extensions_dir, account_id=V2_ACCOUNT)
+    revisions = {}
+    for row in generated["documents"]:
+        selection = select_application_document(conn, ws, kind=row["document_kind"], document_version_id=row["id"],
+                                                expected_revision=0, account_id=V2_ACCOUNT)
+        revisions[row["document_kind"]] = selection["revision"]
+    confirm_application_pack(conn, ws, effective_date="2026-09-24", documents_root=settings.documents_root,
+                             account_id=V2_ACCOUNT, document_selection_revisions=revisions)
+    world = V2World(conn, ws, settings, generated)
+    world.set_target()
+    yield world
+    conn.close()
+
+
+def docx_bytes(text):
+    from io import BytesIO
+    from docx import Document
+    stream = BytesIO()
+    document = Document()
+    document.add_paragraph(text)
+    document.save(stream)
+    return stream.getvalue()
