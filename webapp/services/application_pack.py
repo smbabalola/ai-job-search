@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from product.application_pack_contract import (
     APPLICATION_PACK_V1,
@@ -25,6 +25,19 @@ from webapp.services.staleness import check_staleness, record_dependency_fingerp
 _ACKNOWLEDGED = "acknowledged_and_proceed"
 _OMITTED = "omit_from_positioning"
 _BLOCKING = frozenset({"requires_upstream_change", "resolved_by_rerun"})
+
+USER_GATE4_NOTE = "Application pack reviewed and confirmed by user."
+SYSTEM_GATE4_NOTE = "Application pack system-confirmed under standing PREPARE authority (6B representation rule)."
+
+
+class OutstandingReviewItems(PipelineError):
+    """Gate 4 cannot proceed: these review items have no usable decision.
+    Same message as before; .items carries them structurally (6C)."""
+
+    def __init__(self, workspace_id: str, items: list[dict[str, Any]]):
+        self.items = items
+        labels = sorted({f"{i['item_type']}:{i['item_id']}" for i in items})
+        super().__init__(f"workspace {workspace_id} has outstanding review items: {labels}")
 
 
 def _current_or_error(
@@ -120,22 +133,27 @@ def _build_application_pack_with_profile(
     intelligence_decisions = _decision_index(
         conn, workspace_id, intelligence_artifact["id"]
     )
-    outstanding: list[str] = []
+    outstanding: list[dict[str, Any]] = []
+
+    def mark_outstanding(item_type: str, item_id: str, source_artifact_id: str, source: Any) -> None:
+        outstanding.append({"item_type": item_type, "item_id": item_id,
+                            "source_artifact_id": source_artifact_id, "source": source})
     consulted: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
 
     def adjudicate(
         *, item_type: str, item_id: str, source: dict[str, Any],
-        decisions: dict[tuple[str, str | None], dict[str, Any]], allow_omit: bool = True,
+        decisions: dict[tuple[str, str | None], dict[str, Any]], source_artifact_id: str,
+        allow_omit: bool = True,
     ) -> bool:
         decision = decisions.get((item_type, item_id))
         if decision is None or decision["disposition"] in _BLOCKING:
-            outstanding.append(f"{item_type}:{item_id}")
+            mark_outstanding(item_type, item_id, source_artifact_id, source)
             return False
         consulted.append(decision)
         if decision["disposition"] == _OMITTED:
             if not allow_omit:
-                outstanding.append(f"{item_type}:{item_id}")
+                mark_outstanding(item_type, item_id, source_artifact_id, source)
                 return False
             exclusions.append(
                 {
@@ -149,7 +167,7 @@ def _build_application_pack_with_profile(
             )
             return False
         if decision["disposition"] != _ACKNOWLEDGED:
-            outstanding.append(f"{item_type}:{item_id}")
+            mark_outstanding(item_type, item_id, source_artifact_id, source)
             return False
         return True
 
@@ -182,13 +200,13 @@ def _build_application_pack_with_profile(
     ) -> None:
         decision = profile_decisions.get((item_type, item_id))
         if decision is None:
-            outstanding.append(f"{item_type}:{item_id}")
+            mark_outstanding(item_type, item_id, profile_artifact["id"], source)
             return
         consulted.append(decision)
         if decision["disposition"] != _OMITTED:
             # Seeing an integrity problem cannot rehabilitate evidence. Only a
             # safe omission can proceed without a corrected upstream snapshot.
-            outstanding.append(f"{item_type}:{item_id}")
+            mark_outstanding(item_type, item_id, profile_artifact["id"], source)
             return
         unsafe_claim_ids.update(affected_claim_ids)
         exclusions.append({
@@ -222,12 +240,12 @@ def _build_application_pack_with_profile(
         if gate.get("status") in {"FLAG", "UNVERIFIED"}:
             adjudicate(
                 item_type="gate_flag", item_id=f"gate:{gate['gate_id']}", source=gate,
-                decisions=fit_decisions,
+                decisions=fit_decisions, source_artifact_id=fit_artifact["id"],
             )
     for question in fit.get("human_judgment_questions", []):
         adjudicate(
             item_type="human_judgment_question", item_id=question["question_id"],
-            source=question, decisions=fit_decisions,
+            source=question, decisions=fit_decisions, source_artifact_id=fit_artifact["id"],
         )
 
     def select_matches(collection: str, item_type: str) -> list[dict[str, Any]]:
@@ -245,7 +263,7 @@ def _build_application_pack_with_profile(
                 continue
             if adjudicate(
                 item_type=item_type, item_id=match["match_id"], source=match,
-                decisions=fit_decisions,
+                decisions=fit_decisions, source_artifact_id=fit_artifact["id"],
             ):
                 selected.append(match)
         return selected
@@ -279,11 +297,11 @@ def _build_application_pack_with_profile(
                 })
                 continue
             if unit.get("status") not in {"READY", "NEEDS_REVIEW"} or not unit_id:
-                outstanding.append(f"content_unit:{unit_id or '<missing>'}")
+                mark_outstanding("content_unit", unit_id or "<missing>", intelligence_artifact["id"], unit)
                 continue
             if adjudicate(
                 item_type="content_unit", item_id=unit_id, source=unit,
-                decisions=intelligence_decisions,
+                decisions=intelligence_decisions, source_artifact_id=intelligence_artifact["id"],
             ):
                 selected.append(unit)
         return selected
@@ -291,9 +309,7 @@ def _build_application_pack_with_profile(
     cv_content = select_units("cv_content")
     cover_letter_content = select_units("cover_letter_content")
     if outstanding:
-        raise PipelineError(
-            f"workspace {workspace_id} has outstanding review items: {sorted(set(outstanding))}"
-        )
+        raise OutstandingReviewItems(workspace_id, outstanding)
 
     source_artifacts = {
         "profile_snapshot": _artifact_ref(profile_artifact),
@@ -354,6 +370,16 @@ def _build_application_pack_with_profile(
     return pack, profile_artifact
 
 
+def list_outstanding_review_items(
+    conn: sqlite3.Connection, workspace_id: str, *, extensions_dir: Path | str, account_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        _build_application_pack_with_profile(conn, workspace_id, extensions_dir=extensions_dir, account_id=account_id)
+    except OutstandingReviewItems as exc:
+        return exc.items
+    return []
+
+
 def build_application_pack(
     conn: sqlite3.Connection, workspace_id: str, *,
     extensions_dir: Path | str = Path("extensions"),
@@ -382,6 +408,31 @@ def confirm_application_pack(
             documents_root=Path(documents_root), account_id=account_id,
             selection_revisions=document_selection_revisions,
         )
+    return _confirm_application_pack_v1(
+        conn, workspace_id, effective_date=effective_date, documents_root=documents_root,
+        extensions_dir=extensions_dir, account_id=account_id, note=USER_GATE4_NOTE, precheck=None,
+    )
+
+
+def system_confirm_application_pack(
+    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
+    extensions_dir: Path | str, account_id: str,
+    precheck: Callable[[dict[str, Any], dict[str, Any]], None],
+) -> dict[str, Any]:
+    """Bundle 6C system Gate 4 (spec §8.3): the same pack assembly and
+    validation as the user path, a system note, and caller rechecks run
+    inside the same BEGIN IMMEDIATE transaction (raise to abort)."""
+    return _confirm_application_pack_v1(
+        conn, workspace_id, effective_date=effective_date, documents_root=documents_root,
+        extensions_dir=extensions_dir, account_id=account_id, note=SYSTEM_GATE4_NOTE, precheck=precheck,
+    )
+
+
+def _confirm_application_pack_v1(
+    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
+    extensions_dir: Path | str, account_id: str, note: str,
+    precheck: Callable[[dict[str, Any], dict[str, Any]], None] | None,
+) -> dict[str, Any]:
     try:
         # Acquire the write reservation before reading the current chain. This
         # makes the reviewed sources and the persisted Gate-4 binding one
@@ -410,6 +461,8 @@ def confirm_application_pack(
         validate_application_pack_v1(
             pack, source_profile_artifact=profile_artifact
         )
+        if precheck is not None:
+            precheck(pack, profile_artifact)
         artifact = save_artifact(
             conn, workspace_id=workspace_id, artifact_type="application_pack", payload=pack,
             commit=False,
@@ -427,7 +480,7 @@ def confirm_application_pack(
         )
         event = record_status_change(
             conn, workspace_id=workspace_id, new_status="drafted", effective_date=effective_date,
-            note="Application pack reviewed and confirmed by user.",
+            note=note,
             submitted_pack_artifact_id=artifact["id"], _allow_drafted=True,
             commit=False, account_id=account_id,
         )
