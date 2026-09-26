@@ -81,32 +81,44 @@ def approve_answer(conn: sqlite3.Connection, *, account_id: str, subject: str, v
     except CanonicalHashError as e:
         raise AnswerValidationError(str(e)) from e
 
-    conn.execute("SAVEPOINT approve_answer")
+    # Ensure we're in a transaction so SAVEPOINT is nested, not outermost
+    opened_txn = False
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+        opened_txn = True
+
     try:
+        conn.execute("SAVEPOINT approve_answer")
         try:
-            answer = _insert(conn, "approved_answers", {
-                "id": _id("ans"), "account_id": account_id, "subject": subject,
-                "answer_kind": entry["answer_kind"], "value_json": canonical_json(value),
-                "reach": Reach(reach).value, "scope_id": account_id if Reach(reach) is Reach.ACCOUNT else scope_id,
-                "context_json": canonical_json(context), "provenance": provenance,
-                "basis_json": canonical_json(basis), "basis_profile_version_id": basis_profile_version_id,
-                "supersedes_id": supersedes_id, "source_blocker_resolution_id": source_blocker_resolution_id,
-                "approved_by": approved_by, "created_at": to_utc_iso(now),
-            })
-            _insert(conn, "answer_confirmations", {
-                "id": _id("conf"), "approved_answer_id": answer["id"], "confirmed_by": approved_by,
-                "created_at": to_utc_iso(now),
-            })
-        except CanonicalHashError as e:
-            raise AnswerValidationError(str(e)) from e
-        conn.execute("RELEASE approve_answer")
+            try:
+                answer = _insert(conn, "approved_answers", {
+                    "id": _id("ans"), "account_id": account_id, "subject": subject,
+                    "answer_kind": entry["answer_kind"], "value_json": canonical_json(value),
+                    "reach": Reach(reach).value, "scope_id": account_id if Reach(reach) is Reach.ACCOUNT else scope_id,
+                    "context_json": canonical_json(context), "provenance": provenance,
+                    "basis_json": canonical_json(basis), "basis_profile_version_id": basis_profile_version_id,
+                    "supersedes_id": supersedes_id, "source_blocker_resolution_id": source_blocker_resolution_id,
+                    "approved_by": approved_by, "created_at": to_utc_iso(now),
+                })
+                _insert(conn, "answer_confirmations", {
+                    "id": _id("conf"), "approved_answer_id": answer["id"], "confirmed_by": approved_by,
+                    "created_at": to_utc_iso(now),
+                })
+            except CanonicalHashError as e:
+                raise AnswerValidationError(str(e)) from e
+            conn.execute("RELEASE approve_answer")
+        except Exception:
+            conn.execute("ROLLBACK TO approve_answer")
+            conn.execute("RELEASE approve_answer")
+            raise
+
+        if commit:
+            conn.commit()
     except Exception:
-        conn.execute("ROLLBACK TO approve_answer")
-        conn.execute("RELEASE approve_answer")
+        if opened_txn:
+            conn.rollback()
         raise
 
-    if commit:
-        conn.commit()
     return answer
 
 
