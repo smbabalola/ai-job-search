@@ -34,13 +34,16 @@ from webapp.services.autonomy_context import day_window
 from webapp.services.autonomy_controls import (
     engage_kill_switch_in_transaction, run_immediate, sentinel_present,
 )
-from webapp.services.autonomy_inbox import notify_outcome, reconcile_notifications
+from webapp.services.autonomy_fence import FencedStep, LeaseLost, StepTimeout, database_file, lease_fence
+from webapp.services.autonomy_inbox import (
+    notification_key, notify_outcome, reconcile_notifications, supersede_outcomes,
+)
 from webapp.services.autonomy_prepare import (
-    classify_error, prepare_snapshot, retry_after_seconds, run_paid_step, run_system_review, system_gate4,
+    StepStateChanged, classify_error, prepare_snapshot, retry_after_seconds, run_paid_step, run_system_review,
+    system_gate4,
 )
 from webapp.services.autonomy_prepare_auth import authorize_prepare
 from webapp.services.autonomy_providers import NoCostEvidence, ProviderSet
-from webapp.services.pipeline import PipelineError
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +54,7 @@ class TickReport:
     processed: list[dict[str, Any]] = field(default_factory=list)
 
 
-class _LostLease(Exception):
-    pass
+_LostLease = LeaseLost
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -108,6 +110,8 @@ def _dormant_with(conn, *, queue: str, item_id: str, worker_id: str, generation:
     def work():
         if ap.finalize_lease(conn, queue=queue, item_id=item_id, worker_id=worker_id, generation=generation,
                              now=now, next_eligible_at=None):
+            supersede_outcomes(conn, account_id=account_id, subject_type=subject_type, subject_id=item_id, now=now,
+                               keep_key=notification_key(kind, subject_type, item_id, reason, fingerprint))
             notify_outcome(conn, account_id=account_id, subject_type=subject_type, subject_id=item_id, kind=kind,
                            reason=reason, fingerprint=fingerprint, detail=detail, now=now)
     run_immediate(conn, work)
@@ -115,19 +119,50 @@ def _dormant_with(conn, *, queue: str, item_id: str, worker_id: str, generation:
 
 # ---- sweeps ---------------------------------------------------------------------
 
-def _recover_orphans(conn, *, now: datetime, meter) -> int:
+_STEP_OUTPUT = {"UNDERSTAND": ("understanding_current", "job_understanding_result"),
+                "FIT": ("fit_current", "job_fit_result"),
+                "INTELLIGENCE": ("intelligence_current", "application_intelligence_result")}
+
+
+def _already_produced(conn, settings: Settings, subject_type: str, item_id: str, account_id: str,
+                      step: str) -> list[dict[str, Any]] | None:
+    """The artifact refs if the orphaned step's output is current and matches
+    its present inputs (not stale), else None."""
+    from webapp.persistence.artifacts import get_current_artifact
+    if subject_type == "APPLICATION" and step in _STEP_OUTPUT:
+        flag, artifact_type = _STEP_OUTPUT[step]
+        snapshot, _ = prepare_snapshot(conn, settings=settings, account_id=account_id,
+                                       application_workspace_id=item_id)
+        if not getattr(snapshot, flag):
+            return None
+        artifact = get_current_artifact(conn, item_id, artifact_type)
+        return [{"artifact_id": artifact["id"], "artifact_type": artifact_type,
+                 "content_id": artifact.get("content_id")}]
+    if subject_type == "CANDIDATE" and step == "EVALUATE":
+        row = conn.execute("SELECT search_workspace_id FROM autonomy_candidate_queue WHERE candidate_id = ?",
+                           (item_id,)).fetchone()
+        fit, fresh = autonomy_candidates._fit_state(conn, candidate_id=item_id,
+                                                    search_workspace_id=row["search_workspace_id"],
+                                                    account_id=account_id)
+        return [{"discovery_fit_id": fit["id"]}] if fit and fresh else None
+    return None
+
+
+def _recover_orphans(conn, *, settings: Settings, now: datetime, meter) -> int:
     recovered = 0
     for subject_type, (table, key) in ap.QUEUES.items():
-        rows = conn.execute(f"SELECT {key} AS item_id, lease_holder, lease_generation, lease_expires_at "
-                            f"FROM {table}").fetchall()
+        rows = conn.execute(f"SELECT {key} AS item_id, account_id, lease_holder, lease_generation, "
+                            f"lease_expires_at FROM {table}").fetchall()
         for row in rows:
             for orphan in ap.orphaned_attempts(conn, subject_type, row["item_id"]):
                 lease_free = row["lease_holder"] is None or (row["lease_expires_at"] and
                                                               parse_utc(row["lease_expires_at"]) <= now)
                 if not (lease_free or row["lease_generation"] > orphan["lease_generation"]):
                     continue
+                reused = _already_produced(conn, settings, subject_type, row["item_id"], row["account_id"],
+                                           orphan["step_kind"])
 
-                def work(orphan=orphan):
+                def work(orphan=orphan, reused=reused):
                     settled = []
                     for reservation_id in orphan["reservation_ids"]:
                         reservation = get_reservation(conn, reservation_id)
@@ -137,8 +172,9 @@ def _recover_orphans(conn, *, now: datetime, meter) -> int:
                         settle_reservation(conn, reservation_id=reservation_id, attempt_id=orphan["attempt_id"],
                                            amount=amount, now=now)
                         settled.append(str(amount))
-                    ap.finish_attempt(conn, attempt_id=orphan["attempt_id"], event="ABANDONED", now=now,
-                                      cost={"settled": settled, "source": "recovery"})
+                    ap.finish_attempt(conn, attempt_id=orphan["attempt_id"],
+                                      event="REUSED" if reused else "ABANDONED", now=now,
+                                      artifact_refs=reused or [], cost={"settled": settled, "source": "recovery"})
                 run_immediate(conn, work)
                 recovered += 1
     return recovered
@@ -149,7 +185,7 @@ def _sweeps(conn, settings: Settings, now: datetime, meter) -> dict[str, Any]:
            "expired_unclicked": expire_unclicked(conn, now=now),
            "stale_dispatches": mark_stale_dispatches_ambiguous(
                conn, now=now, result_timeout=timedelta(seconds=settings.autonomy_dispatch_result_timeout)),
-           "abandoned": _recover_orphans(conn, now=now, meter=meter)}
+           "abandoned": _recover_orphans(conn, settings=settings, now=now, meter=meter)}
     out["resolved_notifications"] = sum(
         reconcile_notifications(conn, account_id=row["id"], now=now)
         for row in conn.execute("SELECT id FROM accounts").fetchall())
@@ -184,6 +220,15 @@ def _finish_paid(conn, *, queue: str, item_id: str, subject_type: str, account_i
             else:
                 ap.finish_attempt(conn, attempt_id=attempt_id, event="SUCCEEDED", now=now,
                                   artifact_refs=refs or [], cost=cost)
+        elif isinstance(error, StepStateChanged):
+            # Not a failure of anything: the state moved. Re-derive at once;
+            # a change that never settles escalates instead of looping.
+            ap.finish_attempt(conn, attempt_id=attempt_id, event="FAILED", now=now, error_class=None,
+                              error_code="state_changed", error_detail=str(error)[:500])
+            if ap.cycle_failures(conn, subject_type=subject_type, subject_id=item_id, step_kind=step,
+                                 input_fingerprint=fingerprint, retry_request_id=retry_request_id) \
+                    >= MAX_ATTEMPTS_PER_CYCLE:
+                next_at, notify = None, ("OPERATIONAL_ERROR", "state_unsettled")
         else:
             error_class, code = classify_error(error)
             for reservation_id in reservation_ids:  # the call may have spent: settle at the maximum
@@ -206,6 +251,9 @@ def _finish_paid(conn, *, queue: str, item_id: str, subject_type: str, account_i
                 next_at, notify = None, ("OPERATIONAL_ERROR", f"internal:{code}")
         ap.finalize_lease(conn, queue=queue, item_id=item_id, worker_id=worker_id, generation=generation, now=now,
                           next_eligible_at=next_at)
+        supersede_outcomes(conn, account_id=account_id, subject_type=subject_type, subject_id=item_id, now=now,
+                           keep_key=notification_key(notify[0], subject_type, item_id, notify[1], fingerprint)
+                           if notify else None)
         if notify:
             notify_outcome(conn, account_id=account_id, subject_type=subject_type, subject_id=item_id,
                            kind=notify[0], reason=notify[1], fingerprint=fingerprint,
@@ -246,7 +294,10 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
     fingerprint = canonical_hash("autonomy-outcome", "v1", {"revision": detail["pack_revision"],
                                                              "content_ids": detail["content_ids"]})
     if nxt.kind == "DONE":
-        _finalize(conn, now=now, next_eligible_at=None, **lease)
+        def done():
+            if ap.finalize_lease(conn, now=now, next_eligible_at=None, **lease):
+                supersede_outcomes(conn, account_id=account_id, subject_type="APPLICATION", subject_id=ws, now=now)
+        run_immediate(conn, done)
         report["action"] = "done"
         return report
     if nxt.kind in ("PREPARED", "NEEDS_USER"):
@@ -337,6 +388,7 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
             attempt_no=ap.next_attempt_no(conn, "APPLICATION", ws, step.value), input_fingerprint=step_fp,
             authorization_decision_id=authorization.decision_id, retry_request_id=cycle,
             lease_generation=generation, worker_id=worker_id, reservation_ids=reservations, now=now)
+        supersede_outcomes(conn, account_id=account_id, subject_type="APPLICATION", subject_id=ws, now=now)
         return attempt_id, reservations
     try:
         attempt_id, reservations = run_immediate(conn, begin)
@@ -349,22 +401,29 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
         return report
 
     refs, error = None, None
+    fence = lease_fence(clock=clock, **lease)
     try:
         if step is StepKind.SYSTEM_REVIEW:
-            run_system_review(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
+            run_system_review(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now,
+                              fence=lambda: fence(conn))
             refs = []
         elif step is StepKind.GATE4:
             out = system_gate4(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
-                               authorization=authorization, expected_revision=detail["pack_revision"], now=now)
+                               authorization=authorization, expected_revision=detail["pack_revision"], now=now,
+                               fence=lambda: fence(conn))
             refs = [{"artifact_id": out["artifact"]["id"], "artifact_type": "application_pack"}]
         else:
-            refs = run_paid_step(conn, settings=settings, providers=providers, step=step, account_id=account_id,
-                                 application_workspace_id=ws,
-                                 request_id=f"auto-{step.value.lower()}-{ws}-{step_fp[-12:]}")
-    except Exception as exc:  # classified at finalize
+            request_id = f"auto-{step.value.lower()}-{ws}-{step_fp[-12:]}"
+            refs, generation = _run_paid_fenced(
+                conn, settings=settings, fence=fence, lease=lease, clock=clock,
+                work=lambda c: run_paid_step(c, settings=settings, providers=providers, step=step,
+                                             account_id=account_id, application_workspace_id=ws,
+                                             request_id=request_id))
+    except LeaseLost:
+        return report  # nothing committed; the attempt is left for recovery
+    except Exception as exc:  # classified truthfully at finalize
         error = exc
-        if isinstance(exc, PipelineError) and step in (StepKind.SYSTEM_REVIEW, StepKind.GATE4):
-            error = TimeoutError(f"re-derive after refusal: {exc}")  # bounded by the retry cycle
+        generation = getattr(exc, "generation", generation)
     finish_now = clock()
     _finish_paid(conn, queue="APPLICATION", item_id=ws, subject_type="APPLICATION", account_id=account_id,
                  worker_id=worker_id, generation=generation, attempt_id=attempt_id, reservation_ids=reservations,
@@ -376,6 +435,27 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
 
 class _BudgetWait(Exception):
     pass
+
+
+def _run_paid_fenced(conn, *, settings: Settings, fence, lease: dict[str, Any], clock: Callable[[], datetime],
+                     work: Callable[[Any], Any]) -> tuple[Any, int]:
+    """Run a paid step on its own fenced connection, bounded by the hard step
+    timeout. Returns (result, generation to finalize with); raises the step's
+    error, StepTimeout (after superseding the lease so the abandoned call can
+    never commit), or LeaseLost."""
+    step = FencedStep(database_file(conn), fence, work)
+    if not step.wait(settings.autonomy_step_timeout):
+        generation = run_immediate(conn, lambda: ap.supersede_lease(conn, now=clock(), **lease))
+        if generation is None:
+            raise LeaseLost("the lease was lost while the step ran")
+        if step.finished and step.error is None:  # it committed just before the lease was superseded
+            return step.result, generation
+        error = StepTimeout(f"the step exceeded its {settings.autonomy_step_timeout}s hard timeout")
+        error.generation = generation
+        raise error
+    if step.error is not None:
+        raise step.error
+    return step.result, lease["generation"]
 
 
 # ---- candidates -----------------------------------------------------------------
@@ -422,9 +502,15 @@ def _process_candidate(conn, *, item: dict[str, Any], settings: Settings, provid
             pass
     elif action == "PROMOTE":
         latest = ap.latest_screening(conn, cid)
-        promoted = autonomy_candidates.promote_candidate(
-            conn, settings=settings, account_id=account_id, search_workspace_id=sw, candidate_id=cid,
-            screening_id=latest["id"] if latest else None, actor_type="SCHEDULER", actor=worker_id, now=now)
+        fence = lease_fence(clock=clock, **lease)
+        try:
+            promoted = autonomy_candidates.promote_candidate(
+                conn, settings=settings, account_id=account_id, search_workspace_id=sw, candidate_id=cid,
+                screening_id=latest["id"] if latest else None, actor_type="SCHEDULER", actor=worker_id, now=now,
+                fence=lambda: fence(conn))
+        except LeaseLost:
+            report["action"] = "lease_lost"
+            return report
         _finalize(conn, now=now, next_eligible_at=None if promoted else now + timedelta(seconds=60), **lease)
     else:  # EVALUATE: admission re-run inside the reservation/STARTED transaction
         envelope = settings.autonomy_step_envelope("EVALUATE")
@@ -452,6 +538,7 @@ def _process_candidate(conn, *, item: dict[str, Any], settings: Settings, provid
                 attempt_no=ap.next_attempt_no(conn, "CANDIDATE", cid, "EVALUATE"), input_fingerprint=fingerprint,
                 authorization_decision_id=None, retry_request_id=cycle, lease_generation=generation,
                 worker_id=worker_id, reservation_ids=[reservation], now=now)
+            supersede_outcomes(conn, account_id=account_id, subject_type="CANDIDATE", subject_id=cid, now=now)
             return ("RUN", (attempt_id, reservation, fingerprint, cycle), fresh)
         try:
             status, payload, fresh = run_immediate(conn, begin)
@@ -474,12 +561,17 @@ def _process_candidate(conn, *, item: dict[str, Any], settings: Settings, provid
         attempt_id, reservation, fingerprint, cycle = payload
         refs, error = None, None
         try:
-            result = autonomy_candidates.run_candidate_evaluation(
-                conn, settings=settings, providers=providers, ctx=fresh,
-                request_id=f"auto-eval-{cid}-{fingerprint[-12:]}")
+            result, generation = _run_paid_fenced(
+                conn, settings=settings, fence=lease_fence(clock=clock, **lease), lease=lease, clock=clock,
+                work=lambda c: autonomy_candidates.run_candidate_evaluation(
+                    c, settings=settings, providers=providers, ctx=fresh,
+                    request_id=f"auto-eval-{cid}-{fingerprint[-12:]}"))
             refs = [{"discovery_fit_id": (result or {}).get("id")}]
+        except LeaseLost:
+            return report
         except Exception as exc:
             error = exc
+            generation = getattr(exc, "generation", generation)
         _finish_paid(conn, queue="CANDIDATE", item_id=cid, subject_type="CANDIDATE", account_id=account_id,
                      worker_id=worker_id, generation=generation, attempt_id=attempt_id, reservation_ids=[reservation],
                      step="EVALUATE", envelope=envelope, fingerprint=fingerprint, retry_request_id=cycle, refs=refs,

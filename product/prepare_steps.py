@@ -36,6 +36,9 @@ class PrepareSnapshot:
     mechanically_acceptable: int
     judgment_outstanding: int
     latched: bool
+    # The enabled document path needs a human file selection before Gate 4
+    # (CV Quality v2); the system never confirms another path instead.
+    document_selection_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,8 @@ def next_prepare_step(s: PrepareSnapshot) -> NextStep:
         return NextStep("RUN", StepKind.SYSTEM_REVIEW)
     if s.judgment_outstanding:
         return NextStep("NEEDS_USER", reason="pack_review")
+    if s.document_selection_required:
+        return NextStep("NEEDS_USER", reason="document_selection_required")
     return NextStep("RUN", StepKind.GATE4)
 
 

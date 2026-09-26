@@ -28,6 +28,7 @@ from webapp.persistence.discovery import (
 from webapp.persistence.search_workspaces import get_search_workspace
 from webapp.services.autonomy_context import day_window
 from webapp.services.autonomy_controls import run_immediate, sentinel_present
+from webapp.services.autonomy_fence import LeaseLost
 from webapp.services.autonomy_providers import ProviderSet
 
 __all__ = [
@@ -88,14 +89,17 @@ def _prepare_ceiling(conn, *, account_id: str, search_workspace_id: str) -> Capa
     return min(account_max, workspace_ceiling)
 
 
-def enqueue_run_candidates(conn, *, run_id: str, account_id: str, search_workspace_id: str, now: datetime) -> int:
+def enqueue_run_candidates(conn, *, run_id: str, account_id: str, search_workspace_id: str,
+                           deployment_ceiling: Capability, now: datetime) -> int:
     """No commit. Only new/saved candidates of a finished run, in an active
-    search workspace whose ceiling is at least PREPARE."""
+    search workspace whose effective ceiling (deployment, account and
+    workspace) is at least PREPARE."""
     run = conn.execute("SELECT status FROM discovery_runs WHERE id = ?", (run_id,)).fetchone()
     workspace = get_search_workspace(conn, search_workspace_id, account_id=account_id)
     if run is None or run["status"] not in FINISHED_RUNS or workspace is None or workspace["status"] != "active":
         return 0
-    if _prepare_ceiling(conn, account_id=account_id, search_workspace_id=search_workspace_id) < Capability.PREPARE:
+    if min(deployment_ceiling, _prepare_ceiling(conn, account_id=account_id,
+                                                search_workspace_id=search_workspace_id)) < Capability.PREPARE:
         return 0
     rows = conn.execute(
         "SELECT DISTINCT c.id FROM discovery_occurrences o JOIN discovery_candidates c ON c.id = o.candidate_id "
@@ -257,9 +261,11 @@ def screen_candidate(conn, *, ctx: CandidateContext, now: datetime) -> tuple[dic
 
 def _promote_in_transaction(conn, *, settings: Settings, account_id: str, search_workspace_id: str,
                             candidate_id: str, screening_id: str | None, actor_type: str, actor: str,
-                            now: datetime) -> dict[str, Any] | None:
+                            now: datetime, fence: Callable[[], bool] | None = None) -> dict[str, Any] | None:
     """Revalidating promotion inside the caller's transaction (spec §7.3).
     Uses a savepoint so a refused promotion leaves no partial writes."""
+    if fence is not None and not fence():  # a stale promoter never promotes
+        raise LeaseLost("promotion lost its lease")
     if kill_switch_state(conn, account_id)["halted"] or sentinel_present(settings.autonomy_sentinel_path):
         return None
     if is_paused(conn, account_id=account_id, scope_type="SEARCH_WORKSPACE", scope_id=search_workspace_id):
@@ -313,10 +319,12 @@ def _promote_in_transaction(conn, *, settings: Settings, account_id: str, search
 
 
 def promote_candidate(conn, *, settings: Settings, account_id: str, search_workspace_id: str, candidate_id: str,
-                      screening_id: str | None, actor_type: str, actor: str, now: datetime) -> dict[str, Any] | None:
+                      screening_id: str | None, actor_type: str, actor: str, now: datetime,
+                      fence: Callable[[], bool] | None = None) -> dict[str, Any] | None:
     return run_immediate(conn, lambda: _promote_in_transaction(
         conn, settings=settings, account_id=account_id, search_workspace_id=search_workspace_id,
-        candidate_id=candidate_id, screening_id=screening_id, actor_type=actor_type, actor=actor, now=now))
+        candidate_id=candidate_id, screening_id=screening_id, actor_type=actor_type, actor=actor, now=now,
+        fence=fence))
 
 
 def resolve_candidate_question(conn, *, settings: Settings, exception_id: str, resolution: str, actor: str,

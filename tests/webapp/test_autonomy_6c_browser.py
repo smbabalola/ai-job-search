@@ -4,6 +4,7 @@ explicit pack-review latch."""
 from __future__ import annotations
 
 import dataclasses
+from decimal import Decimal
 import socket
 import threading
 import time
@@ -55,7 +56,8 @@ def live(tmp_path, monkeypatch):
     fresh_fits(monkeypatch)
     client, _, base, ws = build_chain(tmp_path)  # a workspace with a current pack revision
     port = _free_port()
-    settings = dataclasses.replace(base, host="127.0.0.1", port=port, autonomy_max_capability="PREPARE")
+    settings = dataclasses.replace(base, host="127.0.0.1", port=port, autonomy_max_capability="PREPARE",
+                                   autonomy_step_cost_max={"EVALUATE": Decimal("0.05")})
     conn = connect(settings.db_path)
     enable_prepare(conn)
     _ask_on_unknown_fit(conn)

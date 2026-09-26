@@ -74,15 +74,19 @@ def portal_job(record_id, *, company="Acme Drilling", title="Drilling Fluids Eng
             "work_mode": "onsite", "regions": ["eu"], "countries": ["GB"], "skills": []}
 
 
-def discover(conn, jobs):
-    """A real, user-triggered discovery run (freehire only) with a fake runner."""
+def discover(conn, jobs, *, deployment_ceiling=None):
+    """A real, user-triggered discovery run (freehire only) with a fake runner,
+    under a PREPARE deployment ceiling unless one is given."""
+    from product.autonomy_contract import Capability
     from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
     from webapp.services.discovery import run_discovery_search
     if get_current_user_profile(conn, "search_default", account_id=ACCOUNT) is None:
         save_user_profile(conn, {"target_roles": ["Drilling Fluids Engineer"], "locations": ["Aberdeen"],
                                  "search_terms": ["drilling fluids"], "source_preferences": ["freehire-search"],
                                  "recency_days": 7})
-    return run_discovery_search(conn, JobsRunner(jobs), limit_per_source=10)
+    return run_discovery_search(conn, JobsRunner(jobs), limit_per_source=10,
+                                deployment_ceiling=Capability.PREPARE if deployment_ceiling is None
+                                else deployment_ceiling)
 
 
 def enable_prepare(conn, *, llm_per_day="5.00", llm_per_application="1.00", now=NOW):

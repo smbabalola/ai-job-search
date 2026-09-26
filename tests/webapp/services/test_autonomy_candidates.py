@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from product.autonomy_contract import Capability
 from webapp.persistence import autonomy_prepare as ap
 from webapp.services import autonomy_candidates as ac
 from webapp.services.autonomy_providers import ProviderSet
@@ -38,6 +39,7 @@ def test_discovery_enqueues_finished_run_candidates_only_with_prepare_authority(
     assert conn.execute("SELECT COUNT(*) FROM autonomy_candidate_queue").fetchone()[0] == 0
     enable_prepare(conn)
     assert ac.enqueue_run_candidates(conn, run_id=result["run"]["id"], account_id=ACCOUNT, search_workspace_id=SW,
+                                     deployment_ceiling=Capability.PREPARE,
                                      now=NOW) == 1
     result2 = discover(conn, [portal_job("a2")])
     queued = {r[0] for r in conn.execute("SELECT candidate_id FROM autonomy_candidate_queue")}
@@ -52,10 +54,12 @@ def test_dismissed_and_failed_run_candidates_are_not_enqueued(conn):
     conn.execute("DELETE FROM autonomy_candidate_queue")
     set_discovery_candidate_status(conn, cid, "dismissed")
     assert ac.enqueue_run_candidates(conn, run_id=result["run"]["id"], account_id=ACCOUNT, search_workspace_id=SW,
+                                     deployment_ceiling=Capability.PREPARE,
                                      now=NOW) == 0
     conn.execute("UPDATE discovery_runs SET status = 'failed' WHERE id = ?", (result["run"]["id"],))
     set_discovery_candidate_status(conn, cid, "new")
     assert ac.enqueue_run_candidates(conn, run_id=result["run"]["id"], account_id=ACCOUNT, search_workspace_id=SW,
+                                     deployment_ceiling=Capability.PREPARE,
                                      now=NOW) == 0
 
 

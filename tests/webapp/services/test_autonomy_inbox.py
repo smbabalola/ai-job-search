@@ -66,13 +66,18 @@ def test_reconcile_resolves_only_vanished_conditions(conn):
     for ws in (a, b):
         inbox.notify_outcome(conn, account_id=ACCOUNT, subject_type="APPLICATION", subject_id=ws, kind="NEEDS_USER",
                              reason="pack_review", fingerprint="f", detail={}, now=NOW)
-    ap.wake(conn, queue="APPLICATION", item_id=a, now=NOW)  # something changed for a (an answer, a retry...)
+    ap.wake(conn, queue="APPLICATION", item_id=a, now=NOW)  # a wake alone proves nothing about the condition
     conn.commit()
-    assert inbox.reconcile_notifications(conn, account_id=ACCOUNT, now=NOW) == 1
-    assert [n["subject_id"] for n in ap.open_notifications(conn, ACCOUNT)] == [b]
-    inbox.notify_outcome(conn, account_id=ACCOUNT, subject_type="APPLICATION", subject_id=a, kind="NEEDS_USER",
-                         reason="pack_review", fingerprint="f", detail={}, now=NOW)  # recurrence notifies again
+    assert inbox.reconcile_notifications(conn, account_id=ACCOUNT, now=NOW) == 0
     assert len(ap.open_notifications(conn, ACCOUNT)) == 2
+    # the scheduler re-derived a: its new outcome supersedes the old one, b is untouched
+    kept = inbox.notification_key("BLOCKED", "APPLICATION", a, "blocked", "g")
+    inbox.notify_outcome(conn, account_id=ACCOUNT, subject_type="APPLICATION", subject_id=a, kind="BLOCKED",
+                         reason="blocked", fingerprint="g", detail={}, now=NOW)
+    assert inbox.supersede_outcomes(conn, account_id=ACCOUNT, subject_type="APPLICATION", subject_id=a, now=NOW,
+                                    keep_key=kept) == 1
+    assert sorted((n["subject_id"], n["kind"]) for n in ap.open_notifications(conn, ACCOUNT)) == sorted(
+        [(a, "BLOCKED"), (b, "NEEDS_USER")])
 
 
 def test_candidate_question_resolves_when_the_question_is_answered(conn):

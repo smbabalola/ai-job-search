@@ -122,40 +122,47 @@ def resume(conn, **kwargs) -> dict[str, Any]:
     return _control(conn, "RESUME", **kwargs)
 
 
-def _wake_after_authority_change(conn, *, account_id: str, now: datetime) -> None:
+def _wake_after_authority_change(conn, *, account_id: str, now: datetime,
+                                 deployment_ceiling: Capability | None) -> None:
     """6C: authority/policy changes wake both queues and enqueue candidates
-    that a raised ceiling has just made schedulable (no commit)."""
+    that a raised ceiling has just made schedulable (no commit). Without the
+    deployment ceiling nothing new is enqueued (fail closed)."""
     from webapp.services.autonomy_candidates import enqueue_run_candidates
     ap.wake_account(conn, account_id=account_id, now=now)
+    if deployment_ceiling is None:
+        return
     runs = conn.execute(
         "SELECT r.id, r.search_workspace_id FROM discovery_runs r JOIN search_workspaces w "
         "ON w.id = r.search_workspace_id WHERE w.account_id = ? AND r.status IN ('completed', 'partial')",
         (account_id,)).fetchall()
     for run in runs:
         enqueue_run_candidates(conn, run_id=run["id"], account_id=account_id,
-                               search_workspace_id=run["search_workspace_id"], now=now)
+                               search_workspace_id=run["search_workspace_id"],
+                               deployment_ceiling=deployment_ceiling, now=now)
 
 
 def set_capability(conn, *, account_id: str, scope_type: str, scope_id: str, capability: Capability,
-                   actor: str, now: datetime) -> dict[str, Any]:
+                   actor: str, now: datetime, deployment_ceiling: Capability | None = None) -> dict[str, Any]:
     def work():
         row = record_authorization(conn, account_id=account_id, scope_type=scope_type, scope_id=scope_id,
                                    capability=capability, set_by=actor, now=now, commit=False)
-        _wake_after_authority_change(conn, account_id=account_id, now=now)
+        _wake_after_authority_change(conn, account_id=account_id, now=now, deployment_ceiling=deployment_ceiling)
         return row
     return run_immediate(conn, work)
 
 
-def save_standing_policy(conn, *, account_id: str, doc: dict[str, Any], actor: str, now: datetime) -> dict[str, Any]:
+def save_standing_policy(conn, *, account_id: str, doc: dict[str, Any], actor: str, now: datetime,
+                         deployment_ceiling: Capability | None = None) -> dict[str, Any]:
     """Save a standing-policy version and wake both queues (6C)."""
     def work():
         row = save_policy_version(conn, account_id=account_id, doc=doc, created_by=actor, now=now, commit=False)
-        _wake_after_authority_change(conn, account_id=account_id, now=now)
+        _wake_after_authority_change(conn, account_id=account_id, now=now, deployment_ceiling=deployment_ceiling)
         return row
     return run_immediate(conn, work)
 
 
-def enable_autonomous_preparation(conn, *, account_id: str, actor: str, timezone: str, now: datetime) -> dict[str, Any]:
+def enable_autonomous_preparation(conn, *, account_id: str, actor: str, timezone: str, now: datetime,
+                                  deployment_ceiling: Capability | None = None) -> dict[str, Any]:
     """The explicit enabling act (spec §4.2): writes ACCOUNT_MAX and
     DEFAULT_WORKSPACE_CEILING = PREPARE where they are absent or lower, and an
     initial standing policy if none exists. Never lowers an existing grant."""
@@ -172,6 +179,6 @@ def enable_autonomous_preparation(conn, *, account_id: str, actor: str, timezone
                                 created_by=actor, now=now, commit=False)
             written.append("standing_policy")
         if written:
-            _wake_after_authority_change(conn, account_id=account_id, now=now)
+            _wake_after_authority_change(conn, account_id=account_id, now=now, deployment_ceiling=deployment_ceiling)
         return {"written": written}
     return run_immediate(conn, work)

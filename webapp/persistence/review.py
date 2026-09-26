@@ -57,13 +57,15 @@ def save_review_decision(
 def list_review_decisions(
     conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str | None = None
 ) -> list[dict[str, Any]]:
+    # Newest first by insertion order (rowid), never by timestamp: equal or
+    # skewed created_at values must not change which decision governs.
     if source_artifact_id is None:
         rows = conn.execute(
-            "SELECT * FROM review_decisions WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,)
+            "SELECT * FROM review_decisions WHERE workspace_id = ? ORDER BY rowid DESC", (workspace_id,)
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM review_decisions WHERE workspace_id = ? AND source_artifact_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM review_decisions WHERE workspace_id = ? AND source_artifact_id = ? ORDER BY rowid DESC",
             (workspace_id, source_artifact_id),
         ).fetchall()
     return [dict(row) for row in rows]

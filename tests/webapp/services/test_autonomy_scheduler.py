@@ -251,7 +251,9 @@ def test_expired_lease_cannot_finalize_even_if_not_retaken(world):
     settled = conn.execute("SELECT settled_amount FROM limit_reservations WHERE counter_name = 'budget:LLM:day' "
                            "ORDER BY created_at LIMIT 1").fetchone()[0]
     assert Decimal(settled) == ENVELOPES["UNDERSTAND"]
-    assert providers.understanding.calls == 1  # the artifact the late call produced is reused, not recomputed
+    # The late call's result was fenced out (never current), so the step runs
+    # again under a live lease.
+    assert providers.understanding.calls == 2
 
 
 def test_transient_failures_retry_60_300_900_then_escalate_and_one_shot_retry(world):

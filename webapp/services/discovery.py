@@ -85,6 +85,7 @@ def run_discovery_search(
     locations: list[str] | None = None,
     limit_per_source: int = 20,
     account_id: str = DEFAULT_ACCOUNT_ID,
+    deployment_ceiling: Any = None,
 ) -> dict[str, Any]:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -206,9 +207,12 @@ def run_discovery_search(
     )
     # Bundle 6C: candidates of a finished run become schedulable in the same
     # transaction as the run's completion (spec §6.1/§6.2).
-    from webapp.services.autonomy_candidates import enqueue_run_candidates
-    enqueue_run_candidates(conn, run_id=run["id"], account_id=account_id,
-                           search_workspace_id=search_workspace_id, now=datetime.now(timezone.utc))
+    # Without the deployment ceiling nothing is enqueued (fail closed).
+    if deployment_ceiling is not None:
+        from webapp.services.autonomy_candidates import enqueue_run_candidates
+        enqueue_run_candidates(conn, run_id=run["id"], account_id=account_id,
+                               search_workspace_id=search_workspace_id, deployment_ceiling=deployment_ceiling,
+                               now=datetime.now(timezone.utc))
     conn.commit()
     return {"run": completed, "candidate_ids": list(dict.fromkeys(candidate_ids))}
 

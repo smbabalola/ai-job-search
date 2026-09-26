@@ -4,6 +4,7 @@ Read-only and derived; never edited. Attempt evidence is client-supplied
 (spec §8: the executor is non-authoritative) and is shown as recorded."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from typing import Any
@@ -93,19 +94,33 @@ def _content_hash(payload: Any) -> str:
     return canonical_hash("autonomy-dossier-pack", "v1", safe(payload))
 
 
+def document_hashes(pack_payload: dict[str, Any], *, artifact_id: str) -> dict[str, str]:
+    """SHA-256 of the final application documents: the user-selected files on
+    the v2 path; on the legacy path, the rendered application-pack document
+    (deterministic for the pack artifact)."""
+    if pack_payload.get("schema_version") == "application-pack.v2":
+        return {kind: "sha256:" + doc["sha256"]
+                for kind, doc in sorted((pack_payload.get("final_documents") or {}).items())}
+    from webapp.services.archive_projection import _render_markdown
+    rendered = _render_markdown(pack_payload, projection_id=artifact_id).encode("utf-8")
+    return {"application_pack_projection": "sha256:" + hashlib.sha256(rendered).hexdigest()}
+
+
 def _pack_section(conn, ws: str) -> dict[str, Any] | None:
     from webapp.persistence.artifacts import get_current_artifact
-    from webapp.services.autonomy_prepare import _revision_of_pack, system_confirmed_revision
+    from webapp.services.autonomy_prepare import _revision_of_pack, pack_sources, system_confirmed_revision
     pack = get_current_artifact(conn, ws, "application_pack")
     if pack is None:
         return None
-    sources = pack["payload"].get("source_artifacts") or {}
+    sources = pack_sources(pack["payload"])
     revision = _revision_of_pack(pack["payload"])
     return {
         "artifact_id": pack["id"], "content_hash": _content_hash(pack["payload"]), "pack_revision": revision,
         # Content-addressed identities of exactly what was confirmed: the pack
         # and every source document it binds.
         "source_content_ids": {name: ref.get("content_id") for name, ref in sources.items()},
+        "document_path": "v2" if pack["payload"].get("schema_version") == "application-pack.v2" else "v1",
+        "document_hashes": document_hashes(pack["payload"], artifact_id=pack["id"]),
         "system_confirmed": revision is not None and system_confirmed_revision(conn, ws) == revision,
     }
 

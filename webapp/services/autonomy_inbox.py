@@ -75,17 +75,31 @@ def mark_inbox_seen(conn, *, account_id: str, now: datetime) -> int:
     return run_immediate(conn, work)
 
 
-def _item_woken(conn, subject_type: str, subject_id: str) -> bool:
+def supersede_outcomes(conn, *, account_id: str, subject_type: str, subject_id: str, now: datetime,
+                      keep_key: str | None = None) -> int:
+    """No commit. Called by the scheduler only after it has re-derived the
+    subject: every other open outcome notification of it (not candidate
+    questions, which resolve when answered) no longer holds."""
+    resolved = 0
+    for note in ap.open_notifications(conn, account_id):
+        if (note["subject_type"], note["subject_id"]) != (subject_type, subject_id) \
+                or note["kind"] == "CANDIDATE_QUESTION" or note["key"] == keep_key:
+            continue
+        if ap.resolve_notification(conn, account_id=account_id, key=note["key"], now=now):
+            resolved += 1
+    return resolved
+
+
+def _left_the_queue(conn, subject_type: str, subject_id: str) -> bool:
     table, key = ap.QUEUES[subject_type]
-    row = conn.execute(f"SELECT next_eligible_at FROM {table} WHERE {key} = ?", (subject_id,)).fetchone()
-    return row is None or row["next_eligible_at"] is not None
+    return conn.execute(f"SELECT 1 FROM {table} WHERE {key} = ?", (subject_id,)).fetchone() is None
 
 
 def reconcile_notifications(conn, *, account_id: str, now: datetime) -> int:
-    """RESOLVED only when the derived condition is gone: a candidate question
-    once answered; any other application/candidate notification once its item
-    has been woken (an answer, retry, resume, policy/authority or input change
-    happened) — if the condition recurs, the tick notifies it afresh."""
+    """RESOLVED only when the derived condition is actually gone: a candidate
+    question once answered; an outcome notification of a subject no longer
+    queued. A wake alone proves nothing: the scheduler resolves outcomes
+    after it re-derives the subject (supersede_outcomes)."""
     def work() -> int:
         resolved = 0
         for note in ap.open_notifications(conn, account_id):
@@ -93,7 +107,7 @@ def reconcile_notifications(conn, *, account_id: str, now: datetime) -> int:
                 current = ap.current_candidate_exception(conn, note["subject_id"])
                 gone = current is None or current["resolution"] is not None
             elif note["subject_type"] in ap.QUEUES:
-                gone = _item_woken(conn, note["subject_type"], note["subject_id"])
+                gone = _left_the_queue(conn, note["subject_type"], note["subject_id"])
             else:
                 gone = False
             if gone and ap.resolve_notification(conn, account_id=account_id, key=note["key"], now=now):

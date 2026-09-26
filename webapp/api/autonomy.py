@@ -112,17 +112,18 @@ def get_autonomy(request: Request, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.post("/api/autonomy/enable-preparation")
-def post_enable(body: TimezoneBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_enable(body: TimezoneBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     try:
         return enable_autonomous_preparation(conn, account_id=scope.account_id, actor=scope.account_id,
-                                             timezone=body.timezone, now=_now())
+                                             timezone=body.timezone, now=_now(),
+                                             deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling())
     except StandingPolicyError as exc:
         raise HTTPException(status_code=422, detail=exc.errors) from exc
 
 
 @router.post("/api/autonomy/capability")
-def post_capability(body: CapabilityBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_capability(body: CapabilityBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
                     scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     scope_id = body.scope_id
     if body.scope_type == "WORKSPACE_CEILING":
@@ -133,16 +134,18 @@ def post_capability(body: CapabilityBody, conn: sqlite3.Connection = Depends(get
     else:
         scope_id = scope.account_id
     row = set_capability(conn, account_id=scope.account_id, scope_type=body.scope_type, scope_id=scope_id,
-                         capability=Capability[body.capability], actor=scope.account_id, now=_now())
+                         capability=Capability[body.capability], actor=scope.account_id, now=_now(),
+                         deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling())
     return {"id": row["id"]}
 
 
 @router.put("/api/autonomy/policy")
-def put_policy(body: PolicyBody, conn: sqlite3.Connection = Depends(get_conn),
+def put_policy(body: PolicyBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)):
     try:
         row = save_standing_policy(conn, account_id=scope.account_id, doc=body.doc, actor=scope.account_id,
-                                  now=_now())
+                                  now=_now(),
+                                  deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling())
     except StandingPolicyError as exc:
         return JSONResponse(status_code=422, content={"errors": exc.errors})
     return {"policy_hash": row["policy_hash"]}

@@ -169,6 +169,9 @@ def evaluate_candidate_promotion(ctx: CandidateContext) -> ScreeningResult:
     if structural:
         return result(ScreeningOutcome.NOT_ELIGIBLE, structural[0], require=require)
 
+    if not ctx.budget_available:
+        reasons.append({"code": "budget", "params": {}})
+        return result(ScreeningOutcome.DENY_TEMPORARY, "budget", require=require, retry_at=ctx.budget_retry_at)
     if not ctx.promotions_available:
         reasons.append({"code": "promotions_cap", "params": {}})
         return result(ScreeningOutcome.DENY_TEMPORARY, "promotions_cap", require=require,

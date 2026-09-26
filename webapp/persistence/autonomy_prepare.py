@@ -352,14 +352,15 @@ def cycle_failures(conn, *, subject_type: str, subject_id: str, step_kind: str, 
     fingerprint within the current cycle (same retry_request_id), newest
     first, stopping at the first other terminal outcome."""
     rows = conn.execute(
-        "SELECT event, error_class, retry_request_id FROM autonomy_prepare_steps WHERE subject_type = ? "
+        "SELECT event, error_class, error_code, retry_request_id FROM autonomy_prepare_steps WHERE subject_type = ? "
         "AND subject_id = ? AND step_kind = ? AND input_fingerprint = ? AND event != 'STARTED' ORDER BY seq DESC",
         (subject_type, subject_id, step_kind, input_fingerprint)).fetchall()
     count = 0
     for r in rows:
         if r["retry_request_id"] != retry_request_id:
             break
-        if r["event"] == "ABANDONED" or (r["event"] == "FAILED" and r["error_class"] == "TRANSIENT"):
+        if r["event"] == "ABANDONED" or (r["event"] == "FAILED" and (
+                r["error_class"] == "TRANSIENT" or (r["error_class"] is None and r["error_code"] == "state_changed"))):
             count += 1
             continue
         break
@@ -449,6 +450,19 @@ def finalize_lease(conn, *, queue: str, item_id: str, worker_id: str, generation
         (to_utc_iso(next_eligible_at) if next_eligible_at else None, to_utc_iso(now), item_id, worker_id,
          generation, to_utc_iso(now)))
     return cur.rowcount == 1
+
+
+def supersede_lease(conn, *, queue: str, item_id: str, worker_id: str, generation: int,
+                    now: datetime) -> int | None:
+    """The holder bumps its own generation (keeping the lease) so anything
+    still running under the old generation can never commit. Returns the new
+    generation, or None if the lease was already lost."""
+    table, key = QUEUES[queue]
+    cur = conn.execute(
+        f"UPDATE {table} SET lease_generation = lease_generation + 1, updated_at = ? WHERE {key} = ? "
+        f"AND lease_holder = ? AND lease_generation = ? AND lease_expires_at > ?",
+        (to_utc_iso(now), item_id, worker_id, generation, to_utc_iso(now)))
+    return generation + 1 if cur.rowcount == 1 else None
 
 
 def release_lease(conn, *, queue: str, item_id: str, worker_id: str, generation: int, now: datetime) -> bool:

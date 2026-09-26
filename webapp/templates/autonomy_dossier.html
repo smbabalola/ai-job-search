@@ -17,6 +17,8 @@
   {% if dossier.pack %}<p>Pack <code>{{ dossier.pack.content_hash }}</code> · revision <code>{{ dossier.pack.pack_revision }}</code>
     · {% if dossier.pack.system_confirmed %}system-confirmed{% else %}not system-confirmed{% endif %}</p>
     <ul>{% for name, cid in dossier.pack.source_content_ids.items() %}<li>{{ name }}: <code>{{ cid }}</code></li>{% endfor %}</ul>
+    <p>Final documents ({{ dossier.pack.document_path }} path):</p>
+    <ul>{% for name, digest in dossier.pack.document_hashes.items() %}<li>{{ name }}: <code>{{ digest }}</code></li>{% endfor %}</ul>
   {% else %}<p>No application pack yet.</p>{% endif %}
 </section>
 <section class="panel" data-dossier-section="system-review"><div class="panel-heading"><h2>System-confirmed review items</h2></div>

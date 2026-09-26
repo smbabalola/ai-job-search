@@ -18,6 +18,7 @@ PREPARE_MODULES = [
     "webapp/services/autonomy_inbox.py",
     "webapp/services/autonomy_prepare_auth.py",
     "webapp/autonomy_worker.py",
+    "webapp/services/autonomy_fence.py",
 ]
 NEW_MODULES = PREPARE_MODULES + [
     "webapp/services/autonomy_providers.py",

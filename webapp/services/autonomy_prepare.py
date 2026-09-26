@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from product.autonomy_contract import Capability, Mode
 from product.autonomy_gate import evaluate_authorization
@@ -24,9 +24,22 @@ from webapp.services.application_pack import (
 )
 from webapp.services.autonomy_context import build_context
 from webapp.services.autonomy_controls import run_immediate, sentinel_present
+from webapp.services.autonomy_fence import LeaseLost
 from webapp.services.autonomy_providers import ProviderSet
 from webapp.services.pipeline import PipelineError
 from webapp.services.staleness import check_staleness
+
+class StepStateChanged(PipelineError):
+    """A local step (system review / Gate 4) refused because the state it was
+    derived from changed: the scheduler re-derives, it never retries."""
+
+
+class StepIntegrityError(PipelineError):
+    """A local step found an invariant/contract violation: INTERNAL, never
+    retried automatically."""
+
+
+_STATE_PROBLEMS = frozenset({"prepare_authority", "controls", "revision_changed", "human_review_latched"})
 
 _UNDERSTANDING, _FIT, _INTELLIGENCE, _PACK = (
     "job_understanding_result", "job_fit_result", "application_intelligence_result", "application_pack")
@@ -76,8 +89,17 @@ def _profile(conn, account_id: str) -> dict[str, Any] | None:
     return get_current_artifact(conn, profile_ws, "profile_snapshot") if profile_ws else None
 
 
+def pack_sources(pack_payload: dict[str, Any]) -> dict[str, Any]:
+    """The source artifacts a pack binds, for either document path: v1 packs
+    carry them directly, v2 packs inside their reviewed generation basis."""
+    if pack_payload.get("schema_version") == "application-pack.v2":
+        basis = (pack_payload.get("generation_basis") or {}).get("reviewed_application_pack") or {}
+        return basis.get("source_artifacts") or {}
+    return pack_payload.get("source_artifacts") or {}
+
+
 def _revision_of_pack(pack_payload: dict[str, Any]) -> str | None:
-    sources = pack_payload.get("source_artifacts") or {}
+    sources = pack_sources(pack_payload)
     try:
         return pack_revision(sources["profile_snapshot"]["content_id"], sources["job_fit_result"]["content_id"],
                              sources["application_intelligence_result"]["content_id"])
@@ -117,6 +139,7 @@ def prepare_snapshot(conn, *, settings: Settings, account_id: str,
         understanding_current=understanding is not None, fit_current=fit is not None,
         intelligence_current=intelligence is not None, pack_current=pack_current,
         mechanically_acceptable=len(mechanical), judgment_outstanding=len(judgment), latched=latched,
+        document_selection_required=bool(settings.cv_quality_v2_enabled),
     )
     detail = {"profile": profile, "pack_revision": revision, "mechanical": mechanical, "judgment": judgment,
               "content_ids": {"understanding": (understanding or {}).get("content_id"),
@@ -127,18 +150,25 @@ def prepare_snapshot(conn, *, settings: Settings, account_id: str,
 
 # ---- paid steps ---------------------------------------------------------------
 
+def _current_fit_extension_ids(conn, ws: str) -> list[str]:
+    request = get_current_artifact(conn, ws, "job_fit_request")
+    extensions = (request or {}).get("payload", {}).get("active_extensions") or []
+    return [e["id"] for e in extensions if isinstance(e, dict) and e.get("id")]
+
+
 def run_paid_step(conn, *, settings: Settings, providers: ProviderSet, step: StepKind, account_id: str,
                   application_workspace_id: str, request_id: str) -> list[dict[str, Any]]:
     """The model call for one preparation step, through the existing services
-    (whichever document path is current). Extensions are not chosen by
-    autonomy: FIT runs with none."""
+    (whichever document path is current). Autonomy never chooses extensions:
+    FIT keeps the ones the current fit request used, else none."""
     from webapp.services import http_api
     ws = application_workspace_id
     if step is StepKind.UNDERSTAND:
         artifact = http_api.understand_job(conn, ws, providers.understanding, request_id=request_id,
                                            account_id=account_id)
     elif step is StepKind.FIT:
-        artifact = http_api.fit_job(conn, ws, providers.semantic_adapter, request_id=request_id, extension_ids=[],
+        artifact = http_api.fit_job(conn, ws, providers.semantic_adapter, request_id=request_id,
+                                    extension_ids=_current_fit_extension_ids(conn, ws),
                                     extensions_dir=settings.extensions_dir, account_id=account_id)
     elif step is StepKind.INTELLIGENCE:
         artifact = http_api.generate_application_intelligence(conn, ws, providers.intelligence,
@@ -157,12 +187,14 @@ def _has_decision(conn, ws: str, item: dict[str, Any]) -> bool:
 
 
 def run_system_review(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
-                      now: datetime) -> int:
+                      now: datetime, fence: Callable[[], bool] | None = None) -> int:
     """One transaction; items are re-read inside it, so a user decision that
     landed after the snapshot always wins (never overridden or duplicated)."""
     ws = application_workspace_id
 
     def work() -> int:
+        if fence is not None and not fence():
+            raise LeaseLost("system review lost its lease")
         snapshot, detail = prepare_snapshot(conn, settings=settings, account_id=account_id,
                                             application_workspace_id=ws)
         if snapshot.latched or detail["profile"] is None or detail["pack_revision"] is None:
@@ -192,12 +224,16 @@ def _units(pack: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def system_gate4(conn, *, settings: Settings, account_id: str, application_workspace_id: str, authorization,
-                 expected_revision: str, now: datetime) -> dict[str, Any]:
+                 expected_revision: str, now: datetime, fence: Callable[[], bool] | None = None) -> dict[str, Any]:
     """spec §8.3: every recheck runs inside the confirmation's BEGIN
     IMMEDIATE transaction; any failure raises and nothing is written."""
     ws = application_workspace_id
+    if settings.cv_quality_v2_enabled:  # never confirm the legacy path while v2 is the enabled one
+        raise StepIntegrityError("document_selection_required: the enabled CV v2 path needs the user's files")
 
     def precheck(pack: dict[str, Any], profile_artifact: dict[str, Any]) -> None:
+        if fence is not None and not fence():
+            raise LeaseLost("system Gate 4 lost its lease")
         problems: list[str] = []
         ctx = build_context(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
                             requested_stage=Capability.PREPARE, mode=Mode.LIVE, now=now,
@@ -241,7 +277,10 @@ def system_gate4(conn, *, settings: Settings, account_id: str, application_works
         if pack.get("completion_status") != "READY":
             problems.append("completion")
         if problems:
-            raise PipelineError("system Gate 4 refused: " + ", ".join(sorted(set(problems))))
+            message = "system Gate 4 refused: " + ", ".join(sorted(set(problems)))
+            if set(problems) <= _STATE_PROBLEMS:
+                raise StepStateChanged(message)
+            raise StepIntegrityError(message)
 
     return system_confirm_application_pack(
         conn, ws, effective_date=now.date().isoformat(), documents_root=settings.documents_root,
@@ -303,7 +342,8 @@ def on_user_review_decision(conn, *, workspace_id: str, account_id: str, now: da
 _TRANSIENT_NAMES = {"APITimeoutError", "RateLimitError", "APIConnectionError", "InternalServerError",
                     "ServiceUnavailableError", "Timeout", "ReadTimeout", "ConnectTimeout"}
 _HUMAN_NAMES = {"AuthenticationError", "PermissionDeniedError"}
-_HUMAN_PIPELINE_HINTS = ("evidence profile", "profile refresh", "set up user profile", "api key", "budget")
+_HUMAN_PIPELINE_HINTS = ("evidence profile", "profile refresh", "set up user profile", "api key", "budget",
+                         "not_installed")
 
 
 def classify_error(exc: BaseException) -> tuple[ErrorClass, str]:
@@ -323,6 +363,8 @@ def classify_error(exc: BaseException) -> tuple[ErrorClass, str]:
 
 def _classify_one(exc: BaseException) -> tuple[ErrorClass, str]:
     name = type(exc).__name__
+    if isinstance(exc, StepIntegrityError):
+        return ErrorClass.INTERNAL, "integrity"
     if isinstance(exc, (TimeoutError, ConnectionError)) or name in _TRANSIENT_NAMES \
             or (getattr(exc, "status_code", 0) or 0) >= 500:
         return ErrorClass.TRANSIENT, name
