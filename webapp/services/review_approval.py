@@ -180,6 +180,15 @@ def open_review_delta(conn, *, account_id: str, application_workspace_id: str, k
         open_now = ra.open_deltas(conn, ws)
         predecessors = []
         if field and subject and field_key:
+            # A retried classification of the same observed field returns its
+            # recorded successor, open or already resolved (append-only history).
+            deltas_by_id = {d["id"]: d for d in ra.list_deltas(conn, ws)}
+            for e in ra.events(conn, ws):
+                successor = deltas_by_id.get(e["detail"].get("successor_delta_id"))
+                if (e["event"] == "DELTA_RESOLVED" and e["detail"].get("reason") == "classified"
+                        and successor is not None and successor["subject"] == subject
+                        and successor["observed"].get("field_key") == field_key):
+                    return successor
             for d in open_now:  # idempotent retry of the same classification
                 if d["kind"] in FIELD_DELTA_KINDS and d["subject"] == subject \
                         and d["observed"].get("field_key") == field_key:
@@ -207,32 +216,36 @@ _NON_FIELD_SECTIONS = {"TARGET_CHANGE": lambda o: ["apply_target"],
 
 def review_view_mode(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
                      now: datetime) -> dict[str, Any]:
-    """first_review | delta_only | full (spec §11 R2, §11.1): delta-only only
-    when the hashes prove every non-delta component unchanged and no non-field
-    delta is involved."""
+    """first_review | delta_only | full (spec §11 R2, §11.1).
+
+    A. open deltas: latest approval -> current binding, allowing those deltas;
+    B. none open, the latest approval resolved deltas, and the current binding
+       still equals it: that approval -> the one it superseded, allowing them;
+    C. otherwise latest approval -> current binding with no allowance;
+    D. delta_only only when there is a delta to show and the hashes prove
+       nothing else changed; no delta means "full" (possibly unchanged)."""
     from product.review_contract import FIELD_DELTA_KINDS, delta_only, effective_delta_key
     ws = application_workspace_id
     latest = ra.latest_approval(conn, ws)
     state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
+    if latest is None or state.binding is None:
+        keys = sorted(effective_delta_key(d) for d in ra.open_deltas(conn, ws) if d["kind"] in FIELD_DELTA_KINDS)
+        return {"mode": "first_review", "changed_sections": [], "delta_keys": keys, "previous_hash": None}
     deltas = ra.open_deltas(conn, ws)
-    previous, current = (latest["binding"] if latest else None), state.binding
-    previous_hash = latest["binding_hash"] if latest else None
-    if latest is not None and not deltas and latest["resolved_delta_ids"] and latest["supersedes_id"]:
-        # Just re-approved: explain that approval against the one it superseded,
-        # using the deltas it resolved.
+    previous, current, previous_hash = latest["binding"], state.binding, latest["binding_hash"]
+    if not deltas and latest["resolved_delta_ids"] and latest["supersedes_id"] \
+            and state.provisional_hash == latest["binding_hash"]:
         superseded = ra.get_approval(conn, latest["supersedes_id"])
         resolved = set(latest["resolved_delta_ids"])
         deltas = [d for d in ra.list_deltas(conn, ws) if d["id"] in resolved]
         previous, current, previous_hash = superseded["binding"], latest["binding"], superseded["binding_hash"]
     field_keys = sorted(effective_delta_key(d) for d in deltas if d["kind"] in FIELD_DELTA_KINDS)
-    if previous is None or current is None:
-        return {"mode": "first_review", "changed_sections": [], "delta_keys": field_keys, "previous_hash": None}
     only, other = delta_only(previous, current, field_keys)
     changed = set(other)
     non_field = [d for d in deltas if d["kind"] not in FIELD_DELTA_KINDS]
     for d in non_field:
         changed |= set(_NON_FIELD_SECTIONS[d["kind"]](d["observed"]))
-    mode = "delta_only" if only and not non_field else "full"
+    mode = "delta_only" if only and field_keys and not non_field else "full"
     return {"mode": mode, "changed_sections": sorted(changed), "delta_keys": field_keys,
             "previous_hash": previous_hash}
 

@@ -161,3 +161,37 @@ def test_just_resolved_document_conversion_is_full_with_the_document_marked(v2_c
     assert d["id"] in second["resolved_delta_ids"]
     mode = _mode(v2_chain)
     assert mode["mode"] == "full" and "document:cv" in mode["changed_sections"]
+
+
+# ---- A2 final: classification retry from history; view-mode rules A-D ------------------
+
+def test_retried_classification_after_the_successor_resolved_writes_nothing(v2_chain):
+    from webapp.services.review_answers import answer_field
+    _approve(v2_chain)
+    _open(v2_chain, required=True, observed={"field_key": "notice"})
+    successor = _open(v2_chain, subject=NOTICE, required=True, observed={"field_key": "notice"})
+    answer_field(v2_chain.conn, settings=v2_chain.settings, account_id=V2_ACCOUNT, application_workspace_id=v2_chain.ws,
+                 answer_key=f"subject:{NOTICE}", value="1 month", reach=Reach.ACCOUNT, actor="u", now=NOW)
+    _approve(v2_chain)
+    assert ra.open_deltas(v2_chain.conn, v2_chain.ws) == [] and v2_chain.state().approval_effective
+    before = table_counts(v2_chain.conn)
+    again = _open(v2_chain, subject=NOTICE, required=True, observed={"field_key": "notice"})
+    assert again["id"] == successor["id"] and diff_counts(before, table_counts(v2_chain.conn)) == {}
+    assert v2_chain.state().approval_effective  # not reopened
+
+
+def test_ordinary_approval_without_deltas_is_full_with_no_changes(v2_chain):
+    _approve(v2_chain)
+    mode = _mode(v2_chain)
+    assert mode["mode"] == "full" and mode["changed_sections"] == [] and mode["delta_keys"] == []
+
+
+def test_a_change_after_a_delta_reapproval_is_full_with_the_new_section(v2_chain):
+    _approve(v2_chain)
+    _open(v2_chain)
+    _approve(v2_chain)
+    assert _mode(v2_chain)["mode"] == "delta_only"
+    v2_chain.set_target(url="https://jobs.example.test/acme/after-reapproval")
+    mode = _mode(v2_chain)
+    assert mode["mode"] == "full" and "apply_target" in mode["changed_sections"]
+    assert mode["previous_hash"] == ra.latest_approval(v2_chain.conn, v2_chain.ws)["binding_hash"]
