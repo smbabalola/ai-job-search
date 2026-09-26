@@ -51,3 +51,80 @@ def ready_chain(tmp_path):
     yield conn, ws, settings
     conn.close()
     _close(client)
+
+
+# ---- Task 10: discovery worlds -------------------------------------------------
+
+class JobsRunner:
+    """Fake portal runner: serves the given jobs once, then nothing."""
+
+    def __init__(self, jobs):
+        self.jobs, self.served = list(jobs), False
+
+    def search(self, source, **kwargs):
+        if self.served:
+            return []
+        self.served = True
+        return self.jobs
+
+
+def portal_job(record_id, *, company="Acme Drilling", title="Drilling Fluids Engineer", url=None):
+    return {"id": record_id, "title": title, "company": company, "location": "Aberdeen", "date": "2026-09-20",
+            "url": url or f"https://example.test/jobs/{record_id}", "description": "Mud engineering.",
+            "work_mode": "onsite", "regions": ["eu"], "countries": ["GB"], "skills": []}
+
+
+def discover(conn, jobs):
+    """A real, user-triggered discovery run (freehire only) with a fake runner."""
+    from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
+    from webapp.services.discovery import run_discovery_search
+    if get_current_user_profile(conn, "search_default", account_id=ACCOUNT) is None:
+        save_user_profile(conn, {"target_roles": ["Drilling Fluids Engineer"], "locations": ["Aberdeen"],
+                                 "search_terms": ["drilling fluids"], "source_preferences": ["freehire-search"],
+                                 "recency_days": 7})
+    return run_discovery_search(conn, JobsRunner(jobs), limit_per_source=10)
+
+
+def enable_prepare(conn, *, llm_per_day="5.00", llm_per_application="1.00", now=NOW):
+    """Explicit PREPARE authority + a standing policy with an LLM budget."""
+    from product.standing_policy import default_policy_document
+    from webapp.persistence.autonomy_authority import save_policy_version
+    from webapp.services.autonomy_controls import enable_autonomous_preparation
+    enable_autonomous_preparation(conn, account_id=ACCOUNT, actor="u", timezone="Europe/London", now=now)
+    doc = default_policy_document("Europe/London")
+    if llm_per_day is not None:
+        doc["limits"]["budgets"] = {"LLM": {"per_day": llm_per_day, "per_application": llm_per_application}}
+    save_policy_version(conn, account_id=ACCOUNT, doc=doc, created_by="u", now=now)
+    return doc
+
+
+def settings_6c(tmp_path, **kw):
+    from decimal import Decimal
+    from webapp.config import Settings
+    values = dict(db_path=tmp_path / "settings.sqlite3", autonomy_max_capability="PREPARE",
+                  autonomy_scheduler_enabled=True,
+                  autonomy_step_cost_max={"EVALUATE": Decimal("0.05"), "UNDERSTAND": Decimal("0.05"),
+                                          "FIT": Decimal("0.10"), "INTELLIGENCE": Decimal("0.20")})
+    values.update(kw)
+    return Settings(**values)
+
+
+def add_fit(conn, candidate_id, *, score=82, verdict="strong"):
+    """A stored discovery fit for the candidate (content is what screening reads)."""
+    from webapp.persistence.discovery import get_discovery_candidate, save_discovery_fit
+    candidate = get_discovery_candidate(conn, candidate_id)
+    return save_discovery_fit(conn, candidate_id=candidate_id, occurrence_id=candidate["canonical_occurrence_id"],
+                              request={"active_extensions": []},
+                              result={"overall_score": score, "verdict": {"id": verdict} if verdict else None},
+                              fingerprints={})
+
+
+def fresh_fits(monkeypatch):
+    """Discovery-fit staleness has its own suite; here a stored fit is fresh."""
+    from webapp.persistence.discovery import get_current_discovery_fit
+    from webapp.services import autonomy_candidates
+
+    def state(conn, *, candidate_id, search_workspace_id, account_id):
+        fit = get_current_discovery_fit(conn, candidate_id, search_workspace_id=search_workspace_id)
+        return fit, fit is not None
+    monkeypatch.setattr(autonomy_candidates, "_fit_state", state)

@@ -202,8 +202,14 @@ def run_discovery_search(
     else:
         status = "failed"
     completed = complete_discovery_run(
-        conn, run["id"], source_status=source_status, status=status
+        conn, run["id"], source_status=source_status, status=status, commit=False
     )
+    # Bundle 6C: candidates of a finished run become schedulable in the same
+    # transaction as the run's completion (spec §6.1/§6.2).
+    from webapp.services.autonomy_candidates import enqueue_run_candidates
+    enqueue_run_candidates(conn, run_id=run["id"], account_id=account_id,
+                           search_workspace_id=search_workspace_id, now=datetime.now(timezone.utc))
+    conn.commit()
     return {"run": completed, "candidate_ids": list(dict.fromkeys(candidate_ids))}
 
 
@@ -454,6 +460,76 @@ def grouped_discovery_candidates(
     return groups
 
 
+def _promote_candidate_in_transaction(
+    conn: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    search_workspace_id: str,
+    account_id: str,
+) -> dict[str, Any]:
+    """Promotion inside a transaction the caller holds (6C revalidating
+    promotion and the public function below). No BEGIN/commit/rollback."""
+    _require_active_search_workspace(
+        conn, search_workspace_id, account_id=account_id
+    )
+    candidate = get_discovery_candidate(
+        conn, candidate_id, search_workspace_id=search_workspace_id
+    )
+    if candidate is None:
+        raise DiscoveryServiceError(f"unknown discovery candidate {candidate_id!r}")
+    existing_workspace_id = candidate.get("promoted_workspace_id")
+    if existing_workspace_id:
+        workspace = get_workspace(
+            conn, existing_workspace_id, account_id=account_id
+        )
+        if workspace is None:
+            raise DiscoveryServiceError("promoted candidate references a missing workspace")
+        return {"candidate": candidate, "workspace": workspace, "created": False}
+    if candidate["lifecycle_status"] in {"dismissed", "expired"}:
+        raise DiscoveryServiceError("resurface this candidate before creating an application")
+    workspace_id = f"ws_{uuid.uuid4().hex[:20]}"
+    created = create_job_from_source_record(
+        conn,
+        company=candidate["company"],
+        title=candidate["title"],
+        source_record=candidate["canonical_source_record"],
+        workspace_id=workspace_id,
+        account_id=account_id,
+        commit=False,
+    )
+    application_workspace_id = created["workspace"]["id"]
+    occurrence = conn.execute(
+        "SELECT run_id FROM discovery_occurrences "
+        "WHERE id = ? AND search_workspace_id = ?",
+        (candidate["canonical_occurrence_id"], search_workspace_id),
+    ).fetchone()
+    record_application_origin(
+        conn,
+        application_workspace_id=application_workspace_id,
+        search_workspace_id=search_workspace_id,
+        discovery_candidate_id=candidate_id,
+        discovery_occurrence_id=candidate["canonical_occurrence_id"],
+        discovery_run_id=occurrence["run_id"] if occurrence else None,
+    )
+    conn.execute(
+        "UPDATE discovery_candidates SET lifecycle_status = 'promoted', promoted_workspace_id = ?, updated_at = ? "
+        "WHERE id = ? AND search_workspace_id = ?",
+        (
+            application_workspace_id,
+            datetime.now(timezone.utc).isoformat(),
+            candidate_id,
+            search_workspace_id,
+        ),
+    )
+    return {
+        "candidate": get_discovery_candidate(
+            conn, candidate_id, search_workspace_id=search_workspace_id
+        ),
+        "workspace": created["workspace"],
+        "created": created["created"],
+    }
+
+
 def promote_discovery_candidate(
     conn: sqlite3.Connection,
     candidate_id: str,
@@ -463,67 +539,11 @@ def promote_discovery_candidate(
 ) -> dict[str, Any]:
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _require_active_search_workspace(
-            conn, search_workspace_id, account_id=account_id
-        )
-        candidate = get_discovery_candidate(
-            conn, candidate_id, search_workspace_id=search_workspace_id
-        )
-        if candidate is None:
-            raise DiscoveryServiceError(f"unknown discovery candidate {candidate_id!r}")
-        existing_workspace_id = candidate.get("promoted_workspace_id")
-        if existing_workspace_id:
-            workspace = get_workspace(
-                conn, existing_workspace_id, account_id=account_id
-            )
-            if workspace is None:
-                raise DiscoveryServiceError("promoted candidate references a missing workspace")
-            conn.commit()
-            return {"candidate": candidate, "workspace": workspace, "created": False}
-        if candidate["lifecycle_status"] in {"dismissed", "expired"}:
-            raise DiscoveryServiceError("resurface this candidate before creating an application")
-        workspace_id = f"ws_{uuid.uuid4().hex[:20]}"
-        created = create_job_from_source_record(
-            conn,
-            company=candidate["company"],
-            title=candidate["title"],
-            source_record=candidate["canonical_source_record"],
-            workspace_id=workspace_id,
-            account_id=account_id,
-            commit=False,
-        )
-        application_workspace_id = created["workspace"]["id"]
-        occurrence = conn.execute(
-            "SELECT run_id FROM discovery_occurrences "
-            "WHERE id = ? AND search_workspace_id = ?",
-            (candidate["canonical_occurrence_id"], search_workspace_id),
-        ).fetchone()
-        record_application_origin(
-            conn,
-            application_workspace_id=application_workspace_id,
-            search_workspace_id=search_workspace_id,
-            discovery_candidate_id=candidate_id,
-            discovery_occurrence_id=candidate["canonical_occurrence_id"],
-            discovery_run_id=occurrence["run_id"] if occurrence else None,
-        )
-        conn.execute(
-            "UPDATE discovery_candidates SET lifecycle_status = 'promoted', promoted_workspace_id = ?, updated_at = ? "
-            "WHERE id = ? AND search_workspace_id = ?",
-            (
-                application_workspace_id,
-                datetime.now(timezone.utc).isoformat(),
-                candidate_id,
-                search_workspace_id,
-            ),
+        result = _promote_candidate_in_transaction(
+            conn, candidate_id, search_workspace_id=search_workspace_id, account_id=account_id,
         )
         conn.commit()
-        return {
-            "candidate": get_discovery_candidate(
-                conn, candidate_id, search_workspace_id=search_workspace_id
-            ),
-            "workspace": created["workspace"],
-            "created": created["created"],
-        }
+        return result
     except (
         ApplicationIdentityAmbiguityError,
         ApplicationIdentityConflictError,
