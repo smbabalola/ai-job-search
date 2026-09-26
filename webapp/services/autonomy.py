@@ -178,7 +178,7 @@ def decide_and_record(conn, *, settings: Settings, account_id: str, application_
     return run_immediate(conn, work)
 
 
-def request_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+def _request_grant_core(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None) -> GrantOutcome:
@@ -244,7 +244,7 @@ def _settle_reservations(conn, grant_id: str, status: str, now: datetime) -> Non
         set_reservation_status(conn, reservation_id=row["id"], status=status, now=now)
 
 
-def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
+def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
                      requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                      run_id: str | None = None) -> PreClickResult:
     """Spec §10.3: one BEGIN IMMEDIATE transaction re-checks the kill switch and
@@ -422,3 +422,9 @@ def resolve_ambiguous(conn, *, attempt_id: str, submitted: bool, actor: str, now
         (_confirm if submitted else _release)(conn, attempt, now)
         return state
     return run_immediate(conn, work)
+
+
+# Bundle 6D-A Task 11 (refactor step): the grant and pre-click engine now lives
+# in private cores; these public names are temporarily the cores themselves.
+request_grant = _request_grant_core
+pre_click_commit = _pre_click_commit_core
