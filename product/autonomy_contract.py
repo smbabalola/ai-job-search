@@ -69,12 +69,13 @@ class EmployerKeyStrength(str, Enum):
 
 
 class Reach(str, Enum):
+    APPLICATION = "APPLICATION"  # Bundle 6D-A: one application workspace only (narrowest)
     EMPLOYER = "EMPLOYER"
     SEARCH_WORKSPACE = "SEARCH_WORKSPACE"
     ACCOUNT = "ACCOUNT"
 
 
-REACH_ORDER = {Reach.EMPLOYER: 0, Reach.SEARCH_WORKSPACE: 1, Reach.ACCOUNT: 2}
+REACH_ORDER = {Reach.APPLICATION: 0, Reach.EMPLOYER: 1, Reach.SEARCH_WORKSPACE: 2, Reach.ACCOUNT: 3}
 
 
 class _Unknown:

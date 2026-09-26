@@ -89,6 +89,13 @@ def insert_delta(conn, *, account_id: str, application_workspace_id: str, kind: 
         "created_at": to_utc_iso(now)})
 
 
+
+def list_deltas(conn, ws: str) -> list[dict[str, Any]]:
+    """Every delta of the application, open or resolved, by seq."""
+    rows = conn.execute("SELECT * FROM review_deltas WHERE application_workspace_id = ? ORDER BY seq",
+                        (ws,)).fetchall()
+    return [{**dict(r), "observed": json.loads(r["observed_json"])} for r in rows]
+
 def open_deltas(conn, ws: str) -> list[dict[str, Any]]:
     resolved = {e["detail"].get("delta_id") for e in _events_of(conn, ws, "DELTA_RESOLVED")}
     rows = conn.execute("SELECT * FROM review_deltas WHERE application_workspace_id = ? ORDER BY seq",

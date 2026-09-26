@@ -318,3 +318,23 @@ def test_validation_evidence_value_hash_not_string(conn):
     # Verify zero rows exist
     rows = conn.execute("SELECT COUNT(*) as cnt FROM approved_answers WHERE account_id = ?", (ACCOUNT,)).fetchone()
     assert rows["cnt"] == 0
+
+
+@pytest.mark.parametrize("reach,scope_id", [(Reach.EMPLOYER, "name:acme"), (Reach.SEARCH_WORKSPACE, "search_default"),
+                                            (Reach.ACCOUNT, None)])
+def test_sensitive_subject_rejected_at_employer_workspace_and_account_reach(conn, reach, scope_id):
+    from webapp.persistence.autonomy_answers import AnswerValidationError
+    with pytest.raises(AnswerValidationError, match="sensitive"):
+        approve_answer(conn, account_id=ACCOUNT, subject="demographic.eeo", value="prefer not to say", reach=reach,
+                       scope_id=scope_id, context={}, basis=ASSERT, approved_by="u", now=NOW)
+
+
+def test_sensitive_subject_accepted_only_at_application_reach_with_scope(conn):
+    from webapp.persistence.autonomy_answers import AnswerValidationError
+    ws = make_workspace(conn)
+    with pytest.raises(AnswerValidationError, match="scope_id"):
+        approve_answer(conn, account_id=ACCOUNT, subject="demographic.eeo", value="x", reach=Reach.APPLICATION,
+                       scope_id=None, context={}, basis=ASSERT, approved_by="u", now=NOW)
+    a = approve_answer(conn, account_id=ACCOUNT, subject="demographic.eeo", value="prefer not to say",
+                       reach=Reach.APPLICATION, scope_id=ws, context={}, basis=ASSERT, approved_by="u", now=NOW)
+    assert a["reach"] == "APPLICATION" and a["scope_id"] == ws

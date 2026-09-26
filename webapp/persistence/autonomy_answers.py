@@ -34,8 +34,10 @@ def _validate(subject: str, reach: Reach, scope_id: str | None, context: Mapping
     entry = subject_entry(policy, subject)
     if entry is None:
         raise AnswerValidationError(f"unknown subject {subject!r}")
-    if entry["sensitive"] is not None:
-        raise AnswerValidationError(f"sensitive subject {subject!r} cannot have a standing answer in v1")
+    if entry["sensitive"] is not None and reach is not Reach.APPLICATION:
+        # 6D-A: a sensitive answer is only ever given for one application.
+        raise AnswerValidationError(f"sensitive subject {subject!r} can only be answered per application "
+                                    "(APPLICATION reach), never as a standing answer")
     if REACH_ORDER[reach] > REACH_ORDER[Reach(entry["max_reach"])]:
         raise AnswerValidationError(f"reach {reach.value} exceeds max_reach {entry['max_reach']} for {subject}")
     if reach is not Reach.ACCOUNT and not scope_id:

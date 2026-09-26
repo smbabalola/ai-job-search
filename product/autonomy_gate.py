@@ -13,6 +13,7 @@ wraps the whole evaluation in a final catch-all as defense in depth.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping
@@ -566,15 +567,58 @@ def _apply_target(ctx: AuthorizationContext, acc: _Acc) -> None:
             acc.reduce(Capability.FILL, "target_unverified", check=name)
 
 
-def _in_reach(cand: AnswerCandidate, entry: dict, ctx: AuthorizationContext) -> bool:
+def _in_reach(cand: AnswerCandidate, entry: dict, *, application_workspace_id: str | None,
+              search_workspace_id: str | None, employer_key: str | None,
+              employer_key_strength: EmployerKeyStrength) -> bool:
     if REACH_ORDER[cand.reach] > REACH_ORDER[Reach(entry["max_reach"])]:
         return False
     if cand.reach is Reach.ACCOUNT:
         return True
     if cand.reach is Reach.SEARCH_WORKSPACE:
-        return ctx.search_workspace_id is not None and cand.scope_id == ctx.search_workspace_id
-    return (ctx.employer_key_strength is not EmployerKeyStrength.UNKNOWN
-            and ctx.employer_key is not None and cand.scope_id == ctx.employer_key)
+        return search_workspace_id is not None and cand.scope_id == search_workspace_id
+    if cand.reach is Reach.APPLICATION:
+        return application_workspace_id is not None and cand.scope_id == application_workspace_id
+    return (employer_key_strength is not EmployerKeyStrength.UNKNOWN
+            and employer_key is not None and cand.scope_id == employer_key)
+
+
+def usable_answer_candidates(req: RepresentationRequirement, entry: dict, *, application_workspace_id: str | None,
+                             search_workspace_id: str | None, employer_key: str | None,
+                             employer_key_strength: EmployerKeyStrength) -> tuple[list[AnswerCandidate], bool]:
+    """The one applicability rule shared by this gate and Review (6D-A spec
+    §8.1): candidates of the requirement's subject that are in reach, and
+    not known to differ in context. The flag is True if any in-reach
+    candidate is contradicted."""
+    in_reach = [c for c in req.candidates if c.subject == req.subject and _in_reach(
+        c, entry, application_workspace_id=application_workspace_id, search_workspace_id=search_workspace_id,
+        employer_key=employer_key, employer_key_strength=employer_key_strength)]
+    contradicted = any(c.contradicted for c in in_reach)
+    return [c for c in in_reach if not _context_known_different(c, req, entry)], contradicted
+
+
+@dataclass(frozen=True)
+class AnswerReadiness:
+    expired: bool
+    expires_at: datetime | None
+    basis: str  # "ok" | "stale" | "missing"
+
+
+def answer_readiness(cand: AnswerCandidate, entry: dict, now: datetime) -> AnswerReadiness:
+    """Freshness and evidence-basis state, shared by the gate and Review: an
+    answer is expired strictly after confirmed_at + freshness_days; an
+    EVIDENCE basis is stale when the current basis differs, missing when gone."""
+    days = entry["freshness_days"]
+    expires_at = cand.confirmed_at + timedelta(days=days) if days is not None else None
+    expired = days is not None and now - cand.confirmed_at > timedelta(days=days)
+    if cand.basis_kind == "USER_ASSERTION":
+        basis = "ok"
+    elif cand.basis_hash_current is None:
+        basis = "missing"
+    elif cand.basis_hash_current != cand.basis_hash_at_approval:
+        basis = "stale"
+    else:
+        basis = "ok"
+    return AnswerReadiness(expired, expires_at, basis)
 
 
 def _job_value(req: RepresentationRequirement, key: str) -> Any:
@@ -593,17 +637,15 @@ def _context_known_different(cand: AnswerCandidate, req: RepresentationRequireme
 def _submit_blocker(cand: AnswerCandidate, req: RepresentationRequirement, entry: dict, now: datetime) -> str | None:
     if not entry["submit_eligible"]:
         return "not_submit_eligible"
-    days = entry["freshness_days"]
-    if days is not None and now - cand.confirmed_at > timedelta(days=days):
+    readiness = answer_readiness(cand, entry, now)
+    if readiness.expired:
         return "expired"
     # Ruling P (spec §7.5): a profile-fact subject's answer is SUBMIT-ready
     # only if its current factual basis is checkable -- a USER_ASSERTION basis
     # cannot be checked against the current profile.
     if entry["requires_current_profile_basis"] and cand.basis_kind == "USER_ASSERTION":
         return "profile_basis_unverifiable"
-    if cand.basis_kind != "USER_ASSERTION" and (
-        cand.basis_hash_current is None or cand.basis_hash_current != cand.basis_hash_at_approval
-    ):
+    if readiness.basis != "ok":
         return "basis_changed"
     for key in entry["context_keys"]:
         if cand.context.get(key) is None or _job_value(req, key) is None:
@@ -675,15 +717,17 @@ def _apply_requirements(ctx: AuthorizationContext, acc: _Acc, structural_cap: Ca
             continue
         if req.evidence_available:
             continue
-        in_reach = [c for c in req.candidates if c.subject == req.subject and _in_reach(c, entry, ctx)]
-        if any(c.contradicted for c in in_reach):
+        usable, contradicted = usable_answer_candidates(
+            req, entry, application_workspace_id=ctx.application_workspace_id,
+            search_workspace_id=ctx.search_workspace_id, employer_key=ctx.employer_key,
+            employer_key_strength=ctx.employer_key_strength)
+        if contradicted:
             if req.required:
                 items.append((RequireUserItem("contradicted_answer", req.key), True))
                 unresolved_required.append((req.key, req.subject, "contradicted_answer"))
             else:
                 acc.note("optional_omitted", field=req.key, why="contradicted")
             continue
-        usable = [c for c in in_reach if not _context_known_different(c, req, entry)]
         blockers = [_submit_blocker(c, req, entry, ctx.now) for c in usable]
         if any(b is None for b in blockers):
             continue

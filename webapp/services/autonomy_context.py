@@ -204,6 +204,10 @@ def _candidates(conn, *, account_id: str, workspace_id: str, subject: str,
     return tuple(out)
 
 
+
+# Bundle 6D-A: Review resolves candidates exactly as the authorization context does.
+answer_candidates = _candidates
+
 def _counters(conn, *, settings: Settings, doc: dict, account_id: str, stage: Capability, now: datetime,
               run_id: str | None, employer_key: str | None) -> tuple[CounterState, ...]:
     limits = doc["limits"]
