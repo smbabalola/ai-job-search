@@ -212,6 +212,31 @@ def test_halt_during_a_step_finishes_truthfully_and_schedules_nothing_further(wo
     assert attempts(conn, ws) == [("UNDERSTAND", "SUCCEEDED")] and providers.semantic_adapter.calls == 0
 
 
+def test_sentinel_halt_latches_and_only_resume_all_then_fresh_authorization_resumes(world):
+    from webapp.services.autonomy_controls import resume_all
+    from webapp.services.autonomy_prepare_auth import authorize_prepare
+    conn, ws, settings, providers, clock = world
+    auth = lambda: authorize_prepare(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=ws,
+                                     now=clock())
+    before = auth()
+    assert before.permitted
+    sentinel = settings.autonomy_sentinel_path
+    sentinel.write_text("halt")
+    tick(conn, settings, providers, clock)  # the scheduler observes and latches the halt
+    assert attempts(conn, ws) == [] and providers.understanding.calls == 0
+    sentinel.unlink()
+    clock.now += timedelta(minutes=5)
+    tick(conn, settings, providers, clock)  # deleting the file alone resumes nothing
+    assert attempts(conn, ws) == [] and providers.understanding.calls == 0
+    resume_all(conn, account_id=ACCOUNT, actor="u", reason="go", now=clock(), sentinel_path=sentinel)
+    fresh = auth()
+    assert fresh.permitted and not fresh.reused and fresh.decision_id != before.decision_id
+    again = auth()
+    assert again.reused and again.decision_id == fresh.decision_id
+    tick(conn, settings, providers, clock)
+    assert attempts(conn, ws) == [("UNDERSTAND", "SUCCEEDED")]
+
+
 def test_expired_lease_cannot_finalize_even_if_not_retaken(world):
     conn, ws, settings, providers, clock = world
     providers.understanding.advance = timedelta(seconds=settings.autonomy_step_timeout + settings.autonomy_lease_margin

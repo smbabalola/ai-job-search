@@ -31,7 +31,9 @@ from webapp.persistence.autonomy_ledger import (
 from webapp.services import autonomy_candidates
 from webapp.services.autonomy import AutonomyPaused, expire_unclicked, mark_stale_dispatches_ambiguous
 from webapp.services.autonomy_context import day_window
-from webapp.services.autonomy_controls import run_immediate, sentinel_present
+from webapp.services.autonomy_controls import (
+    engage_kill_switch_in_transaction, run_immediate, sentinel_present,
+)
 from webapp.services.autonomy_inbox import notify_outcome, reconcile_notifications
 from webapp.services.autonomy_prepare import (
     classify_error, prepare_snapshot, retry_after_seconds, run_paid_step, run_system_review, system_gate4,
@@ -497,11 +499,28 @@ def _interleave(apps: list[dict], candidates: list[dict], limit: int) -> list[tu
     return order[:limit]
 
 
+def _latch_sentinel(conn, settings: Settings, now: datetime) -> None:
+    """An observed sentinel engages every account's kill switch (reduce-only,
+    idempotent), so deleting the file later never resumes anything: only an
+    explicit resume-all does (spec §5)."""
+    if not sentinel_present(settings.autonomy_sentinel_path):
+        return
+
+    def work() -> None:
+        for (account_id,) in conn.execute("SELECT id FROM accounts").fetchall():
+            if not kill_switch_state(conn, account_id)["engaged"]:
+                engage_kill_switch_in_transaction(
+                    conn, account_id=account_id, actor="sentinel",
+                    reason=f"sentinel file present: {settings.autonomy_sentinel_path}", now=now)
+    run_immediate(conn, work)
+
+
 def run_tick(conn, *, settings: Settings, providers: ProviderSet, now: datetime, rng: random.Random,
              worker_id: str, cost_meter=None, clock: Callable[[], datetime] | None = None) -> TickReport:
     meter = cost_meter or NoCostEvidence()
     clock = clock or (lambda: now)
     report = TickReport(sweeps=_sweeps(conn, settings, now, meter))
+    _latch_sentinel(conn, settings, now)
     if not settings.autonomy_scheduler_enabled:
         return report
     limit = settings.autonomy_max_items_per_tick

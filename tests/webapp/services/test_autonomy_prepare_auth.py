@@ -28,6 +28,22 @@ def test_permitted_decision_is_reused_while_inputs_are_unchanged(conn, settings,
     assert len([d for d in list_decisions(conn, seeded) if d["requested_stage"] == "PREPARE"]) == 1
 
 
+def test_a_halt_and_resume_all_forces_a_fresh_decision(conn, settings, seeded):
+    """Spec §2.8: halt -> explicit resume -> fresh authorization. The halted
+    flag is False both before the halt and after the resume, so the material
+    inputs alone cannot tell them apart."""
+    from webapp.services.autonomy_controls import engage_kill_switch, resume_all
+    authorize_all(conn)
+    first = _auth(conn, settings, seeded)
+    engage_kill_switch(conn, account_id=ACCOUNT, actor="u", reason="stop", now=NOW + timedelta(minutes=1))
+    resume_all(conn, account_id=ACCOUNT, actor="u", reason="go", now=NOW + timedelta(minutes=2),
+               sentinel_path=settings.autonomy_sentinel_path)
+    second = _auth(conn, settings, seeded, now=NOW + timedelta(minutes=3))
+    assert second.permitted and not second.reused and second.decision_id != first.decision_id
+    third = _auth(conn, settings, seeded, now=NOW + timedelta(minutes=4))
+    assert third.reused and third.decision_id == second.decision_id  # reuse resumes after the fresh decision
+
+
 def test_policy_change_invalidates_reuse(conn, settings, seeded):
     authorize_all(conn)
     first = _auth(conn, settings, seeded)

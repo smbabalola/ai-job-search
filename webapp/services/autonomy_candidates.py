@@ -346,5 +346,8 @@ def resolve_candidate_question(conn, *, settings: Settings, exception_id: str, r
             ap.set_dormant(conn, queue="CANDIDATE", item_id=exception["candidate_id"], now=now)
         out["resolution"] = ap.resolve_candidate_exception(conn, exception_id=exception_id, resolution=resolution,
                                                            actor=actor, reason=reason, now=now)
+        for note in ap.open_notifications(conn, exception["account_id"]):  # answered -> resolved (spec §9)
+            if note["kind"] == "CANDIDATE_QUESTION" and note["subject_id"] == exception["candidate_id"]:
+                ap.resolve_notification(conn, account_id=exception["account_id"], key=note["key"], now=now)
         return out
     return run_immediate(conn, work)

@@ -347,12 +347,14 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
         budgets = _budgets(conn, doc=doc, account_id=account_id, workspace_id=ws, now=now,
                            estimates=cost_estimates or {})
 
+    kill_switch = kill_switch_state(conn, account_id)
     return AuthorizationContext(
         mode=mode, requested_stage=requested_stage, now=now, account_id=account_id,
         application_workspace_id=ws, search_workspace_id=search_ws,
         deployment_ceiling=settings.autonomy_deployment_ceiling(), account_max=account_max,
         workspace_ceiling=workspace_ceiling,
-        kill_switch_engaged=kill_switch_state(conn, account_id)["halted"], sentinel_present=sentinel_present,
+        kill_switch_engaged=kill_switch["halted"], control_epoch=kill_switch["latest_engage_seq"],
+        sentinel_present=sentinel_present,
         standing_policy=doc, subject_policy=load_subject_policy(), attributes=attributes,
         governing_auto_reject=auto_reject, unresolved_governing_require_user=unresolved,
         pack_artifact_id=pack_id, pack_auto_confirmable=pack_ok, requirements=reqs,

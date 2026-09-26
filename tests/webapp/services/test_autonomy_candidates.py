@@ -255,3 +255,17 @@ def test_user_promote_refused_when_a_structural_obstacle_appeared_and_dismiss_wo
         ac.resolve_candidate_question(conn, settings=world, exception_id=first["id"], resolution="PROMOTE",
                                       actor="u", reason=None, now=NOW)
     assert _counts(conn) == before and ap.get_candidate_exception(conn, first["id"])["resolution"] is None
+
+
+def test_answering_a_question_resolves_its_notification_immediately(conn, world):
+    from webapp.services.autonomy_inbox import inbox_summary
+    _ask_on_unknown_fit(conn)
+    cid = discover(conn, [portal_job("n1")])["candidate_ids"][0]
+    add_fit(conn, cid, score=None)
+    ac.screen_candidate(conn, ctx=_ctx(conn, world, cid), now=NOW)
+    conn.commit()
+    assert inbox_summary(conn, ACCOUNT)["actionable"] == 1
+    exc = ap.open_candidate_exceptions(conn, ACCOUNT)[0]
+    ac.resolve_candidate_question(conn, settings=world, exception_id=exc["id"], resolution="DISMISS", actor="u",
+                                  reason=None, now=NOW)
+    assert inbox_summary(conn, ACCOUNT) == {"badge": 0, "actionable": 0, "informational_unseen": 0}
