@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Autonomy inbox · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Autonomous preparation</p><h1>Inbox</h1>
+  <p>What autonomy needs from you, what it could not do, and what is ready. Every entry lists all current reasons.</p></div></section>
+<section class="panel" data-inbox-section="needs-answer">
+  <div class="panel-heading"><h2>Needs your answer</h2></div>
+  {% for e in inbox.needs_answer %}<article class="evidence-row" data-inbox-entry="{{ e.kind }}">
+    <div>
+      {% if e.kind == "CANDIDATE_QUESTION" %}
+        <strong>Should this job become an application?</strong>
+        <ul>{% for r in e.reasons %}<li><code>{{ r.code }}</code> {{ r.params }}</li>{% endfor %}</ul>
+        <button class="button" type="button" data-candidate-resolve="PROMOTE" data-exception="{{ e.exception_id }}">Promote</button>
+        <button class="button secondary" type="button" data-candidate-resolve="DISMISS" data-exception="{{ e.exception_id }}">Dismiss</button>
+      {% else %}
+        <strong>{{ e.detail.reason }}</strong>
+        {% if e.detail.get("items") %}<ul>{% for item in e.detail.get("items") %}<li><code>{{ item }}</code></li>{% endfor %}</ul>{% endif %}
+        <p><a href="/workspaces/{{ e.subject_id }}">Open the application</a> · <a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p>
+      {% endif %}
+    </div>
+  </article>{% else %}<p>Nothing needs your answer.</p>{% endfor %}
+</section>
+<section class="panel" data-inbox-section="informational">
+  <div class="panel-heading"><h2>Blocked or failed</h2></div>
+  {% for e in inbox.informational %}<article class="evidence-row" data-inbox-entry="{{ e.kind }}">
+    <div><strong>{{ e.kind }} · {{ e.detail.reason }}</strong>
+      {% if e.detail.error %}<p>{{ e.detail.error }}</p>{% endif %}
+      {% if e.kind == "OPERATIONAL_ERROR" and e.detail.reason == "transient_exhausted" %}
+        <button class="button secondary" type="button" data-autonomy-retry data-subject-type="{{ e.subject_type }}"
+                data-subject-id="{{ e.subject_id }}" data-step="{{ e.detail.step }}">Retry</button>
+      {% endif %}
+      <p><a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p></div>
+  </article>{% else %}<p>Nothing blocked.</p>{% endfor %}
+</section>
+<section class="panel" data-inbox-section="ready">
+  <div class="panel-heading"><h2>Ready</h2></div>
+  {% for e in inbox.ready %}<article class="evidence-row" data-inbox-entry="PREPARED">
+    <div><strong>Application pack system-confirmed</strong>
+      <p><a href="/workspaces/{{ e.subject_id }}">Open application</a> · <a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p></div>
+  </article>{% else %}<p>Nothing new is ready.</p>{% endfor %}
+</section>
+<script>
+(function () {
+  async function post(url, body) {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); }
+    window.location.reload();
+  }
+  document.querySelectorAll("[data-candidate-resolve]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      post("/api/autonomy/candidate-exceptions/" + button.dataset.exception + "/resolve",
+           {resolution: button.dataset.candidateResolve});
+    });
+  });
+  document.querySelectorAll("[data-autonomy-retry]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      post("/api/autonomy/retry", {subject_type: button.dataset.subjectType, subject_id: button.dataset.subjectId,
+                                    step_kind: button.dataset.step});
+    });
+  });
+})();
+</script>
+{% endblock %}

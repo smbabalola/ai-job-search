@@ -442,3 +442,20 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
     finishProfileSetup(form);
   } catch (error) { showMessage(error.message, true); button.disabled = false; }
 });
+
+// Bundle 6C: autonomy inbox badge (unresolved actionable + unseen informational).
+(function () {
+  const badge = document.querySelector("[data-autonomy-badge]");
+  if (!badge) return;
+  async function refresh() {
+    try {
+      const r = await fetch("/api/autonomy/inbox/summary");
+      if (!r.ok) return;
+      const summary = await r.json();
+      badge.textContent = String(summary.badge);
+      badge.hidden = summary.badge === 0;
+    } catch (error) { /* offline or not ready: leave the badge as it is */ }
+  }
+  refresh();
+  setInterval(refresh, 60000);
+})();

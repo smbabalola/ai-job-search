@@ -105,6 +105,9 @@ def get_autonomy(request: Request, conn: sqlite3.Connection = Depends(get_conn),
         "sentinel_present": sentinel_present(settings.autonomy_sentinel_path),
         "policy": policy["doc"] if policy else None,
         "policy_hash": policy["policy_hash"] if policy else None,
+        "scheduler_enabled": settings.autonomy_scheduler_enabled,
+        "driver_running": bool(getattr(request.app.state, "autonomy_driver", {}).get("running")),
+        "last_tick_at": getattr(request.app.state, "autonomy_driver", {}).get("last_tick_at"),
     }
 
 
@@ -233,10 +236,11 @@ def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.C
 
 
 @router.get("/api/workspaces/{workspace_id}/autonomy/dossier")
-def get_dossier(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def get_dossier(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     try:
-        return build_dossier(conn, account_id=scope.account_id, application_workspace_id=workspace_id)
+        return build_dossier(conn, account_id=scope.account_id, application_workspace_id=workspace_id,
+                             settings=request.app.state.settings)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="workspace not found") from exc
 
@@ -252,4 +256,120 @@ def autonomy_page(request: Request, conn: sqlite3.Connection = Depends(get_conn)
 def dossier_page(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)):
     return request.app.state.templates.TemplateResponse(
-        request, "autonomy_dossier.html", {"dossier": get_dossier(workspace_id, conn, scope)})
+        request, "autonomy_dossier.html", {"dossier": get_dossier(workspace_id, request, conn, scope)})
+
+
+# ---- Bundle 6C: inbox, enrolment, review latch, retry, candidate questions ----
+
+class RetryBody(_Body):
+    subject_type: Literal["APPLICATION", "CANDIDATE"]
+    subject_id: str
+    step_kind: Literal["EVALUATE", "UNDERSTAND", "FIT", "INTELLIGENCE", "SYSTEM_REVIEW", "GATE4"]
+
+
+class ResolveBody(_Body):
+    resolution: Literal["PROMOTE", "DISMISS"]
+    reason: str | None = None
+
+
+def _inbox(conn, account_id: str) -> dict[str, Any]:
+    from webapp.services.autonomy_inbox import build_inbox, mark_inbox_seen
+    view = build_inbox(conn, account_id=account_id)
+    mark_inbox_seen(conn, account_id=account_id, now=_now())  # viewing is SEEN, never RESOLVED
+    return view
+
+
+@router.get("/api/autonomy/inbox")
+def get_inbox(conn: sqlite3.Connection = Depends(get_conn),
+              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    return _inbox(conn, scope.account_id)
+
+
+@router.get("/api/autonomy/inbox/summary")
+def get_inbox_summary(conn: sqlite3.Connection = Depends(get_conn),
+                      scope: AccountScope = Depends(get_account_scope)) -> dict[str, int]:
+    from webapp.services.autonomy_inbox import inbox_summary
+    return inbox_summary(conn, scope.account_id)
+
+
+@router.get("/autonomy/inbox")
+def inbox_page(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+               scope: AccountScope = Depends(get_account_scope)):
+    return request.app.state.templates.TemplateResponse(
+        request, "autonomy_inbox.html", {"inbox": _inbox(conn, scope.account_id)})
+
+
+@router.post("/api/workspaces/{workspace_id}/autonomy/enrol")
+def post_enrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_prepare import enrol
+    try:
+        enrol(conn, account_id=scope.account_id, application_workspace_id=workspace_id, actor=scope.account_id,
+              now=_now())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="workspace not found") from exc
+    return {"enrolled": True}
+
+
+@router.post("/api/workspaces/{workspace_id}/autonomy/unenrol")
+def post_unenrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_prepare import unenrol
+    try:
+        unenrol(conn, account_id=scope.account_id, application_workspace_id=workspace_id, actor=scope.account_id,
+                now=_now())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="workspace not found") from exc
+    return {"enrolled": False}
+
+
+@router.post("/api/workspaces/{workspace_id}/autonomy/review-pack")
+def post_review_pack(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+                     scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_prepare import request_pack_review
+    try:
+        revision = request_pack_review(conn, account_id=scope.account_id, application_workspace_id=workspace_id,
+                                       actor=scope.account_id, now=_now())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="workspace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"latched_revision": revision}
+
+
+@router.post("/api/autonomy/retry")
+def post_retry(body: RetryBody, conn: sqlite3.Connection = Depends(get_conn),
+               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_inbox import RetryNotEligible, retry_failure
+    if body.subject_type == "APPLICATION":
+        _require_workspace(conn, body.subject_id, scope.account_id)
+    elif conn.execute("SELECT 1 FROM autonomy_candidate_queue WHERE candidate_id = ? AND account_id = ?",
+                      (body.subject_id, scope.account_id)).fetchone() is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    try:
+        request = retry_failure(conn, account_id=scope.account_id, subject_type=body.subject_type,
+                                subject_id=body.subject_id, step_kind=body.step_kind, actor=scope.account_id,
+                                now=_now())
+    except RetryNotEligible as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"retry_request_id": request["id"]}
+
+
+@router.post("/api/autonomy/candidate-exceptions/{exception_id}/resolve")
+def post_resolve_candidate(exception_id: str, body: ResolveBody, request: Request,
+                           conn: sqlite3.Connection = Depends(get_conn),
+                           scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.persistence.autonomy_prepare import get_candidate_exception
+    from webapp.services.autonomy_candidates import CandidatePromotionRefused, resolve_candidate_question
+    exception = get_candidate_exception(conn, exception_id)
+    if exception is None or exception["account_id"] != scope.account_id:
+        raise HTTPException(status_code=404, detail="question not found")
+    try:
+        out = resolve_candidate_question(conn, settings=request.app.state.settings, exception_id=exception_id,
+                                         resolution=body.resolution, actor=scope.account_id, reason=body.reason,
+                                         now=_now())
+    except CandidatePromotionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="candidate not found") from exc
+    return {"resolution": body.resolution, "application_workspace_id": out.get("application_workspace_id")}
