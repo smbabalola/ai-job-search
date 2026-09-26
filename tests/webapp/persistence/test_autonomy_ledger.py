@@ -223,6 +223,7 @@ def test_decision_without_valid_identity_fails_before_any_authority(conn, accoun
     with pytest.raises(sqlite3.IntegrityError):
         insert_decision(conn, ctx=ctx, decision=evaluate_authorization(ctx))
     conn.rollback()
+    assert conn.execute("SELECT COUNT(*) AS n FROM autonomy_decisions").fetchone()["n"] == 0
     with pytest.raises(sqlite3.IntegrityError):  # no decision row -> no grant can reference one
         insert_grant(conn, decision_id="dec_missing", account_id=ACCOUNT, application_workspace_id=ws,
                      stage=Capability.SUBMIT, binding={}, issued_at=NOW, expires_at=NOW + timedelta(seconds=60))
