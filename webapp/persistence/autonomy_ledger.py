@@ -289,7 +289,21 @@ def claim_intent(conn, *, account_id: str, job_identity_key: str, application_wo
         raise IntentConflict(job_identity_key) from exc
 
 
+class InvalidIntentTransition(Exception):
+    pass
+
+
+# Only a CLAIMED intent moves (CLAIMED -> CLAIMED attaches the attempt). A
+# CONFIRMED intent is cleared only by intent_overrides (spec §10.2); RELEASED
+# is history.
+INTENT_TRANSITIONS: dict[str, set[str]] = {"CLAIMED": {"CLAIMED", "CONFIRMED", "RELEASED"}}
+
+
 def set_intent_state(conn, *, intent_id: str, state: str, now: datetime, attempt_id: str | None = None) -> None:
+    row = conn.execute("SELECT state FROM submission_intents WHERE id = ?", (intent_id,)).fetchone()
+    current = row["state"] if row else None
+    if state not in INTENT_TRANSITIONS.get(current, set()):
+        raise InvalidIntentTransition(f"{current} -> {state}")
     conn.execute(
         "UPDATE submission_intents SET state = ?, attempt_id = COALESCE(?, attempt_id), updated_at = ? WHERE id = ?",
         (state, attempt_id, to_utc_iso(now), intent_id),

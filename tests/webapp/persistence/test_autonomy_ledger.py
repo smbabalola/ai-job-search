@@ -176,3 +176,35 @@ def test_attempt_lifecycle_transitions(conn):
         append_attempt_event(conn, attempt_id=attempt["id"], state="CLICK_DISPATCHED", source="EXECUTOR", evidence={}, now=NOW)
     append_attempt_event(conn, attempt_id=attempt["id"], state="CONFIRMED_SUCCESS", source="USER", evidence={}, now=NOW)
     assert attempt_state(conn, attempt["id"]) == "CONFIRMED_SUCCESS"
+
+
+def test_intent_state_only_leaves_claimed(conn):
+    # Spec §10.2: a CONFIRMED intent permanently suppresses autonomous
+    # submission unless overridden, and a RELEASED intent is history -- neither
+    # may be moved by set_intent_state.
+    from webapp.persistence.autonomy_ledger import InvalidIntentTransition
+    ws = make_workspace(conn)
+    kw = dict(account_id=ACCOUNT, application_workspace_id=ws, source="AUTONOMOUS", now=NOW)
+    claimed = claim_intent(conn, job_identity_key="source:x:1", **kw)
+    set_intent_state(conn, intent_id=claimed["id"], state="CLAIMED", now=NOW, attempt_id="att_1")
+    set_intent_state(conn, intent_id=claimed["id"], state="CONFIRMED", now=NOW)
+    for state in ("RELEASED", "CLAIMED", "CONFIRMED"):
+        with pytest.raises(InvalidIntentTransition):
+            set_intent_state(conn, intent_id=claimed["id"], state=state, now=NOW)
+    assert live_intent(conn, account_id=ACCOUNT, job_identity_key="source:x:1")["state"] == "CONFIRMED"
+    released = claim_intent(conn, job_identity_key="source:x:2", **kw)
+    set_intent_state(conn, intent_id=released["id"], state="RELEASED", now=NOW)
+    with pytest.raises(InvalidIntentTransition):
+        set_intent_state(conn, intent_id=released["id"], state="CLAIMED", now=NOW)
+    with pytest.raises(InvalidIntentTransition):
+        set_intent_state(conn, intent_id="intent_missing", state="RELEASED", now=NOW)
+
+
+def test_expire_grants_counts_and_logs_only_changed_rows(conn):
+    ws = make_workspace(conn)
+    g = _grant(conn, ws)
+    assert expire_grants(conn, now=NOW + timedelta(seconds=121)) == 1
+    assert expire_grants(conn, now=NOW + timedelta(seconds=122)) == 0
+    events = conn.execute("SELECT status FROM autonomy_grant_events WHERE grant_id = ? ORDER BY seq",
+                          (g["id"],)).fetchall()
+    assert [e["status"] for e in events] == ["ISSUED", "EXPIRED"]
