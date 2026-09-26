@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from webapp.api.profile import router as profile_router
+from webapp.api.autonomy import router as autonomy_router
 from webapp.api.application_documents import router as application_documents_router, reusable_router
 from webapp.api.cv_generation_v2 import router as cv_generation_v2_router
 from webapp.api.discovery import router as discovery_router
@@ -60,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspaces_router)
     app.include_router(review_router)
     app.include_router(status_router)
+    app.include_router(autonomy_router)
     app.include_router(views_router)
 
     return app

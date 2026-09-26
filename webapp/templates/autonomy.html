@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Autonomy · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Standing authorization</p><h1>Autonomy</h1>
+  <p>Autonomy is pre-authorized, not unrestricted. Nothing runs above what you explicitly allow here.</p></div></section>
+<section class="panel">
+  <div class="panel-heading"><h2>Authority</h2></div>
+  <dl class="facts">
+    <dt>Account maximum</dt><dd data-autonomy="account-max">{{ autonomy.account_max }}</dd>
+    <dt>Default for new searches</dt><dd>{{ autonomy.default_workspace_ceiling }}</dd>
+    <dt>Deployment ceiling</dt><dd>{{ autonomy.deployment_ceiling }}</dd>
+  </dl>
+  {% if autonomy.account_max == "NONE" %}
+  <form id="autonomy-enable-form"><label>Time zone<input name="timezone" value="Europe/London" required></label>
+    <button class="button" type="submit">Enable autonomous preparation</button></form>
+  {% endif %}
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Kill switch</h2></div>
+  <p data-autonomy="halted">{% if autonomy.kill_switch.halted %}Halted{% else %}Running{% endif %}
+    {% if autonomy.sentinel_present %} · sentinel file present{% endif %}</p>
+  <p>Emergency stop without the UI: create <code>{{ autonomy.sentinel_path }}</code>.</p>
+  <button class="button" type="button" data-autonomy-action="kill-switch/engage">Stop all autonomy</button>
+  <button class="button secondary" type="button" data-autonomy-action="kill-switch/release">Release kill switch</button>
+  <button class="button secondary" type="button" data-autonomy-action="resume-all">Resume all</button>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Standing policy</h2>{% if autonomy.policy_hash %}<p><code>{{ autonomy.policy_hash[:19] }}…</code></p>{% endif %}</div>
+  <form id="autonomy-policy-form"><textarea name="doc" rows="18" spellcheck="false">{{ autonomy.policy | tojson(indent=2) if autonomy.policy else "" }}</textarea>
+    <button class="button" type="submit">Save policy</button></form>
+  <ul id="autonomy-policy-errors" class="errors"></ul>
+</section>
+<script>
+(function () {
+  async function post(path, body, method) {
+    const r = await fetch("/api/autonomy/" + path, {method: method || "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    return r;
+  }
+  document.querySelectorAll("[data-autonomy-action]").forEach(function (button) {
+    button.addEventListener("click", async function () {
+      const reason = window.prompt("Reason") || "no reason given";
+      const r = await post(button.dataset.autonomyAction, {reason: reason});
+      if (!r.ok) { window.alert((await r.json()).detail || "Failed"); }
+      window.location.reload();
+    });
+  });
+  const enable = document.getElementById("autonomy-enable-form");
+  if (enable) enable.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    await post("enable-preparation", {timezone: enable.timezone.value});
+    window.location.reload();
+  });
+  const policy = document.getElementById("autonomy-policy-form");
+  policy.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const list = document.getElementById("autonomy-policy-errors");
+    list.innerHTML = "";
+    let doc;
+    try { doc = JSON.parse(policy.doc.value); } catch (err) { list.innerHTML = "<li>Not valid JSON</li>"; return; }
+    const r = await post("policy", {doc: doc}, "PUT");
+    if (r.status === 422) {
+      (await r.json()).errors.forEach(function (msg) { const li = document.createElement("li"); li.textContent = msg; list.appendChild(li); });
+      return;
+    }
+    window.location.reload();
+  });
+})();
+</script>
+{% endblock %}

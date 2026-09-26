@@ -1,0 +1,21 @@
+{
+  "schema_version": "semantic-subject-policy.v1",
+  "subjects": {
+    "work_authorization.right_to_work": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": ["country"], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": true},
+    "work_authorization.sponsorship_required": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": ["country"], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": true},
+    "licence.driving": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": true},
+    "employment.notice_period": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": 60, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": true},
+    "employment.availability_start": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": 30, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": true},
+    "compensation.salary_expectation": {"answer_kind": "STRUCTURED", "max_reach": "SEARCH_WORKSPACE", "default_reach": "SEARCH_WORKSPACE", "context_keys": ["currency", "region", "employment_type"], "freshness_days": 60, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "mobility.relocation": {"answer_kind": "STRUCTURED", "max_reach": "SEARCH_WORKSPACE", "default_reach": "SEARCH_WORKSPACE", "context_keys": ["region"], "freshness_days": 180, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "mobility.travel_or_rotation": {"answer_kind": "STRUCTURED", "max_reach": "SEARCH_WORKSPACE", "default_reach": "SEARCH_WORKSPACE", "context_keys": ["region"], "freshness_days": 180, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "motivation.role_type": {"answer_kind": "FREE_TEXT", "max_reach": "ACCOUNT", "default_reach": "SEARCH_WORKSPACE", "context_keys": [], "freshness_days": 180, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "motivation.industry": {"answer_kind": "FREE_TEXT", "max_reach": "ACCOUNT", "default_reach": "SEARCH_WORKSPACE", "context_keys": [], "freshness_days": 180, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "motivation.job_search_reason": {"answer_kind": "FREE_TEXT", "max_reach": "ACCOUNT", "default_reach": "SEARCH_WORKSPACE", "context_keys": [], "freshness_days": 180, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "motivation.employer_specific": {"answer_kind": "FREE_TEXT", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": 365, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "legal.attestation": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "legal_attestation", "requires_current_profile_basis": false},
+    "demographic.eeo": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "demographic", "requires_current_profile_basis": false},
+    "background.criminal_record": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "criminal_record", "requires_current_profile_basis": false},
+    "health.disability": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "health", "requires_current_profile_basis": false}
+  }
+}

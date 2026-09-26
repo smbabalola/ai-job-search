@@ -21,12 +21,24 @@ def test_registry_contains_initial_four_subjects():
         "work_authorization.sponsorship_required",
         "employment.notice_period",
         "licence.driving",
+        "employment.availability_start",
+        "compensation.salary_expectation",
+        "mobility.relocation",
+        "mobility.travel_or_rotation",
+        "motivation.role_type",
+        "motivation.industry",
+        "motivation.job_search_reason",
+        "motivation.employer_specific",
+        "legal.attestation",
+        "demographic.eeo",
+        "background.criminal_record",
+        "health.disability",
     }
 
 
 def test_registry_version_is_a_string():
     assert isinstance(SEMANTIC_SUBJECT_REGISTRY_VERSION, str)
-    assert SEMANTIC_SUBJECT_REGISTRY_VERSION == "v1"
+    assert SEMANTIC_SUBJECT_REGISTRY_VERSION == "v2"
 
 
 def test_is_valid_semantic_subject_accepts_registry_keys():

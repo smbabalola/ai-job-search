@@ -4,10 +4,11 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from product.autonomy_contract import Capability
 from product.cv_review_projection import CV_STATEMENT_REVIEW_ITEM_TYPE
 from webapp.api.dependencies import (
     get_account_scope,
@@ -24,6 +25,7 @@ from webapp.services.http_api import (
     render_job_application_pack_document,
     retry_job_application_pack_projection,
 )
+from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 from webapp.services.review_view import build_review_view_model
 
@@ -123,7 +125,7 @@ def post_review_decisions_batch(
 
 @router.post("/application-pack", status_code=201)
 def post_application_pack(
-    workspace_id: str, body: ApplicationPackBody,
+    workspace_id: str, body: ApplicationPackBody, request: Request,
     conn: sqlite3.Connection = Depends(get_conn),
     documents_root: Path = Depends(get_documents_root),
     extensions_dir: Path = Depends(get_extensions_dir),
@@ -132,7 +134,7 @@ def post_application_pack(
     if not body.confirmed:
         raise HTTPException(status_code=400, detail="application pack requires explicit confirmation")
     try:
-        return confirm_job_application_pack(
+        result = confirm_job_application_pack(
             conn, workspace_id, effective_date=body.effective_date,
             documents_root=documents_root, extensions_dir=extensions_dir,
             account_id=scope.account_id,
@@ -140,6 +142,9 @@ def post_application_pack(
         )
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _translate(exc) from exc
+    record_shadow_decision(conn, settings=request.app.state.settings, account_id=scope.account_id,
+                           workspace_id=workspace_id, stage=Capability.FILL)
+    return result
 
 
 @router.post("/application-pack/{pack_artifact_id}/retry-projection")

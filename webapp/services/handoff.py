@@ -27,6 +27,7 @@ from webapp.persistence.handoff import (
     revoke_session_tokens,
     set_handoff_session_status,
 )
+from webapp.persistence.autonomy_ledger import record_human_intent
 from webapp.persistence.workflow import record_status_change
 from webapp.services.ownership import AccountScope, account_profile_root
 from webapp.services.staleness import check_staleness
@@ -536,6 +537,9 @@ def confirm_handoff_submission(
         workflow_event_id=workflow_event["id"] if workflow_event else None,
         commit=False,
     )
+    record_human_intent(conn, workspace_id=session["workspace_id"], account_id=session["account_id"],
+                        source="HUMAN_HANDOFF",
+                        workflow_event_id=workflow_event["id"] if workflow_event else None)
     conn.commit()
     return {
         "session": updated_session,
