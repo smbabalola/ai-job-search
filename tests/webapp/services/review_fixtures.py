@@ -86,10 +86,13 @@ class V2World:
     def set_target(self, url="https://jobs.example.test/acme/123", provenance="user_supplied"):
         """A new current job posting snapshot carrying an apply target URL."""
         from webapp.persistence.artifacts import get_current_artifact, save_artifact
-        posting = dict(get_current_artifact(self.conn, self.ws, "job_posting_snapshot")["payload"])
+        current = get_current_artifact(self.conn, self.ws, "job_posting_snapshot")
+        posting = dict(current["payload"])
         posting["source_url"] = url
         posting["metadata"] = {"ingestion": {"source_url_provenance": provenance}}
-        save_artifact(self.conn, workspace_id=self.ws, artifact_type="job_posting_snapshot", payload=posting)
+        # Same content id: only the target metadata changes, the upstream chain stays current.
+        save_artifact(self.conn, workspace_id=self.ws, artifact_type="job_posting_snapshot", payload=posting,
+                      content_id=current["content_id"])
 
     def selection(self, kind):
         from webapp.persistence.application_documents import get_selection
@@ -129,3 +132,14 @@ def docx_bytes(text):
     document.add_paragraph(text)
     document.save(stream)
     return stream.getvalue()
+
+
+def table_counts(conn):
+    """Row counts of every table (a DB-diff for write-contract tests)."""
+    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                        "AND name NOT LIKE 'sqlite_%'")]
+    return {n: conn.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names}
+
+
+def diff_counts(before, after):
+    return {k: after[k] - before.get(k, 0) for k in after if after[k] != before.get(k, 0)}

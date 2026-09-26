@@ -246,18 +246,31 @@ def _generate_application_documents_cv_v2(
         raise
 
 
-def upload_application_document(conn: sqlite3.Connection, workspace_id: str, *, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
+def store_upload_blob(*, kind: str, filename: str, content: bytes, documents_root: Path) -> dict[str, Any]:
+    """Validate an upload and publish its content-addressed blob. No DB writes:
+    an orphaned blob after a later rollback is harmless."""
     if kind not in DOCUMENT_KINDS:
         raise PipelineError("invalid application document kind")
     metadata = validate_docx_package(content, original_filename=filename)
-    store = DocumentBlobStore(documents_root)
-    blob = store.publish(content)
+    blob = DocumentBlobStore(documents_root).publish(content)
     assert metadata.byte_length == blob["byte_length"] and metadata.sha256 == blob["sha256"]
+    return blob
+
+
+def record_uploaded_version(conn: sqlite3.Connection, workspace_id: str, *, kind: str, filename: str,
+                            blob: dict[str, Any], account_id: str) -> dict[str, Any]:
+    """The DB write of an upload, inside the caller's transaction (no commit)."""
+    _require_writable_workspace(conn, workspace_id, account_id)
+    row = _document_row(document_id=new_document_version_id(), workspace_id=workspace_id, account_id=account_id, kind=kind, origin="user_uploaded", filename=filename, blob=blob, generation_id=None)
+    return create_document_version(conn, row, commit=False)
+
+
+def upload_application_document(conn: sqlite3.Connection, workspace_id: str, *, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
+    blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=documents_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _require_writable_workspace(conn, workspace_id, account_id)
-        row = _document_row(document_id=new_document_version_id(), workspace_id=workspace_id, account_id=account_id, kind=kind, origin="user_uploaded", filename=filename, blob=blob, generation_id=None)
-        created = create_document_version(conn, row, commit=False)
+        created = record_uploaded_version(conn, workspace_id, kind=kind, filename=filename, blob=blob,
+                                          account_id=account_id)
         conn.commit()
         return created
     except Exception:
@@ -273,17 +286,25 @@ def list_application_documents(conn: sqlite3.Connection, workspace_id: str, *, a
     return {"versions": versions, "reusable": reusable, "selections": {kind: get_selection(conn, workspace_id, kind, account_id=account_id) for kind in DOCUMENT_KINDS}}
 
 
+def apply_selection(conn: sqlite3.Connection, workspace_id: str, *, kind: str, document_version_id: str,
+                    expected_revision: int, account_id: str) -> dict[str, Any]:
+    """The DB write of a selection, inside the caller's transaction (no
+    commit). A stale expected_revision raises ValueError."""
+    _require_writable_workspace(conn, workspace_id, account_id)
+    document = get_document_version(conn, document_version_id, account_id=account_id)
+    if document is None or document["document_kind"] != kind:
+        raise PipelineError("application document not found")
+    eligible = document["source_workspace_id"] == workspace_id or conn.execute("SELECT 1 FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone()
+    if not eligible:
+        raise PipelineError("application document is not available to this workspace")
+    return set_selection(conn, workspace_id=workspace_id, account_id=account_id, kind=kind, document_version_id=document_version_id, expected_revision=expected_revision, commit=False)
+
+
 def select_application_document(conn: sqlite3.Connection, workspace_id: str, *, kind: str, document_version_id: str, expected_revision: int, account_id: str) -> dict[str, Any]:
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _require_writable_workspace(conn, workspace_id, account_id)
-        document = get_document_version(conn, document_version_id, account_id=account_id)
-        if document is None or document["document_kind"] != kind:
-            raise PipelineError("application document not found")
-        eligible = document["source_workspace_id"] == workspace_id or conn.execute("SELECT 1 FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone()
-        if not eligible:
-            raise PipelineError("application document is not available to this workspace")
-        selection = set_selection(conn, workspace_id=workspace_id, account_id=account_id, kind=kind, document_version_id=document_version_id, expected_revision=expected_revision, commit=False)
+        selection = apply_selection(conn, workspace_id, kind=kind, document_version_id=document_version_id,
+                                    expected_revision=expected_revision, account_id=account_id)
         conn.commit()
         return selection
     except Exception:

@@ -29,6 +29,14 @@ from webapp.services.review_fields import planned_fields
 KINDS = ("cv", "cover_letter")
 
 
+class ReviewRefused(Exception):
+    """A review action refused for a stated reason (the API maps it to 409)."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _float_safe_payload(value: Any) -> Any:
     from decimal import Decimal
     if isinstance(value, float):
@@ -160,6 +168,8 @@ def _assemble(conn, *, settings: Settings, account_id: str, application_workspac
         employer_key=employer_key, employer_key_strength=employer_strength,
         search_workspace_id=get_search_workspace_for_application(conn, ws), now=now)
     warnings.extend(field_warnings)
+    from webapp.services.review_documents import newer_draft_warnings  # after review_application loads
+    warnings.extend(newer_draft_warnings(conn, account_id=account_id, application_workspace_id=ws))
     fit = get_current_artifact(conn, ws, "job_fit_result")
     score = ((fit or {}).get("payload") or {}).get("overall_score")
     if score is not None:
