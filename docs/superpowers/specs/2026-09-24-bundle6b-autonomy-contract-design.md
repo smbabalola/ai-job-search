@@ -193,6 +193,7 @@ The document contains:
 | `freshness_days` | integer or `null` (no expiry) |
 | `submit_eligible` | whether an answer to this subject may ever be used in unattended SUBMIT |
 | `sensitive` | sensitive class (§6.3); implies `submit_eligible=false` in v1 |
+| `requires_current_profile_basis` | the subject is a candidate/profile **fact**, so an answer is SUBMIT-ready only if its current factual basis can be checked (§7.5) |
 
 Freshness and reach are tuned by editing this data, not the engine.
 
@@ -216,6 +217,8 @@ Freshness and reach are tuned by editing this data, not the engine.
 | `demographic.eeo` | — | — | — | — | **no** (sensitive) |
 | `background.criminal_record` | — | — | — | — | **no** (sensitive) |
 | `health.disability` | — | — | — | — | **no** (sensitive) |
+
+`requires_current_profile_basis` is `true` in v1 for the candidate facts `work_authorization.right_to_work`, `work_authorization.sponsorship_required`, `licence.driving`, `employment.notice_period` and `employment.availability_start`, and `false` for preferences (`compensation.*`, `mobility.*`), free-text motivation subjects and the sensitive subjects (already never SUBMIT-eligible). Like every other field it is tunable data.
 
 The first four keys already exist in the registry (`work_authorization.*`, `employment.notice_period`, `licence.driving`); the rest are new registry entries, which the registry's own contract permits as additions.
 
@@ -269,6 +272,8 @@ The data model keeps `provenance` explicit on every answer so a future, separate
   - basis field superseded or changed → the answer is **stale-by-basis**: ineligible for unattended SUBMIT (usable for PREPARE/FILL only where the subject allows) until the user reconfirms or replaces it;
   - current evidence **contradicts** the answer (a conflicting value for the same subject in the current profile or a newer resolved answer) → ineligible for SUBMIT **and** FILL. For a **required** field it is raised as `REQUIRE_USER`; for a genuinely **optional** (omittable) field the field is left blank and the omission recorded (`optional_omitted`, why=`contradicted`) — no question, no capability reduction, and the contradicted value is never sent.
   "No expiry" for a stable fact therefore means no *time-based* expiry; it never lets an old answer survive a changed candidate profile.
+- **Profile facts need a checkable basis for unattended SUBMIT.** For a subject whose policy entry has `requires_current_profile_basis = true`, the gate cannot detect a contradiction from the current profile unless the answer is bound to profile evidence. So an answer with an `EVIDENCE` basis is checked through the basis hash above, while an answer with only a `USER_ASSERTION` basis is **not SUBMIT-ready** (`profile_basis_unverifiable`): it stays usable for PREPARE/FILL where permitted, and takes the ordinary submit-readiness reduction (a required field caps at `FILL`; an optional field is omitted), never a silent assumption of consistency. Subjects with `requires_current_profile_basis = false` (preferences, free-text motivation) are unaffected merely because no profile field corresponds. The gate stays generic — which subjects need the check is subject-policy data. A future subject→profile-field binding can make such answers checkable, and therefore SUBMIT-eligible, without an engine change.
+- **Blocker-answer ties are treated conservatively.** Until deterministic ordering (6A) replaces the pre-6B `created_at` ordering of `blocker_resolutions`, every resolution tied for the latest `created_at` is compared against the approved answer, and any disagreement counts as a contradiction. This can only reduce autonomy.
 - Context keys must match exactly for reuse; an answer lacking a required context value is not reusable for a job whose context is known to differ, and a job whose context value is unknown cannot use it for SUBMIT (it may for PREPARE/FILL).
 
 ### 7.6 Employer key
@@ -377,7 +382,7 @@ Every check runs and emits reason codes; the result is derived afterwards by fix
    - identity strength `WEAK` or identity conflict → `FILL`;
    - apply-target tier cap (§8.1);
    - employer key `UNKNOWN` → `FILL`;
-   - an answer SUBMIT would need is expired, stale-by-basis (§7.5), or its context is unknown → `FILL`. A genuinely optional field (omission permitted) is not needed by SUBMIT: its expired/stale/context-unknown answer is omitted (`optional_omitted`) and does not reduce;
+   - an answer SUBMIT would need is expired, stale-by-basis (§7.5), profile-basis-unverifiable (§7.5), or its context is unknown → `FILL`. A genuinely optional field (omission permitted) is not needed by SUBMIT: its expired/stale/context-unknown answer is omitted (`optional_omitted`) and does not reduce;
    - an answer contradicted by current evidence is not a permitted source at all (for a required field it produces a `REQUIRE_USER` item in step 5; an optional omittable field is omitted, §7.5);
    - a **required** field that SUBMIT needs and that has no permitted source — answer missing, contradicted, unclassified, or sensitive — caps capability at `FILL` exactly as an expired required answer does, while still producing its `REQUIRE_USER` item in step 5. `effective_capability` therefore always states the highest level that can actually proceed now; a worse answer state can never record a higher capability. Genuinely optional (omittable) fields remain non-blocking: a missing, expired, stale, context-unknown or contradicted answer on such a field is omitted and recorded, never a question or a cap;
    - pack not auto-confirmable → `PREPARE`;
