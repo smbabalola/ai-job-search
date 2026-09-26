@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import os
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -25,6 +28,34 @@ from webapp.persistence.db import init_db
 from product.onboarding_walkthroughs import register_default_walkthroughs
 
 
+def _start_autonomy_driver(app: FastAPI, settings: Settings):
+    """Bundle 6C in-app driver: runs only while JOBSEARCH_AUTONOMY_SCHEDULER
+    is on. It shares the engine with the CLI worker and never overlaps its own
+    ticks; leases make both drivers safe together."""
+    import random
+    import threading
+    from datetime import datetime, timezone
+
+    app.state.autonomy_driver = {"running": False}
+    if not settings.autonomy_scheduler_enabled:
+        return None, None
+    from webapp.services.autonomy_providers import providers_from_app_state
+    from webapp.services.autonomy_scheduler import run_driver
+    try:
+        providers = providers_from_app_state(app.state)
+    except Exception:  # e.g. production providers without credentials: no driver
+        logging.getLogger(__name__).exception("autonomy driver not started")
+        return None, None
+    stop = threading.Event()
+    app.state.autonomy_driver["running"] = True
+    thread = threading.Thread(
+        target=run_driver, args=(settings, providers), daemon=True, name="autonomy-driver",
+        kwargs={"stop": stop, "clock": lambda: datetime.now(timezone.utc), "rng": random.Random(),
+                "worker_id": f"app-{os.getpid()}", "status": app.state.autonomy_driver})
+    thread.start()
+    return stop, thread
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
 
@@ -32,7 +63,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         register_default_walkthroughs()
         init_db(settings.db_path)
-        yield
+        stop, thread = _start_autonomy_driver(app, settings)
+        try:
+            yield
+        finally:
+            if thread is not None:
+                stop.set()
+                thread.join(timeout=settings.autonomy_step_timeout + 5)
 
     app = FastAPI(title="Job Application Workspace", lifespan=lifespan)
     app.state.settings = settings

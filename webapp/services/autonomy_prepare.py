@@ -307,6 +307,21 @@ _HUMAN_PIPELINE_HINTS = ("evidence profile", "profile refresh", "set up user pro
 
 
 def classify_error(exc: BaseException) -> tuple[ErrorClass, str]:
+    """Classify by the most specific known cause: the pipeline wraps provider
+    exceptions (e.g. PipelineError from a TimeoutError), so the cause chain
+    is inspected before falling back to INTERNAL."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_class, code = _classify_one(current)
+        if error_class is not ErrorClass.INTERNAL:
+            return error_class, code
+        current = current.__cause__ or current.__context__
+    return ErrorClass.INTERNAL, type(exc).__name__
+
+
+def _classify_one(exc: BaseException) -> tuple[ErrorClass, str]:
     name = type(exc).__name__
     if isinstance(exc, (TimeoutError, ConnectionError)) or name in _TRANSIENT_NAMES \
             or (getattr(exc, "status_code", 0) or 0) >= 500:

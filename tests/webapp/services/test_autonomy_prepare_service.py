@@ -227,3 +227,13 @@ def test_manual_rerun_wakes_an_enrolled_dormant_application(ready_chain):
     generate_application_intelligence(conn, ws, AIFake({"content_units": copy.deepcopy(completion_ready_content_units())}),
                                       request_id="manual-rerun", account_id=ACCOUNT)
     assert eligible() is not None
+
+
+def test_classify_error_follows_the_cause_chain():
+    try:
+        try:
+            raise TimeoutError("provider timed out")
+        except TimeoutError as inner:
+            raise PipelineError("job understanding failed") from inner
+    except PipelineError as wrapped:
+        assert svc.classify_error(wrapped)[0].value == "TRANSIENT"
