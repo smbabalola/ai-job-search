@@ -21,6 +21,7 @@ from webapp.persistence.workspaces import get_workspace
 from webapp.services.autonomy_context import employer_identity
 from webapp.services.autonomy_controls import run_immediate
 from webapp.services.review_application import ReviewRefused, build_reviewable
+from webapp.services.review_fields import pending_proposals
 
 
 def _field(conn, settings: Settings, account_id: str, ws: str, answer_key: str, now: datetime) -> PlannedField:
@@ -97,6 +98,8 @@ def accept_proposal(conn, *, settings: Settings, account_id: str, application_wo
         if any(e["event"] == "PROPOSAL_ACCEPTED" and e["detail"].get("proposal_id") == proposal_id
                for e in ra.events(conn, ws)):
             raise ReviewRefused("already_accepted")
+        if proposal_id not in {p["id"] for p in pending_proposals(conn, ws)}:
+            raise ReviewRefused("stale_proposal")  # its blocker no longer governs this application
         entry = subject_entry(load_subject_policy(), proposal["subject"])
         if entry is None:
             raise ReviewRefused("unclassified_subject")

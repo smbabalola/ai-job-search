@@ -43,6 +43,10 @@ def insert_approval(conn, *, account_id: str, application_workspace_id: str, bin
     return _approval(row)
 
 
+def get_approval(conn, approval_id: str) -> dict[str, Any] | None:
+    return _approval(conn.execute("SELECT * FROM application_approvals WHERE id = ?", (approval_id,)).fetchone())
+
+
 def latest_approval(conn, ws: str) -> dict[str, Any] | None:
     return _approval(conn.execute("SELECT * FROM application_approvals WHERE application_workspace_id = ? "
                                   "ORDER BY seq DESC LIMIT 1", (ws,)).fetchone())

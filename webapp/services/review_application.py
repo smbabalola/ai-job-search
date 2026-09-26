@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
+from product.application_pack_v2_contract import validate_application_pack_v2
 from product.autonomy_contract import canonical_hash, parse_utc
 from product.review_contract import (
     Claim, EvidenceRef, ProvenanceLabel, Reviewable, ReviewDocument, ReviewSnapshot, ReviewState, ReviewWarning,
@@ -124,10 +125,18 @@ def _assemble(conn, *, settings: Settings, account_id: str, application_workspac
     warnings: list[ReviewWarning] = []
 
     payload = pack["payload"] if pack else {}
-    is_v2 = payload.get("schema_version") == V2
-    final = payload.get("final_documents") or {}
-    exact = bool(is_v2 and all(selections[k] and final.get(k, {}).get("document_version_id")
-                               == selections[k]["document_version_id"] for k in KINDS))
+    is_v2 = False
+    if payload.get("schema_version") == V2:
+        try:
+            validate_application_pack_v2(payload)
+            is_v2 = True
+        except ValueError:  # a malformed v2 artifact is never trusted
+            is_v2 = False
+    final = payload.get("final_documents") or {} if is_v2 else {}
+    stored = payload.get("selection_revisions") or {} if is_v2 else {}
+    exact = bool(is_v2 and stored and all(
+        selections[k] and final.get(k, {}).get("document_version_id") == selections[k]["document_version_id"]
+        and stored.get(k) == selections[k]["revision"] for k in KINDS))
     documents: list[ReviewDocument] = []
     for kind in KINDS:
         version_id = final[kind]["document_version_id"] if exact else (selections[kind] or {}).get("document_version_id")

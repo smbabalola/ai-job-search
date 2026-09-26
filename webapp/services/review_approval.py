@@ -215,17 +215,26 @@ def review_view_mode(conn, *, settings: Settings, account_id: str, application_w
     latest = ra.latest_approval(conn, ws)
     state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
     deltas = ra.open_deltas(conn, ws)
+    previous, current = (latest["binding"] if latest else None), state.binding
+    previous_hash = latest["binding_hash"] if latest else None
+    if latest is not None and not deltas and latest["resolved_delta_ids"] and latest["supersedes_id"]:
+        # Just re-approved: explain that approval against the one it superseded,
+        # using the deltas it resolved.
+        superseded = ra.get_approval(conn, latest["supersedes_id"])
+        resolved = set(latest["resolved_delta_ids"])
+        deltas = [d for d in ra.list_deltas(conn, ws) if d["id"] in resolved]
+        previous, current, previous_hash = superseded["binding"], latest["binding"], superseded["binding_hash"]
     field_keys = sorted(effective_delta_key(d) for d in deltas if d["kind"] in FIELD_DELTA_KINDS)
-    if latest is None or state.binding is None:
+    if previous is None or current is None:
         return {"mode": "first_review", "changed_sections": [], "delta_keys": field_keys, "previous_hash": None}
-    only, other = delta_only(latest["binding"], state.binding, field_keys)
+    only, other = delta_only(previous, current, field_keys)
     changed = set(other)
     non_field = [d for d in deltas if d["kind"] not in FIELD_DELTA_KINDS]
     for d in non_field:
         changed |= set(_NON_FIELD_SECTIONS[d["kind"]](d["observed"]))
     mode = "delta_only" if only and not non_field else "full"
     return {"mode": mode, "changed_sections": sorted(changed), "delta_keys": field_keys,
-            "previous_hash": latest["binding_hash"]}
+            "previous_hash": previous_hash}
 
 
 # ---- presented review and bulk approval (spec §10) ------------------------------------

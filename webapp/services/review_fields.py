@@ -56,6 +56,18 @@ def _requirements(conn, ws: str) -> dict[str, dict[str, Any]]:
     return reqs
 
 
+def pending_proposals(conn, ws: str) -> list[dict[str, Any]]:
+    """System proposals for the current governing requirements that no
+    PROPOSAL_ACCEPTED event names: the only ones a user may accept."""
+    accepted = {e["detail"].get("proposal_id") for e in ra.events(conn, ws) if e["event"] == "PROPOSAL_ACCEPTED"}
+    blocker_ids = [b for r in _requirements(conn, ws).values() for b in r["blocker_ids"]]
+    if not blocker_ids:
+        return []
+    rows = conn.execute(f"SELECT * FROM proposed_answers WHERE blocker_id IN ({','.join('?' for _ in blocker_ids)}) "
+                        "ORDER BY seq", tuple(blocker_ids)).fetchall()
+    return [dict(r) for r in rows if r["id"] not in accepted]
+
+
 def _optional_disposition(stored: str | None, has_value: bool) -> str | None:
     if stored == "OMIT":
         return "OMIT"
@@ -113,7 +125,7 @@ def planned_fields(conn, *, account_id: str, application_workspace_id: str, prof
     policy = load_subject_policy()
     reqs = _requirements(conn, ws)
     dispositions = ra.current_dispositions(conn, ws)
-    accepted = {e["detail"].get("proposal_id") for e in ra.events(conn, ws) if e["event"] == "PROPOSAL_ACCEPTED"}
+    pending = pending_proposals(conn, ws)
     warnings: list[ReviewWarning] = []
     out = _contact_fields(profile_payload, reqs, dispositions, warnings)
 
@@ -128,10 +140,8 @@ def planned_fields(conn, *, account_id: str, application_workspace_id: str, prof
                                     None if required else ("OMIT" if dispositions.get(key) == "OMIT" else None),
                                     None, None, None, _TRANSFORMS, None, None))
             continue
-        for p in conn.execute("SELECT id FROM proposed_answers WHERE blocker_id IN "
-                              f"({','.join('?' for _ in r['blocker_ids'])}) ORDER BY seq",
-                              tuple(r["blocker_ids"])).fetchall() if r["blocker_ids"] else ():
-            if p["id"] not in accepted:
+        for p in pending:
+            if p["blocker_id"] in r["blocker_ids"]:
                 warnings.append(ReviewWarning(warning_key("proposal_unaccepted", key, {"proposal_id": p["id"]}),
                                               WarningLevel.BLOCKING, f"{question}: a proposed answer awaits you"))
         cands = answer_candidates(conn, account_id=account_id, workspace_id=ws, subject=subject,

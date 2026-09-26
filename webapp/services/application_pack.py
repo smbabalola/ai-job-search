@@ -550,6 +550,7 @@ def _confirm_application_pack_v2(
             workspace_id=workspace_id, account_id=account_id,
             eligible_reusable_document_ids=reusable_ids,
             confirmed_at=datetime.now(timezone.utc).isoformat(),
+            selection_revisions=selection_revisions,
         )
         artifact = save_artifact(conn, workspace_id=workspace_id, artifact_type="application_pack", payload=pack, commit=False)
         for artifact_type in ("job_fit_result", "application_intelligence_result"):

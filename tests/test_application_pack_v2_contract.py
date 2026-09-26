@@ -55,3 +55,19 @@ def test_completion_projection_is_exact_embedded_basis_and_v1_is_identity():
     assert contract.application_pack_completion_input(pack) is pack["generation_basis"]["reviewed_application_pack"]
     basis = generation["payload"]["reviewed_application_pack"]
     assert contract.application_pack_completion_input(basis) is basis
+
+
+def test_selection_revisions_are_bound_and_validated():
+    generation, docs = _inputs()
+    args = dict(generation_artifact=generation, selected_documents=docs, verified_documents=copy.deepcopy(docs),
+                workspace_id="ws_1", account_id="account_local", eligible_reusable_document_ids=set(),
+                confirmed_at="2026-09-26T00:00:00+00:00")
+    pack = contract.build_application_pack_v2(**args, selection_revisions={"cv": 3, "cover_letter": 1})
+    assert pack["selection_revisions"] == {"cv": 3, "cover_letter": 1}
+    legacy = contract.build_application_pack_v2(**args)
+    assert "selection_revisions" not in legacy
+    contract.validate_application_pack_v2(legacy)
+    for bad in ({"cv": 0, "cover_letter": 1}, {"cv": 1}, {"cv": True, "cover_letter": 1}):
+        broken = {**pack, "selection_revisions": bad}
+        with pytest.raises(contract.ApplicationPackV2ContractError):
+            contract.validate_application_pack_v2(broken)
