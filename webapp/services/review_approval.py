@@ -226,3 +226,50 @@ def review_view_mode(conn, *, settings: Settings, account_id: str, application_w
     mode = "delta_only" if only and not non_field else "full"
     return {"mode": mode, "changed_sections": sorted(changed), "delta_keys": field_keys,
             "previous_hash": latest["binding_hash"]}
+
+
+# ---- presented review and bulk approval (spec §10) ------------------------------------
+
+def record_presented(conn, *, settings: Settings, account_id: str, application_workspace_id: str, actor: str,
+                     now: datetime) -> str | None:
+    """Called only by the human-facing review page when it renders the full
+    review: records REVIEW_PRESENTED at the approvable hash it shows. With no
+    approvable hash (no exact pack, not ready, closed) nothing is recorded."""
+    ws = application_workspace_id
+
+    def work() -> str | None:
+        state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
+        if state.binding_hash is None or state.state in ("CLOSED", "NOT_READY"):
+            return None
+        ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="REVIEW_PRESENTED",
+                        binding_hash=state.binding_hash, detail={}, actor=actor, now=now)
+        return state.binding_hash
+    return run_immediate(conn, work)
+
+
+def approve_selected(conn, *, settings: Settings, account_id: str, items: list[dict[str, str]], actor: str,
+                     now: datetime) -> list[dict[str, Any]]:
+    """Approve selected (N): one independent approval per application under
+    one batch id; each item needs REVIEW_PRESENTED at the hash it carries."""
+    import uuid
+    from webapp.persistence.workspaces import get_workspace
+    batch_id = f"batch_{uuid.uuid4().hex[:20]}"
+    out = []
+    for item in items:
+        ws, shown = item["workspace_id"], item["displayed_binding_hash"]
+        result: dict[str, Any] = {"workspace_id": ws}
+        if get_workspace(conn, ws, account_id=account_id) is None:
+            result["outcome"] = "not_found"
+        elif not ra.presented_at(conn, ws, shown):
+            result["outcome"] = "not_presented"
+        else:
+            try:
+                approval = approve(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                                   displayed_binding_hash=shown, actor=actor, now=now, batch_id=batch_id)
+                result.update(outcome="approved", approval_id=approval["approval_id"])
+            except ReviewRefused as exc:
+                result["outcome"] = exc.reason
+            except LookupError:
+                result["outcome"] = "not_found"
+        out.append(result)
+    return out
