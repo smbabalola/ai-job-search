@@ -2,34 +2,39 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-26-bundle6d-a-review-approval-design.md` (draft; this plan follows its approval).
 **Base:** `master@fc316eec0050b6ae9deada2981089cbac1532adb`.
-**Status:** phase-level plan for review. After the spec is approved, this becomes a task-level plan (files, interfaces, tests, commits per task) in one pass.
+**Status:** revised phase-level plan (it reflects the resolved D1–D8 and the five design corrections). After the spec is approved, this becomes a task-level plan (files, interfaces, tests, commits per task) in one pass.
 
 ## Global constraints
 
 - I-1: no action beyond what the user reviewed inherits approval, enforced by binding-hash equality, never by timestamps or flags.
+- I-2: approval is consent, not authority. Review, edit and approve work while paused or halted, and only FILL grants and execution are blocked.
+- I-7: approval never creates or changes the pack it approves. Save changes creates the immutable v2 pack first.
+- I-8: every known field is bound to `ANSWER` or `OMIT`. A filler never decides.
+- D1: exact files are required and there is no v1 fallback. Enabling CV-v2 is a rollout requirement for 6D-A to be usable.
 - There are no browser automation, filling, submission or extension changes in 6D-A.
 - 6C scheduling behaviour is unchanged. The only 6B change is the SUBMIT refusal (G2), which can only reduce.
 - All new history tables are append-only (triggers). Current state is derived by `seq`, and canonical hashing uses 6B `canonical_hash`.
 - Every phase is TDD with focused suites. The full suite runs in six chunks after Phase 1 (migration) and at the end.
 
-## Phase 0 — Resolve the spec decisions
+## Phase 0 — Decisions (resolved)
 
-D1–D8 (spec §17) are confirmed or changed by the user. D1 (exact files required) and D3 (in-app editing in or out) change the scope of Phases 4 and 7.
+D1–D8 were resolved at review (spec §17). D3 in-app editing is deferred out of the core (see the follow-on at the end). D7 is an unconditional SUBMIT refusal with no placeholder authorization model.
 
 ## Phase 1 — Persistence and migration `019_review_approval`
 
-- `application_approvals` (`scope` CHECK = 'FILL'), `application_review_events`, `review_deltas`, plus append-only triggers.
-- If D3 is in scope, add `document_content_revisions` and the `user_edited` origin value. The latter needs a table rebuild of the `application_document_versions` CHECK, done as its own step with a data-preservation test.
-- Persistence functions: record/list approvals, events and deltas; latest approval by `seq`; delta status from resolution events.
+- `application_approvals` (`scope` CHECK = 'FILL'), `application_review_events`, `review_deltas`, `application_field_dispositions` (CHECK `ANSWER`|`OMIT`), plus append-only triggers.
+- Persistence functions: record/list approvals, events, deltas and dispositions; latest approval and current disposition by `seq`; delta status from resolution events.
 - **Tests:** migration on a fresh DB and on a pre-6D DB (built from `master@fc316ee` via `git archive`), re-run is a no-op, the triggers reject UPDATE/DELETE, and the scope CHECK rejects non-FILL. Then the full suite.
 
 ## Phase 2 — Pure review contract (`product/review_contract.py`)
 
-- `approval_binding(reviewable) -> dict`, `binding_hash(binding) -> str`, `derive_review_state(snapshot) -> ReviewState(state, reasons, blocking)`, `derive_warnings(...)`, `provenance_label(...)`, `invalidation_reasons(old_binding, new_binding) -> list[str]`.
+- `approval_binding(reviewable) -> dict`, `binding_hash(binding) -> str`, `component_hashes(binding) -> dict[str, str]`, `claim_provenance_hash(claims) -> str`, `derive_review_state(snapshot) -> ReviewState(state, reasons, blocking)`, `derive_warnings(...)`, `provenance_label(...)`, `invalidation_reasons(old_binding, new_binding) -> list[str]` (changed component names), `delta_only(previous, current, delta_keys) -> (bool, changed_components)`.
 - There are no `webapp` imports (structural test).
 - **Tests:**
   - table tests for every state and reason;
-  - Hypothesis: the hash changes for every bound field and is unchanged for excluded ones (policy, capability, budget, fit);
+  - Hypothesis: the hash changes for every bound field and is unchanged for excluded ones (policy, capability, budget, pause, kill switch, fit);
+  - Hypothesis: the claim-provenance digest changes when provenance changes with identical document bytes;
+  - Hypothesis: `delta_only` is true exactly when all non-delta component hashes are equal;
   - adding a delta or warning never yields a more permissive state;
   - reason diffs are exact.
 
@@ -40,23 +45,26 @@ D1–D8 (spec §17) are confirmed or changed by the user. D1 (exact files requir
   - apply target and provenance;
   - the current v2 selections and final pack;
   - document manifests;
-  - the planned answer set (6B requirements resolved through approved-answer candidates, profile-evidence contact fields, resolved deltas);
-  - claim provenance for AI documents;
+  - the planned field set with dispositions (6B requirements resolved through approved-answer candidates, profile-evidence contact fields, resolved deltas; `OMIT` from dispositions);
+  - claim provenance and its digest for AI documents;
   - warnings.
-- v1 applications produce the "exact document files required" blocking issue.
+- v1 applications, and any application while CV-v2 is disabled, produce the "exact document files required" blocking issue. A selection that doesn't match the current pack produces "save your document changes" (no binding hash is offered).
 - **Tests:** real-workflow fixtures (6C/v2 acceptance chains) covering every blocking issue and every warning class; provenance labels match recorded sources; an unknown source is BLOCKING.
 
 ## Phase 4 — Approval, revocation, expiry, invalidation and deltas (`webapp/services/review_approval.py`)
 
-- The approval transaction (spec §9.2): stale-view refusal, blocking refusal, an in-transaction v2 Gate 4 of the exact selection revisions, the approval record and event, delta resolution, and a 6C wake.
+- **Save changes**: the user's v2 confirmation of the exact current selection revisions (the existing user Gate 4), creating the immutable pack and recording `PACK_CONFIRMED`.
+- The approval transaction (spec §9.2) writes the approval record and event only. It refuses a stale view, blocking issues, or no pack for the current revisions. It never creates or changes a pack. There is no pause or kill-switch check, delta resolution is recorded, and the 6C queue is woken.
 - Revoke; TTL expiry (the `JOBSEARCH_REVIEW_APPROVAL_TTL_DAYS` setting, lower-only).
 - The idempotent `APPROVAL_INVALIDATED` recorder (on read and in the 6C tick sweep as a reduce-only reconciliation).
 - The delta intake service.
 - **Bulk:** per-application independent transactions, a shared `batch_id`, and eligibility requiring `REVIEW_OPENED` at the current hash.
-- **G2:** `request_grant(stage=SUBMIT)` refuses without a submission authorization (a 6B change with its own test).
+- **G2:** first, a regression test pins the existing Phase 3 human extension handoff flow. Then `request_grant(stage=SUBMIT)` and the SUBMIT pre-click path refuse unconditionally (`submission_not_available`), with no placeholder authorization model.
 - **Tests:**
-  - every invalidation trigger in spec §18.4, both ways (material invalidates, non-material doesn't);
-  - re-approval after deltas yields a complete superseding binding;
+  - every invalidation trigger in spec §18.5, both ways (material invalidates, non-material doesn't), including claim provenance at identical bytes;
+  - approve succeeds while paused or halted;
+  - approve writes only the approval rows (DB diff);
+  - delta-only vs full-section re-review (§11.1), and re-approval yields a complete superseding binding;
   - bulk partial outcomes;
   - concurrency (two approvals; approval vs document replacement), run 20×;
   - the SUBMIT refusal.
@@ -64,6 +72,7 @@ D1–D8 (spec §17) are confirmed or changed by the user. D1 (exact files requir
 ## Phase 5 — Editing paths and user-owned content
 
 - **Answers:** edit or answer through the 6B approved-answer path with reach selection; accepting a proposal creates `USER_EDITED_PROPOSAL`; sensitive subjects are per application only.
+- **Dispositions:** `ANSWER` / `OMIT` per field; `OMIT` refused for required fields; an optional field without a disposition blocks approval; the delta intake treats an `OMIT` field reported as mandatory as a delta.
 - **Documents:** replace (the v2 upload) and explicit selection; the "newer AI draft available" ATTENTION warning, with Compare and **Use the new draft**.
 - **Rules P1–P4 enforced:** no automated path moves a selection or supersedes a user answer.
 - **Tests:** a 6C/pipeline rerun after user edits leaves selections and answers untouched; each edit invalidates an existing approval with the right reason and event.
@@ -76,20 +85,27 @@ D1–D8 (spec §17) are confirmed or changed by the user. D1 (exact files requir
 - 6C: PREPARED is labelled "Ready for review" and links to the review page. The dossier gets an Approvals section.
 - **Tests:**
   - route ownership/404/409/422;
-  - a committed Playwright test covering review, preview, replace, answer edit, approve, stale-view refusal, bulk and no submit control;
+  - a committed Playwright test covering review, preview, replace + Save changes, answer edit, Leave blank, approve, stale-view refusal, the delta-only view, bulk and no submit control;
   - the structural test extended to the 6D modules (no `pre_click_commit` / SUBMIT `request_grant`).
 
-## Phase 7 — In-app content editing (only if D3 is in scope)
+## Phase 7 — Final validation
 
-- Structured text edits of AI-generated CV/cover-letter content produce a user-owned `document_content_revisions` row, rendered by the existing renderer into a `user_edited` document version, which is selected explicitly.
-- A regeneration never merges into user edits.
-- **Tests:** round-trip edit → render → select → approve; regeneration leaves edits intact; provenance shows User supplied.
+- The acceptance journey on the real workflow with CV-v2 enabled:
+  1. 6C prepares.
+  2. The user reviews, downloads, edits externally, replaces, runs Save changes, and sets Leave blank on an optional field.
+  3. The user approves while automation is paused.
+  4. A replacement invalidates the approval (full-section re-review), and the user re-approves.
+  5. A delta intake arrives, the user sees the delta-only review, and re-approves.
 
-## Phase 8 — Final validation
-
-- The acceptance journey on the real workflow: 6C prepares → review → edit → approve → an invalidation by replacement → re-approve → a delta intake → delta-only review → re-approve. There are zero FILL/SUBMIT grants, intents or attempts.
+  There are zero FILL/SUBMIT grants, intents or attempts.
 - Migrations (fresh and pre-6D), the full suite in six chunks, and a diff-boundary check against `master@fc316ee` (no fill, browser, submission or extension code).
 - A single independent end-of-bundle review, then the PR.
+
+## Follow-on (deferred D3) — In-app content editing
+
+A separable final phase or a small follow-on PR. It doesn't block the approval boundary.
+- Structured text edits of AI-generated CV/cover-letter content produce a user-owned `document_content_revisions` row, rendered by the existing renderer into a `user_edited` document version. The migration rebuilds the origin CHECK with a data-preservation test.
+- The version is then selected, saved (pack) and approved under the same rules. A regeneration never merges into user edits.
 
 ## Out of scope (later bundles)
 
