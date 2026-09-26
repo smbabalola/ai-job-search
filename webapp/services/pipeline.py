@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 from product.application_intelligence import analyze_application_intelligence
@@ -91,10 +92,20 @@ def refresh_profile(
     except Exception as exc:
         raise PipelineError(f"profile refresh failed: {exc}") from exc
     content_id = profile_snapshot_content_id(snapshot)
-    return save_artifact(
+    artifact = save_artifact(
         conn, workspace_id=profile_workspace["id"], artifact_type="profile_snapshot",
-        payload=snapshot, content_id=content_id,
+        payload=snapshot, content_id=content_id, commit=False,
     )
+    wake_after_profile_refresh(conn, account_id=account_id, now=datetime.now(timezone.utc))
+    conn.commit()
+    return artifact
+
+
+def wake_after_profile_refresh(conn: sqlite3.Connection, *, account_id: str, now: datetime) -> int:
+    """Bundle 6C: a new Evidence Profile snapshot can change every enrolled
+    application's and candidate's next step (no commit)."""
+    from webapp.persistence.autonomy_prepare import wake_account
+    return wake_account(conn, account_id=account_id, now=now)
 
 
 def get_current_profile_snapshot(

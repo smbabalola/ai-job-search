@@ -32,7 +32,7 @@ from webapp.persistence.workspaces import get_workspace
 from webapp.services.autonomy_context import build_context, canonical_target_url
 from webapp.services.autonomy_controls import (
     AutonomyHalted, enable_autonomous_preparation, engage_kill_switch, pause, release_kill_switch, resume,
-    resume_all, sentinel_present, set_capability,
+    resume_all, save_standing_policy, sentinel_present, set_capability,
 )
 from webapp.services.autonomy_dossier import build_dossier
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
@@ -138,7 +138,7 @@ def post_capability(body: CapabilityBody, conn: sqlite3.Connection = Depends(get
 def put_policy(body: PolicyBody, conn: sqlite3.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)):
     try:
-        row = save_policy_version(conn, account_id=scope.account_id, doc=body.doc, created_by=scope.account_id,
+        row = save_standing_policy(conn, account_id=scope.account_id, doc=body.doc, actor=scope.account_id,
                                   now=_now())
     except StandingPolicyError as exc:
         return JSONResponse(status_code=422, content={"errors": exc.errors})
