@@ -1,6 +1,6 @@
 # Bundle 6D-A — Review & Approval: Design Specification
 
-**Status:** revised draft (2026-09-26), incorporating the review decisions on D1–D8 and five design corrections. No production code is written against this document until it is approved.
+**Status:** frozen 2026-09-26 at `96f39b0`. Amended 2026-09-26 after implementation review, only to resolve three contradictions: delta kinds and resolution (§8.1(c), §11, §11.1, D2, §18.7), unclassified required deltas (§8.4, §11 R7, §18.8), and the invalidation audit rule (§13). No production code is written against this document until it is approved.
 **Branch:** `bundle6/6d-a-review-approval-design`, from verified `master@fc316eec0050b6ae9deada2981089cbac1532adb` (Bundle 6C merged).
 **Companion plan:** `docs/superpowers/plans/2026-09-26-bundle6d-a-review-approval.md` (phased, draft).
 
@@ -204,7 +204,7 @@ The initial 6D-A delivery is **preview → download → edit externally → repl
 The set holds the answers JobSearch expects to give for this application. It is the union of:
 - (a) the 6B representation requirements for this application (governing questions from job understanding and blocker subjects), each resolved through its approved-answer candidates exactly as the 6B context does;
 - (b) identity/contact fields sourced from profile evidence (name, email, phone, location), as `EVIDENCE` entries;
-- (c) resolved review deltas (§11).
+- (c) **field** review deltas (§11), open or resolved, under their effective key (§11). Non-field deltas (documents, target) never become fields.
 
 Each entry has:
 - `answer_key` (the stable requirement key);
@@ -237,6 +237,7 @@ Labels are derived from recorded sources and never from wording. A label the sys
 - An optional field with no disposition is BLOCKING ("answer it or choose Leave blank"). The system never defaults an optional field to either outcome.
 - If 6D-B later finds that a field bound as `OMIT` (optional) is actually mandatory, or finds any field that isn't in the planned set, that is a review delta (§11).
 - A filler must enter exactly the bound `ANSWER`, or leave an `OMIT` field untouched. It never chooses between them.
+- An **unclassified** field delta (no supported semantic subject) can't receive an answer, because approved answers require a known subject. If it's required, it stays BLOCKING until it's classified to a supported subject (§11 R7). If it's optional, its only valid disposition is `OMIT`.
 
 ## 9. Approval
 
@@ -318,19 +319,33 @@ When a later stage (6D-B filling, or a re-ingested job) finds something that isn
 - an apply-target change (redirect outside the approved target, different tenant);
 - a value that fails its permitted transforms.
 
+**Field and non-field deltas.**
+- **Field deltas** concern one field: a new or changed question, a declaration or attestation, a value that fails its transforms, and an `OMIT` field found to be mandatory.
+- **Non-field deltas** concern a document or the target: a new upload requirement, a document conversion, and an apply-target change. They never become fields.
+- **Effective key:** a delta's stored `answer_key`, or `delta:<delta_id>` when it has none. One canonical helper computes it everywhere.
+
 **Rules:**
 - **R1.** An open delta makes the application `NEEDS_REVIEW` immediately, and any in-flight 6D-B session must stop before its next write. This is enforced by 6D-B through the binding re-check.
 - **R2.** A delta-only review is permitted only when it is proven (§11.1). The page then shows the deltas, and states that everything else is unchanged from the previous approval, with that approval's hash. Otherwise, every section whose component changed is shown in full, alongside the deltas.
-- **R3.** Resolving a delta means answering it, or choosing `OMIT` for an optional field. That extends the field set. The new approval (§9.2) is a **complete** binding, not a patch. It supersedes the prior approval, and its record lists the deltas it resolved.
+- **R3.** Resolution is kind-specific. The new approval (§9.2) is always a **complete** binding, not a patch. It supersedes the prior approval, and its record lists the deltas it resolved, computed by per-kind resolution predicates:
+  - A **field delta** extends the field set under its effective key. It's resolved by an approval whose binding decides that field (`ANSWER`, or `OMIT` where allowed). A transform-failure delta additionally needs a value hash different from the failing one, or `OMIT`.
+  - A **non-field delta** is resolved only by an approval whose corresponding bound component satisfies it:
+    - a target delta, when the bound apply target is the observed new target;
+    - a conversion delta, when the bound document of that kind is a saved version in the required format;
+    - a new-upload delta, when the binding contains a document of the required kind.
+
+    Until then it stays open, and the application stays `NEEDS_REVIEW`.
 - **R4.** A delta for a required sensitive subject can only be answered for this application (never as a standing answer). Declarations and attestations always need explicit per-application answers.
 - **R5.** Deltas are append-only records with status derived from resolution events.
 - **R6.** An `OMIT` field later found to be mandatory is always a delta. Its only valid resolutions are an answer, or abandoning the application.
+- **R7.** An unclassified required question stays blocking until it's classified to a supported semantic subject. 6D-B supplies the classification, as a new delta carrying the subject for the same observed field. An unclassified optional question may only be omitted. No synthetic subject is ever invented.
 
 ### 11.1 Proving "everything else is unchanged"
 
 Let `P` be the previous approved binding and `C` the current binding. A review is **delta-only** exactly when:
-- every component hash of `C` equals the same component hash in `P`, **except** the field entries whose `answer_key` belongs to an open or just-resolved delta; and
-- `C` adds no other components and removes none of `P`'s components.
+- every component present in `P` is still present in `C`: no component disappears, including a delta field;
+- every component hash of `C` equals the same component in `P`, **except** fields whose effective key belongs to an open or just-resolved **field** delta, which may be added or changed; and
+- no **non-field** delta is open or just resolved. A document or target delta always shows the affected sections in full.
 
 Any other difference (document, claim provenance, target, job, pack, another field, review warnings) means it isn't delta-only. The page then shows those sections in full, marked as changed.
 
@@ -363,7 +378,11 @@ Every event is an append-only row with actor, time and `seq`:
 - `REVOKED`, `EXPIRED`;
 - `DELTA_OPENED`, `DELTA_RESOLVED`.
 
-Invalidation is *derived*: validity is always "the hash still matches". `APPROVAL_INVALIDATED` rows are also recorded, idempotently, the first time any reader or the sweep observes a mismatch, so the history shows when and why. The reasons are the changed component names (§9.1). The dossier (6C) gains an **Approvals** section covering bindings, diffs between successive bindings, deltas and who did what.
+Invalidation is *derived*: validity is always `approval_effective` (§5). One audit rule covers every cause:
+- The first time any reader or the sweep observes that the latest approval is not effective, `APPROVAL_INVALIDATED` is recorded once for that approval and that exact set of reasons.
+- The reasons are `binding_changed` (with the changed component names, §9.1), `open_deltas`, `revoked`, `expired`, `blocking_issues` and `unacknowledged_attention`.
+- A later, different reason set records a new `APPROVAL_INVALIDATED`.
+- Revocation also has its own `REVOKED` event (the user action), and expiry its own `EXPIRED` event. The dossier (6C) gains an **Approvals** section covering bindings, diffs between successive bindings, deltas and who did what.
 
 ## 14. Data model (migration `019_review_approval`)
 
@@ -410,7 +429,7 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
 
 - **D1 — Exact files required: approved.** `APPROVED_FOR_FILL` requires the v2 exact-file final pack and its hashes. There is no legacy-v1 fallback. The feature flag stays during development, but **6D-A isn't deployably usable while CV-v2 is disabled**. Enabling the exact-file path is an explicit rollout requirement for 6D-A.
 - **D2 — No PDF conversion in 6D-A: approved.** If 6D-B finds that an employer requires PDF:
-  - conversion creates a **new document version** and opens a review delta;
+  - conversion creates a **new document version** and opens a non-field `DOCUMENT_CONVERSION` delta (§11 R3). The delta is resolved only when that converted version is selected, saved into the pack and re-approved;
   - the application returns to `NEEDS_REVIEW`;
   - the converted PDF can't be filled or uploaded until it has been reviewed and re-approved.
 - **D3 — In-app content editing: deferred from the core.** The initial delivery is preview → download → edit externally → replace → Save changes → review → approve. Structured in-app editing is a separable follow-on and doesn't delay the approval boundary.
@@ -450,7 +469,8 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
 7. **Delta-only re-approval (§11.1).**
    - When only delta fields differ from the previous approval, the page shows only the deltas plus "everything else unchanged" with the previous hash.
    - When any other component differs (a document, claim provenance, target, job, another field, review warnings), that section is shown in full and marked as changed.
-   - Property test: `delta_only` is true exactly when all non-delta component hashes are equal.
+   - Property test: `delta_only` is true exactly when all non-delta component hashes are equal, no component of `P` disappears, and no non-field delta is involved.
+   - A `TARGET_CHANGE`, `NEW_UPLOAD` or `DOCUMENT_CONVERSION` delta always gives the full view of the affected sections, and resolves only per R3.
    
    Re-approval produces a complete superseding binding that lists the resolved deltas.
 8. **Answer or leave blank.**
@@ -458,6 +478,7 @@ Invalidation is *derived*: validity is always "the hash still matches". `APPROVA
    - An optional field without a disposition blocks approval.
    - `OMIT` is bound in the binding.
    - A delta intake for an `OMIT` field reported as mandatory opens a delta and gives `NEEDS_REVIEW`.
+   - An unclassified required delta stays blocking and can't be answered. An unclassified optional delta accepts only `OMIT`.
 9. **Bulk.** N selected give N independent outcomes and N approval records sharing one `batch_id`. Ineligible items (no `REVIEW_PRESENTED` at the current hash, blocking issues, or stale) are refused individually. A data API GET of the review never makes an item eligible.
 10. **User-owned content.** A pipeline rerun or 6C activity never changes a selection, answer or disposition. A newer AI draft appears only as an ATTENTION warning with an explicit **Use the new draft**.
 11. **Approval ≠ submission.**

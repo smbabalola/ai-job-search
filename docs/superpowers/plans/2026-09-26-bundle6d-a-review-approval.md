@@ -15,7 +15,7 @@
 
 **Tech Stack:** Python 3.13, SQLite (WAL), FastAPI + Jinja2 templates, pytest + Hypothesis 6.168.1, pytest-playwright.
 
-**Spec:** `docs/superpowers/specs/2026-09-26-bundle6d-a-review-approval-design.md` (frozen at `96f39b07840a1c27f1058510c7aa9e1eef2b4e23`).
+**Spec:** `docs/superpowers/specs/2026-09-26-bundle6d-a-review-approval-design.md` (frozen at `96f39b07840a1c27f1058510c7aa9e1eef2b4e23`; amended after implementation review to resolve three contradictions: delta kinds and resolution, unclassified required deltas, and the invalidation audit rule).
 
 ## Global Constraints
 
@@ -34,7 +34,11 @@
 - **Shared applicability:** Review and the 6B authorization context use one applicability/usability rule (extracted from `product/autonomy_gate.py`). Review never adds its own ordering. Several distinct usable candidates at the same narrowest reach are BLOCKING (`ambiguous_answer`), never resolved by rowid or time.
 - **Warning keys** are `"<type>:<subject>:<fingerprint>"`, where the fingerprint hashes the exact material that caused the warning. A changed cause gives a new key, so an old acknowledgement never carries over.
 - **Atomic audited writes:** every user mutation (document replace/select, Save changes, answer/proposal edits, dispositions, acknowledgements) commits its DB change and its review event in the same `BEGIN IMMEDIATE`. Content-addressed blob publication may happen before the DB transaction; an orphaned blob on rollback is acceptable, but no DB mutation is ever visible without its audit event.
-- **Canonical hashing** uses `product.autonomy_contract.canonical_hash` (floats normalized to `Decimal` first). History tables are append-only (UPDATE/DELETE triggers). Never `ORDER BY created_at`.
+- **No approvable hash without the exact pack (spec §7.2).** When the current selections aren't represented by the exact immutable v2 pack, the exposed `binding_hash` is `None`. `REVIEW_PRESENTED` isn't written, bulk isn't eligible, and Approve is disabled until Save changes. A provisional hash exists only internally, for invalidation detection.
+- **Selection concurrency:** replace and select carry the displayed `expected_revision` (the existing v2 contract). A stale revision gives 409 with no DB mutation and no event.
+- **Shared answer readiness:** freshness and evidence-basis state come from one function extracted from the 6B gate. Review and 6B agree exactly, including the expiry boundary.
+- **Delta kinds:** field deltas (`NEW_QUESTION`, `CHANGED_QUESTION`, `DECLARATION`, `TRANSFORM_FAILURE`, `OMIT_FIELD_REQUIRED`) vs non-field deltas (`NEW_UPLOAD`, `DOCUMENT_CONVERSION`, `TARGET_CHANGE`). One `effective_delta_key` helper, `answer_key or f"delta:{id}"`.
+- **Canonical hashing** uses `product.autonomy_contract.canonical_hash` (floats normalized to `Decimal` first). Fingerprints are always the full SHA-256. History tables are append-only (UPDATE/DELETE triggers). Never `ORDER BY created_at`.
 - **Out of bounds:** no browser automation, filling, extension or submission code, and no 6C scheduling behaviour change. D3 in-app editing is out of scope.
 - **Known Windows flakes** (rerun once and report): `test_latest_valid_answer_governs`, `test_list_artifact_history_newest_first`, `test_record_status_change_tracks_previous_status`, and the extension service-worker timeouts.
 
@@ -196,7 +200,7 @@ DELTA_KINDS = (
 def _migrate_review_approval(conn: sqlite3.Connection) -> None:
     events = ", ".join(f"'{e}'" for e in REVIEW_EVENTS)
     kinds = ", ".join(f"'{k}'" for k in DELTA_KINDS)
-    conn.executescript(f"""
+    _execute_statements(conn, f"""  # never executescript: it commits implicitly
         CREATE TABLE application_approvals (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
             id TEXT NOT NULL UNIQUE,
@@ -284,6 +288,9 @@ def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -
     if problems:
         raise RuntimeError(f"019 approved_answers rebuild broke foreign keys: {problems}")
 ```
+
+Implementation notes for 019:
+- It stays one atomic migration under the runner. Use `_execute_statements` / individual `conn.execute` calls only. `_execute_statements` splits on `;`, so the DDL above contains no `;` inside literals, and triggers are created with separate `conn.execute` calls.
 
 Implementation notes for the rebuild:
 - Check the migration runner commits between migrations with FKs disabled for entries flagged `True`, as 016 did.
@@ -543,7 +550,9 @@ def invalidation_recorded(conn, ws: str, approval_id: str, current_hash: str) ->
   - `component_hashes(binding) -> dict[str, str]`
   - `invalidation_reasons(old, new) -> list[str]`
   - `delta_only(previous, current, delta_keys) -> tuple[bool, tuple[str, ...]]`
-  - `warning_key(warning_type, subject, material) -> str`: `f"{warning_type}:{subject}:{fp}"`, where `fp` is the last 16 hex characters of `canonical_hash("review-warning-material", "v1", material)`
+  - `warning_key(warning_type, subject, material) -> str`: `f"{warning_type}:{subject}:{fp}"`, where `fp` is the **full** `canonical_hash("review-warning-material", "v1", material)`
+  - `effective_delta_key(delta) -> str`, plus `FIELD_DELTA_KINDS` and `NON_FIELD_DELTA_KINDS`
+  - `PlannedField` gains display-only `reach: str | None = None` and `freshness: str | None = None` (not in the binding)
 - Constants: `BINDING_SCHEMA`, `REVIEW_CONTRACT_VERSION`.
 
 - [ ] **Step 1: Failing tests**
@@ -631,11 +640,30 @@ def test_every_bound_scalar_changes_the_hash(field, suffix):
     assert binding_hash(approval_binding(changed)) != binding_hash(approval_binding(base))
 
 
+def test_a_removed_delta_field_is_never_delta_only():
+    base = approval_binding(reviewable())
+    fewer = approval_binding(reviewable(fields=reviewable().fields[:1]))  # subject:relocate disappeared
+    assert delta_only(base, fewer, {"subject:relocate"}) == (False, ("field:subject:relocate",))
+
+
+def test_display_only_field_metadata_is_not_bound():
+    base = reviewable()
+    shown = reviewable(fields=tuple(dataclasses.replace(f, reach="ACCOUNT", freshness="valid until x")
+                                    for f in base.fields))
+    assert binding_hash(approval_binding(shown)) == binding_hash(approval_binding(base))
+
+
+def test_effective_delta_key():
+    from product.review_contract import effective_delta_key
+    assert effective_delta_key({"id": "dlt_1", "answer_key": None}) == "delta:dlt_1"
+    assert effective_delta_key({"id": "dlt_1", "answer_key": "subject:salary"}) == "subject:salary"
+
+
 def test_warning_key_changes_with_its_material():
     from product.review_contract import warning_key
     a = warning_key("user_managed", "cover_letter", {"document_version_id": "doc_cl", "sha256": "b" * 64})
     b = warning_key("user_managed", "cover_letter", {"document_version_id": "doc_cl2", "sha256": "c" * 64})
-    assert a.startswith("user_managed:cover_letter:") and a != b
+    assert a.startswith("user_managed:cover_letter:sha256:") and len(a.split(":", 2)[2]) == len("sha256:") + 64 and a != b
     assert a == warning_key("user_managed", "cover_letter", {"sha256": "b" * 64, "document_version_id": "doc_cl"})
 
 
@@ -724,6 +752,8 @@ class PlannedField:
     permitted_transforms: tuple[str, ...]
     display_value: str | None
     provenance_label: ProvenanceLabel | None
+    reach: str | None = None      # display only (spec §6); not bound
+    freshness: str | None = None  # display only, e.g. "valid until 2026-10-26"; not bound
 
 
 @dataclass(frozen=True)
@@ -817,15 +847,28 @@ def invalidation_reasons(old: Mapping[str, Any], new: Mapping[str, Any]) -> list
 def delta_only(previous: Mapping[str, Any], current: Mapping[str, Any],
                delta_keys: Iterable[str]) -> tuple[bool, tuple[str, ...]]:
     allowed = {f"field:{k}" for k in delta_keys}
-    other = tuple(c for c in invalidation_reasons(previous, current) if c not in allowed)
+    before, after = component_hashes(previous), component_hashes(current)
+    removed = {name for name in before if name not in after}  # nothing of P may disappear, delta fields included
+    other = tuple(c for c in invalidation_reasons(previous, current) if c not in allowed or c in removed)
     return not other, other
+
+
+FIELD_DELTA_KINDS = frozenset({"NEW_QUESTION", "CHANGED_QUESTION", "DECLARATION", "TRANSFORM_FAILURE",
+                               "OMIT_FIELD_REQUIRED"})
+NON_FIELD_DELTA_KINDS = frozenset({"NEW_UPLOAD", "DOCUMENT_CONVERSION", "TARGET_CHANGE"})
+
+
+def effective_delta_key(delta: Mapping[str, Any]) -> str:
+    """The one canonical key of a delta (spec §11): its answer_key, or
+    delta:<id> when it has none."""
+    return delta.get("answer_key") or f"delta:{delta['id']}"
 
 
 def warning_key(warning_type: str, subject: str, material: Mapping[str, Any]) -> str:
     """type + subject + a fingerprint of the exact material that caused the
     warning (spec §6.1): changed material gives a new key, so an old
     acknowledgement never acknowledges it."""
-    fp = canonical_hash("review-warning-material", "v1", _safe(dict(material)))[-16:]
+    fp = canonical_hash("review-warning-material", "v1", _safe(dict(material)))  # full SHA-256
     return f"{warning_type}:{subject}:{fp}"
 ```
 
@@ -912,6 +955,11 @@ def test_other_states():
     assert derive_review_state(snap(r=None, approval=None)).state == "NOT_READY"
 
 
+def test_no_exact_pack_exposes_no_binding_hash():
+    s = derive_review_state(snap(exact_pack=False))
+    assert s.binding_hash is None and s.provisional_hash and not s.approval_effective
+
+
 def test_undecided_optional_and_unanswered_required_fields_block():
     base = reviewable()
     undecided = replace(base, fields=(replace(base.fields[1], disposition=None), base.fields[0]))
@@ -955,6 +1003,7 @@ class ReviewSnapshot:
     open_delta_keys: tuple[str, ...]
     now: Any
     ttl: Any
+    exact_pack: bool = True  # False: selections not represented by the exact immutable v2 pack (spec §7.2)
 
 
 @dataclass(frozen=True)
@@ -965,7 +1014,8 @@ class ReviewState:
     binding_matches: bool
     approval_effective: bool
     binding: dict[str, Any] | None
-    binding_hash: str | None
+    binding_hash: str | None            # exposed/approvable; None without the exact pack
+    provisional_hash: str | None = None  # internal only: invalidation detection
 
 
 def blocking_issues(r: Reviewable) -> tuple[str, ...]:
@@ -1007,14 +1057,15 @@ def derive_review_state(s: ReviewSnapshot) -> ReviewState:
         reasons.append("blocking_issues")
     if unacked:
         reasons.append("unacknowledged_attention")
-    effective = matches and not reasons
+    exposed = current if s.exact_pack else None  # spec §7.2: no approvable hash without the exact pack
+    effective = matches and not reasons and s.exact_pack
     if effective:
         state = APPROVED_FOR_FILL
     elif latest is None and not s.open_delta_keys:
         state = READY_FOR_REVIEW
     else:
         state = NEEDS_REVIEW
-    return ReviewState(state, tuple(reasons), blocking, matches, effective, binding, current)
+    return ReviewState(state, tuple(reasons), blocking, matches, effective, binding, exposed, current)
 ```
 
 ```python
@@ -1047,7 +1098,11 @@ def _parse_review_ttl() -> int:
   - extract `usable_answer_candidates(req, entry, *, application_workspace_id, search_workspace_id, employer_key, employer_key_strength) -> tuple[list[AnswerCandidate], bool]`, returning the in-reach, not-context-different candidates and a `contradicted` flag, from the body at lines ~678–686;
   - `_in_reach` gains `if cand.reach is Reach.APPLICATION: return cand.scope_id == application_workspace_id`;
   - the gate calls the extracted function. Gate behaviour is otherwise unchanged. In particular, required sensitive fields still raise REQUIRE_USER at SUBMIT in the gate; how FILL consumes APPLICATION-reach sensitive answers belongs to 6D-B.
-- Modify: `webapp/persistence/autonomy_answers.py`: `_validate` accepts APPLICATION (`scope_id` required = the application workspace id); `approve_answer` stores it.
+- Modify: `webapp/persistence/autonomy_answers.py`. `_validate` currently rejects every sensitive subject before reach is considered. Change it so that:
+  - a sensitive subject is valid **only** with `Reach.APPLICATION`; EMPLOYER, SEARCH_WORKSPACE and ACCOUNT still raise `AnswerValidationError`;
+  - APPLICATION requires `scope_id` (the application workspace id);
+  - non-sensitive subjects may also use APPLICATION.
+- Modify: `product/autonomy_gate.py`: also extract `answer_readiness(cand, entry, now) -> AnswerReadiness(expired: bool, expires_at: datetime | None, basis: "ok" | "stale" | "missing")` from `_submit_blocker` (same `now - confirmed_at > timedelta(days=freshness_days)` boundary; same Ruling P basis comparison of `basis_hash_at_approval` vs `basis_hash_current`). `_submit_blocker` calls it, and gate behaviour is unchanged.
 - Create: `webapp/services/review_fields.py`; `tests/webapp/services/review_fixtures.py` (shared worlds; later tasks append).
 - Test: `tests/product/test_autonomy_gate_application_reach.py`, `tests/webapp/services/test_review_fields.py`.
 
@@ -1060,10 +1115,13 @@ def _parse_review_ttl() -> int:
 
 **Rules:**
 - **Governing requirements.** Every `application_blockers` row for the workspace with a non-null `semantic_subject_key` and `status IN ('open', 'resolved')` is a governing requirement for that subject: `answer_key = "subject:<subject>"`, `required=True`, `question` = the blocker question. Several blockers for one subject give one field, required if any is required. Their question texts are shown together, sorted by blocker id. Question text is display-only and not part of the binding.
-- **Delta requirements.** Every `review_deltas` row gives a requirement:
+- **Delta requirements.** Only **field** deltas (`kind ∈ FIELD_DELTA_KINDS`) give requirements, under `effective_delta_key(delta)`:
   - with a subject: `answer_key = "subject:<subject>"` and the delta's `required`; this merges with a governing field, required if either is;
-  - unknown subject: `answer_key = "delta:<delta_id>"`;
-  - an `OMIT_FIELD_REQUIRED` delta marks its `answer_key` required.
+  - unclassified (no subject): `answer_key = "delta:<delta_id>"`. It can't be answered. Required gives disposition `None` and BLOCKING `warning_key("unclassified_required_question", key, {delta_id})`. Optional accepts only an `OMIT` disposition;
+  - a later field delta with a subject for the same observed field (6D-B's classification, matched on `observed.field_key`) supersedes the unclassified one for planning;
+  - an `OMIT_FIELD_REQUIRED` delta marks its key required.
+
+  Non-field deltas never become fields (Task 9).
 - **Contact fields.** Profile claims whose `field` ∈ `CONTACT_FIELDS` (excluding placeholder and conflicted concepts) give `answer_key = "contact:<field>"`, sourced `EVIDENCE` (`source_ref` = claim id, `value_hash = value_hash(claim["value"])`, label `PROFILE_EVIDENCE`).
   - **Requiredness comes only from a governing requirement or delta whose subject equals the contact field name.** Otherwise the field is optional and needs the user's explicit disposition (`ANSWER` binds the evidence value, `OMIT` leaves it blank).
 - **Candidates for a subject field.**
@@ -1072,17 +1130,29 @@ def _parse_review_ttl() -> int:
   - If usable candidates exist, the chosen one is the unique usable candidate at the **narrowest** reach (`REACH_ORDER`). Several distinct approved answers at that narrowest reach give BLOCKING `ambiguous_answer` (no rowid or time tie-break).
   - The label is `USER_SUPPLIED` for `USER` / `USER_EDITED_PROPOSAL` provenance, and `PROFILE_EVIDENCE` for an `EVIDENCE` basis.
 - **Warnings** (keys via `warning_key`):
-  - expired (`confirmed_at + freshness_days <= now`): BLOCKING `warning_key("answer_expired", answer_key, {source_ref, value_hash, expires_at})`;
+  - `answer_readiness(...).expired` (the 6B boundary, shared): BLOCKING `warning_key("answer_expired", answer_key, {source_ref, value_hash, expires_at})`;
+  - `answer_readiness(...).basis in ("stale", "missing")` for an EVIDENCE-basis answer: BLOCKING `warning_key("answer_basis_stale", answer_key, {source_ref, basis_hash_at_approval, basis_hash_current})`. The binding changes even though `value_hash` is unchanged;
   - expiring in under 7 days: ATTENTION `warning_key("answer_expiring", answer_key, {source_ref, value_hash, expires_at})`;
-  - a pending `proposed_answers` row for the subject's blocker: BLOCKING `warning_key("proposal_unaccepted", answer_key, {proposal_id})`;
+  - a `proposed_answers` row for the subject's blocker with **no `PROPOSAL_ACCEPTED` event naming its `proposal_id`** (events by seq): BLOCKING `warning_key("proposal_unaccepted", answer_key, {proposal_id})`;
   - a sensitive subject whose chosen answer isn't APPLICATION-reach for this workspace: BLOCKING `warning_key("sensitive_needs_this_application", answer_key, {source_ref})`.
 - **Disposition:**
   - required with a value: `"ANSWER"`;
   - required without a value: `None`;
   - optional: the stored disposition, else `None`. A stored `ANSWER` with no value gives `None`.
 - `permitted_transforms = tuple(sorted(TRANSFORM_IDS))`.
+- Display-only metadata: `reach` = the chosen answer's reach (or `EVIDENCE`), and `freshness` = "valid until <expires_at date>" / "no expiry" / "expired".
 
 **Tests (write first, see them fail, then implement):**
+- Answers persistence:
+  - `test_sensitive_subject_rejected_at_employer_workspace_and_account_reach`;
+  - `test_sensitive_subject_accepted_only_at_application_reach_with_scope`.
+- Readiness:
+  - `test_answer_readiness_boundary_matches_the_gate` (exactly `freshness_days` later is not expired; one microsecond past is);
+  - `test_gate_submit_blocker_uses_answer_readiness`.
+- `test_stale_evidence_basis_is_blocking_with_unchanged_value_hash`.
+- `test_accepted_proposal_is_no_longer_pending`.
+- `test_unclassified_required_delta_blocks_and_optional_accepts_only_omit`.
+- `test_non_field_deltas_never_become_fields`.
 - Gate:
   - `test_application_reach_applies_only_to_its_own_application`;
   - `test_reach_order_keeps_existing_relative_order`;
@@ -1110,7 +1180,7 @@ Commit: `feat(review): add per-application answer reach, the shared candidate ap
 **Files:** Create `webapp/services/review_application.py`. Append a `v2_chain` fixture to `tests/webapp/services/review_fixtures.py` (the 6C `ready_chain` plus `cv_quality_v2_enabled=True`, `generate_application_documents`, both selections and the user v2 confirmation). Test `tests/webapp/services/test_review_application.py`.
 
 **Interfaces:**
-- Consumes: Tasks 2–5; `get_selection`, `get_document_version`; `get_current_artifact`; `validate_application_pack_v2`; `webapp.services.workspace_view.resolve_apply_target` (URL + provenance tier); the identity key and strength from `application_workspace_job_identities` (via `autonomy_candidates.candidate_identity` on the stored source record); `application_job_identity_conflicts`; the profile snapshot via `autonomy_prepare._profile`.
+- Consumes: Tasks 2–5; `get_selection`, `get_document_version`; `get_current_artifact`; `validate_application_pack_v2`; `webapp.services.workspace_view.resolve_apply_target` (URL + provenance tier); the durable identity from `webapp.persistence.autonomy_ledger.workspace_identity(conn, ws) -> (key, strength, conflict)` (the same function 6B uses, so approval and authorization bind the same identity key, strength and conflict state); the profile snapshot via `autonomy_prepare._profile`.
 - Produces:
   - `build_reviewable(conn, *, settings, account_id, application_workspace_id, now) -> Reviewable | None`
   - `review_state(conn, *, settings, account_id, application_workspace_id, now) -> ReviewState` (builds the `ReviewSnapshot`: latest approval with `revoked` via `approval_revoked` and `created_at` parsed with `parse_utc`; open delta keys; `ttl = timedelta(days=settings.review_approval_ttl_days)`; workflow status)
@@ -1119,7 +1189,7 @@ Commit: `feat(review): add per-application answer reach, the shared candidate ap
 - `None` when there is neither a current `application_pack` nor a v2 selection.
 - **Documents:**
   - When the current pack is v2 and `final_documents[kind].document_version_id` equals `get_selection(kind)` for both kinds, documents come from the pack manifests.
-  - Otherwise, show the selections and add BLOCKING `save_document_changes`.
+  - Otherwise, show the selections, add BLOCKING `save_document_changes`, and build the snapshot with `exact_pack=False`, so no approvable `binding_hash` is exposed (spec §7.2).
   - `settings.cv_quality_v2_enabled` false, or a v1 pack, adds BLOCKING `exact_files_required`.
 - **Claims (`ai_generated` only):**
   - Units come from `generation_basis.reviewed_application_pack` (`cv_content` for `cv`, `cover_letter_content` for `cover_letter`).
@@ -1150,7 +1220,8 @@ Commit: `feat(review): add per-application answer reach, the shared candidate ap
 
 **Tests:**
 - `test_v2_chain_builds_the_full_reviewable`.
-- `test_selection_change_without_save_blocks_with_save_document_changes`.
+- `test_selection_change_without_save_blocks_and_exposes_no_binding_hash`.
+- `test_identity_matches_workspace_identity_used_by_6b`.
 - `test_v1_or_v2_disabled_blocks_with_exact_files_required`.
 - `test_removed_evidence_blocks_and_invalidates` (Review Focus).
 - `test_provenance_change_with_identical_bytes_invalidates`.
@@ -1178,10 +1249,11 @@ Commit: `feat(review): assemble the reviewable application with exact documents,
 - Test: `tests/webapp/services/test_review_documents.py`.
 
 **Interfaces:**
-- `replace_document(conn, *, settings, account_id, application_workspace_id, kind, filename, content, actor, now) -> dict`:
+- `replace_document(conn, *, settings, account_id, application_workspace_id, kind, filename, content, expected_revision, actor, now) -> dict`:
   1. `store_upload_blob` (outside the transaction).
-  2. `run_immediate`: `record_uploaded_version(commit=False)`, `apply_selection(commit=False)`, and `record_event(DOCUMENT_REPLACED, detail={kind, document_version_id, based_on_generation_artifact_id: <current application_document_generation artifact id or None>})`.
-- `select_document(conn, *, settings, account_id, application_workspace_id, kind, document_version_id, actor, now) -> dict`: in `run_immediate`, `apply_selection(commit=False)` plus `SELECTION_CHANGED` with the same `based_on_generation_artifact_id`.
+  2. `run_immediate`: `record_uploaded_version(commit=False)`, `apply_selection(expected_revision=..., commit=False)`, and `record_event(DOCUMENT_REPLACED, detail={kind, document_version_id, based_on_generation_artifact_id: <current application_document_generation artifact id or None>})`.
+- `select_document(conn, *, settings, account_id, application_workspace_id, kind, document_version_id, expected_revision, actor, now) -> dict`: in `run_immediate`, `apply_selection(expected_revision=..., commit=False)` plus `SELECTION_CHANGED` with the same `based_on_generation_artifact_id`.
+- A stale `expected_revision` (the existing `set_selection` revision check) raises `ReviewRefused("stale_selection")` (409). The whole transaction rolls back, leaving no version row, selection or event. A replace may leave only its already-published content-addressed blob orphaned.
 - `save_changes(conn, *, settings, account_id, application_workspace_id, actor, now) -> dict`: `confirm_application_pack(..., document_selection_revisions={kind: current revision}, on_confirmed=hook)`. The hook writes `PACK_CONFIRMED` (`detail={pack_artifact_id}`, `binding_hash` = the binding recomputed on the same connection inside the transaction).
 - `newer_draft_warnings(conn, *, account_id, application_workspace_id) -> tuple[ReviewWarning, ...]`:
   - Take the current `application_document_generation` artifact (`get_current_artifact`), and for each kind the document version with `source_generation_artifact_id` equal to that artifact's id ("the current AI version").
@@ -1197,6 +1269,7 @@ Commit: `feat(review): assemble the reviewable application with exact documents,
 **Tests:**
 - `test_replace_and_its_event_are_atomic`: make `record_event` raise and assert no version or selection row exists (the blob may exist).
 - `test_select_and_its_event_are_atomic`.
+- `test_stale_expected_revision_is_409_with_no_mutation_or_event` (replace and select).
 - `test_save_changes_pack_and_pack_confirmed_are_one_transaction`: a hook failure leaves no pack, no workflow event and no `PACK_CONFIRMED`.
 - `test_save_changes_creates_exactly_one_pack_for_the_current_revisions` (DB diff).
 - `test_save_changes_works_while_paused_and_halted`.
@@ -1223,7 +1296,7 @@ Commit: `feat(review): add atomic audited document replace/select and Save chang
      - any other blocking issue gives `"blocking"`;
      - unacknowledged ATTENTION gives `"unacknowledged_attention"`;
      - the latest approval already has this `binding_hash` and is effective gives `"already_approved"`. This makes a same-hash double approval (including a race) write exactly one record (spec §18 criterion 16).
-  3. `insert_approval(binding=state.binding, binding_hash=state.binding_hash, supersedes_id=latest id, resolved_delta_ids=[open deltas whose answer_key is a decided field])`.
+  3. `insert_approval(binding=state.binding, binding_hash=state.binding_hash, supersedes_id=latest id, resolved_delta_ids=[open deltas d with delta_resolved(d, state.binding, document_media_types=...)])`. `delta_resolved` is the pure per-kind predicate from Task 9 (spec §11 R3).
   4. `record_event(APPROVED, detail={"approval_id", "batch_id"})`.
   5. One `record_event(DELTA_RESOLVED, detail={"delta_id", "approval_id"})` per resolved delta.
   6. `ap.wake(conn, queue="APPLICATION", item_id=ws, now=now)` when a 6C queue row exists.
@@ -1231,8 +1304,14 @@ Commit: `feat(review): add atomic audited document replace/select and Save chang
   There is no pause or kill-switch check. It writes nothing else.
 - `revoke(conn, *, settings, account_id, application_workspace_id, actor, now)`: `REVOKED` with `approval_id`. With no approval, `ReviewRefused("no_approval")`.
 - `record_invalidation_if_needed(conn, *, settings, account_id, application_workspace_id, now) -> bool`:
-  - latest approval exists, `not binding_matches`, and `not invalidation_recorded`: `APPROVAL_INVALIDATED` with `{approval_id, previous_hash, current_hash, reasons}`;
-  - TTL passed and no `EXPIRED` for this approval yet: `EXPIRED`.
+  - One rule (spec §13 as amended): when the latest approval exists and is **not effective**, and no `APPROVAL_INVALIDATED` for this approval has this exact reason set, record `APPROVAL_INVALIDATED` with:
+    - `approval_id`;
+    - `previous_hash` and `current_hash` (the provisional hash);
+    - `reasons`: `state.reasons`, with `binding_changed` expanded by `invalidation_reasons(...)` component names.
+
+    This covers `binding_changed`, `open_deltas`, `revoked`, `expired`, `blocking_issues` and `unacknowledged_attention` alike.
+  - Additionally, TTL passed and no `EXPIRED` for this approval yet: `EXPIRED`. (`REVOKED` is written by `revoke`.)
+  - `invalidation_recorded(conn, ws, approval_id, reasons_fingerprint)` compares `canonical_hash` of the sorted reasons plus the current provisional hash.
 - `reconcile_approvals(conn, *, settings, now) -> int`: for every workspace with an approval, run `record_invalidation_if_needed` in its own short transaction. Reduce-only (events only). One additive line in `autonomy_scheduler._sweeps`: `out["review_invalidations"] = reconcile_approvals(conn, settings=settings, now=now)`.
 
 **Tests:**
@@ -1241,7 +1320,7 @@ Commit: `feat(review): add atomic audited document replace/select and Save chang
 - `test_approval_never_acknowledges`.
 - `test_approve_while_paused_and_halted_succeeds`.
 - `test_stale_blocking_and_no_pack_refusals_write_nothing`.
-- `test_invalidation_recorded_once_with_component_reasons`.
+- `test_invalidation_recorded_once_per_reason_set_for_every_cause` (binding change, open delta, revoke, expiry, new blocking and unacknowledged ATTENTION each record exactly one `APPROVAL_INVALIDATED`; re-observing records nothing).
 - `test_revoke_and_expiry`.
 - `test_second_approval_at_the_same_hash_is_already_approved_and_writes_nothing`.
 - `test_reconcile_runs_in_the_6c_sweep_and_is_reduce_only`.
@@ -1256,7 +1335,15 @@ Commit: `feat(review): add the approval transaction with its exact write contrac
 
 **Interfaces:**
 - `open_review_delta(conn, *, account_id, application_workspace_id, kind, answer_key, subject, required, question, observed, source, now) -> dict`: `insert_delta` + `DELTA_OPENED` in one `run_immediate`. For `kind="OMIT_FIELD_REQUIRED"`, the `answer_key` must be a field currently bound `OMIT` (else `ReviewRefused("not_an_omitted_field")`), and the delta is `required=True`.
-- `review_view_mode(conn, *, settings, account_id, application_workspace_id, now) -> dict` returns `{"mode": "first_review" | "delta_only" | "full", "changed_sections": [...], "delta_keys": [...], "previous_hash": str | None}`. With no approval it's `first_review`. Otherwise `delta_only(latest.binding, state.binding, delta_keys)` decides.
+- `review_view_mode(conn, *, settings, account_id, application_workspace_id, now) -> dict` returns `{"mode": "first_review" | "delta_only" | "full", "changed_sections": [...], "delta_keys": [...], "previous_hash": str | None}`.
+  - With no approval it's `first_review`.
+  - Any open or just-resolved **non-field** delta gives `full`, with the affected sections (documents or `apply_target`) marked.
+  - Otherwise `delta_only(latest.binding, current provisional binding, field delta effective keys)` decides.
+- Pure, appended to `product/review_contract.py`: `delta_resolved(delta, binding, *, document_media_types: Mapping[str, str]) -> bool` (spec §11 R3):
+  - field kinds: the field `effective_delta_key(delta)` is present with `disposition == "ANSWER"`, or `"OMIT"` if not required. `TRANSFORM_FAILURE` also needs `value_hash != delta.observed["value_hash"]` unless `OMIT`. An unclassified key is resolved only by `OMIT` (when optional).
+  - `TARGET_CHANGE`: `binding["apply_target"]["canonical_url"] == delta.observed["canonical_url"]`.
+  - `DOCUMENT_CONVERSION`: `document_media_types.get(delta.observed["kind"]) == delta.observed["required_media_type"]`, from the bound document version rows.
+  - `NEW_UPLOAD`: a bound document of `delta.observed["kind"]` exists. This is unsatisfiable in 6D-A for kinds other than `cv` and `cover_letter`, so it stays open.
 - Task 5's rule makes an `OMIT_FIELD_REQUIRED` delta's field `required=True` (the delta's `required` overrides the blocker's), so `OMIT` becomes impossible for that field.
 
 **Tests:**
@@ -1264,6 +1351,9 @@ Commit: `feat(review): add the approval transaction with its exact write contrac
 - `test_delta_only_when_only_delta_fields_differ`.
 - `test_any_other_change_shows_full_changed_sections`.
 - `test_omit_field_reported_mandatory_is_a_delta_and_cannot_be_omitted_again`.
+- `test_non_field_deltas_force_full_view_and_resolve_only_by_their_component` (`TARGET_CHANGE` resolved only when the bound target equals the observed one; `DOCUMENT_CONVERSION` only by a saved version of the required media type; `NEW_UPLOAD` of an unsupported kind stays open).
+- `test_transform_failure_needs_a_different_value_or_omit`.
+- `test_unclassified_required_delta_stays_open_after_approval_attempt` (approval refused as blocking).
 - `test_approve_from_a_stale_tab_is_refused` (Review Focus): compute hash A, `save_changes` after a replacement, `approve(displayed=A)` gives `stale`, and the DB diff is empty.
 
 Commit: `feat(review): add review delta intake and hash-proven delta-only review`.
@@ -1273,7 +1363,7 @@ Commit: `feat(review): add review delta intake and hash-proven delta-only review
 ### Task 10: Bulk approval and `REVIEW_PRESENTED`
 
 **Interfaces:**
-- `record_presented(conn, *, settings, account_id, application_workspace_id, actor, now) -> str`: computes the current binding hash, writes `REVIEW_PRESENTED` with it, and returns it. It is called **only** by the HTML page route (Task 14). A `NOT_READY` or `CLOSED` application records nothing and returns `None`.
+- `record_presented(conn, *, settings, account_id, application_workspace_id, actor, now) -> str | None`: when the exposed `binding_hash` is not `None`, writes `REVIEW_PRESENTED` with it and returns it. It is called **only** by the HTML page route (Task 14). It records nothing and returns `None` for `NOT_READY` / `CLOSED`, **or when there is no exact pack** (`binding_hash is None`, spec §7.2), in which case bulk is ineligible.
 - `approve_selected(conn, *, settings, account_id, items, actor, now) -> list[dict]` (`items: list[{"workspace_id", "displayed_binding_hash"}]`):
   - one `batch_id = "batch_" + uuid`;
   - each item independently: if `presented_at(ws, displayed_hash)` is false, `{"outcome": "not_presented"}`; otherwise `approve(..., batch_id=batch_id)`, catching `ReviewRefused` (`{"outcome": reason}`) and `LookupError` (`{"outcome": "not_found"}`).
@@ -1282,6 +1372,7 @@ Commit: `feat(review): add review delta intake and hash-proven delta-only review
 - `test_bulk_creates_one_record_per_application_with_one_batch_id`.
 - `test_bulk_refuses_only_the_changed_item` (Review Focus).
 - `test_presented_is_bound_to_the_hash`.
+- `test_no_presented_and_no_bulk_without_the_exact_pack`.
 - `test_data_api_get_never_makes_an_item_eligible` (lands with Task 13; written here and marked to run after Task 13 by importing the router lazily).
 
 Commit: `feat(review): add bulk approval with per-application records and presented-at-hash eligibility`.
@@ -1354,7 +1445,8 @@ All four actions run their DB mutation and review event in **one** `run_immediat
   - `approve_answer(..., provenance="USER", reach, scope_id, context, basis={"kind": "USER_ASSERTION"}, supersedes_id=<the current candidate at the same reach/scope, if any>, commit=False)`;
   - **sensitive subjects always use `Reach.APPLICATION` with `scope_id = application_workspace_id`**, whatever reach was requested;
   - records `ANSWER_EDITED` with `{answer_key, approved_answer_id}`.
-- `accept_proposal(conn, *, ..., proposal_id, edited_value=None, reach, actor, now)`: gives `USER_EDITED_PROPOSAL` and `PROPOSAL_ACCEPTED`. Sensitive subjects use APPLICATION reach.
+- `accept_proposal(conn, *, ..., proposal_id, edited_value=None, reach, actor, now)`: in one `run_immediate`, creates the `USER_EDITED_PROPOSAL` approved answer (`commit=False`) and `PROPOSAL_ACCEPTED` with `detail={"proposal_id", "approved_answer_id"}`. A proposal that already has an acceptance event gives `ReviewRefused("already_accepted")`. Sensitive subjects use APPLICATION reach.
+- `answer_field` on an unclassified key (`delta:<id>`) gives `ReviewRefused("unclassified_subject")`. `set_field_disposition(..., "ANSWER")` on an unclassified key gives the same refusal, and `OMIT` is allowed only if it's optional.
 - `set_field_disposition(conn, *, ..., answer_key, disposition, actor, now)`: `OMIT` on a required field gives `ReviewRefused("required_field")`. Records the disposition and `FIELD_DISPOSITION_SET`.
 - `acknowledge_warning(conn, *, settings, account_id, application_workspace_id, warning_key, actor, now)`: only a warning whose exact current key is an ATTENTION warning (else `ReviewRefused("not_attention")`). Records `WARNING_ACKNOWLEDGED` with `{warning_key}`.
 
@@ -1362,6 +1454,8 @@ All four actions run their DB mutation and review event in **one** `run_immediat
 - `test_answer_supersedes_and_invalidates`.
 - `test_editing_an_account_answer_invalidates_every_approval_that_bound_it` (Review Focus).
 - `test_omit_refused_for_required`.
+- `test_proposal_acceptance_event_carries_proposal_and_answer_ids`.
+- `test_unclassified_key_cannot_be_answered`.
 - `test_acknowledge_only_attention_and_it_changes_the_binding`.
 - `test_system_proposal_never_supersedes_a_user_answer`.
 - `test_sensitive_answer_for_application_a_is_not_available_to_application_b_at_the_same_employer`: two applications at the same employer; a sensitive answer given in A is APPLICATION-reach, is usable in A, and isn't planned or usable in B (B still shows it as unanswered).
@@ -1379,7 +1473,7 @@ Commit: `feat(review): add answer, proposal, disposition and acknowledgement act
 - `GET /api/applications/prepared`: `[{workspace_id, company, title, state, reasons, blocking_count, attention_count, presented_at_current_hash}]`.
 - `GET /api/workspaces/{id}/review`: `{reviewable, state, binding_hash, view_mode}`. **Read-only.**
 - `GET /api/workspaces/{id}/review/documents/{kind}/preview`: `{paragraphs: [...]}` from `docx_preview`.
-- `POST .../review/documents/{kind}` (multipart replace) and `POST .../review/documents/{kind}/select {document_version_id}`.
+- `POST .../review/documents/{kind}` (multipart replace with an `expected_revision` form field) and `POST .../review/documents/{kind}/select {document_version_id, expected_revision}`. A stale revision gives 409 `stale_selection`.
 - `POST .../review/save`.
 - `POST .../review/answers {answer_key, value, reach}`, `POST .../review/proposals/{proposal_id}/accept {edited_value?, reach}`, `POST .../review/fields/{answer_key}/disposition {disposition}`.
 - `POST .../review/warnings/ack {warning_key}`.
@@ -1391,6 +1485,7 @@ Commit: `feat(review): add answer, proposal, disposition and acknowledgement act
 **Tests:**
 - Ownership 404 for another account's workspace, on every route.
 - `test_review_data_get_writes_nothing` (the DB diff is empty).
+- `test_review_get_exposes_null_binding_hash_without_the_exact_pack`.
 - `test_approve_rejects_extra_fields`.
 - The 409 reason mapping.
 - The bulk outcome list.
@@ -1414,6 +1509,8 @@ Commit: `feat(review): expose review, approval, bulk and delta routes with struc
 - Modify: `webapp/templates/base.html` (nav **Prepared**) and `webapp/static/app.js` (the review page actions: fetch-POST, then reload; bulk sends each item's presented hash).
 - Modify: `webapp/services/autonomy_inbox.py` + `webapp/templates/autonomy_inbox.html`. PREPARED entries read **Ready for review** and link to `/workspaces/{id}/review`. Labels and links only; no notification or scheduling logic changes.
 - Modify: `webapp/services/autonomy_dossier.py` + `webapp/templates/autonomy_dossier.html`. Add an **Approvals** section with approvals (hash, batch, actor), `invalidation_reasons` between successive approvals, deltas, and review events in `seq` order.
+
+The review page disables **Approve for filling** and omits `data-displayed-binding-hash` when `binding_hash` is `None` (showing "Save your document changes to review the exact files"). The Replace and select forms carry the displayed `expected_revision` for each kind.
 
 **Review page sections:**
 - job, and the target with its provenance in words;
@@ -1502,5 +1599,6 @@ Commit: `feat(review): add Prepared Applications and review pages, DOCX preview,
   - unknown-subject deltas use `answer_key = "delta:<delta_id>"` (6D-B should make delta intake idempotent per observed field);
   - "newer AI draft" is determined by the current `application_document_generation` pointer and the generation recorded on the user's selection events; never by rowid or time;
   - several distinct usable answers at the narrowest reach are BLOCKING `ambiguous_answer`;
+  - 6D-B classifies an unclassified question by opening a new field delta with the subject for the same `observed.field_key` (spec §11 R7);
   - the `already_approved` refusal (Task 8) implements spec criterion 16's "the other is a no-op or 409" as a 409.
 - **Names** used consistently: `warning_key`, `usable_answer_candidates`, `answer_candidates`, `Reach.APPLICATION`, `_request_grant_core`, `_pre_click_commit_core`, `store_upload_blob`, `record_uploaded_version`, `apply_selection`, `on_confirmed`, `approval_binding`, `binding_hash`, `component_hashes`, `claim_provenance_hash`, `evidence_basis_hash`, `claim_content_hash`, `derive_review_state`, `binding_matches`, `approval_effective`, `planned_fields`, `build_reviewable`, `review_state`, `save_changes`, `approve`, `approve_selected`, `record_presented`, `open_review_delta`, `review_view_mode`, `reconcile_approvals`, `ReviewRefused`, `SubmissionNotAvailable`.
