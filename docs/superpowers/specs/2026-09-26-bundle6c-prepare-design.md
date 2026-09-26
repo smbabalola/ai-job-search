@@ -76,21 +76,21 @@ All have `seq INTEGER PRIMARY KEY AUTOINCREMENT`, a unique `id`, `created_at`, a
 | `autonomy_candidate_promotions` | `screening_id`, `candidate_id`, `search_workspace_id`, `application_workspace_id`, `actor_type` (`SCHEDULER`\|`USER`), `actor` | Links a screening (or a user's Promote) to the application it created. |
 | `autonomy_candidate_exceptions` | `account_id`, `search_workspace_id`, `candidate_id`, `screening_id`, `items_json` | A candidate-level question (no application exists, so never `application_blockers`). |
 | `autonomy_candidate_exception_resolutions` | `exception_id`, `resolution` (`PROMOTE`\|`DISMISS`), `actor`, `reason` | Current resolution = latest by `seq`. |
-| `autonomy_prepare_steps` | `attempt_id`, `subject_type` (`APPLICATION`\|`CANDIDATE`), `subject_id`, `step_kind`, `attempt_no`, `event` (`STARTED`\|`SUCCEEDED`\|`REUSED`\|`FAILED`\|`ABANDONED`), `input_fingerprint`, `authorization_decision_id`, `lease_generation`, `worker_id`, `run_id`, `artifact_refs_json` (ids + content hashes), `reservation_ids_json`, `cost_json` (reserved max, settled actual, source), `error_class`, `error_code`, `error_detail` | Observational attempt log: one `STARTED` row plus one terminal row per attempt. |
+| `autonomy_prepare_steps` | `attempt_id`, `subject_type` (`APPLICATION`\|`CANDIDATE`), `subject_id`, `step_kind`, `attempt_no`, `event` (`STARTED`\|`SUCCEEDED`\|`REUSED`\|`FAILED`\|`ABANDONED`), `input_fingerprint`, `authorization_decision_id`, `retry_request_id` (NULL outside an explicit retry cycle), `lease_generation`, `worker_id`, `run_id`, `artifact_refs_json` (ids + content hashes), `reservation_ids_json`, `cost_json` (reserved max, settled actual, source), `error_class`, `error_code`, `error_detail` | Observational attempt log: one `STARTED` row plus one terminal row per attempt. |
 | `autonomy_review_latches` | `application_workspace_id`, `pack_revision`, `reason` (`EXPLICIT_REVIEW`\|`REOPENED_CONFIRMED`), `actor` | Human-review-required latch for one pack revision. |
 | `autonomy_enrolments` | `account_id`, `application_workspace_id`, `action` (`ENROL`\|`UNENROL`), `actor_type` (`USER`\|`SCHEDULER`), `actor`, `reason` | Scheduling eligibility (distinct from authority). Current = latest by `seq`. |
-| `autonomy_retry_requests` | `account_id`, `subject_type`, `subject_id`, `step_kind`, `input_fingerprint`, `actor` | The user's explicit "Retry" that clears an escalated failure for that step + fingerprint. |
+| `autonomy_retry_requests` | `account_id`, `subject_type`, `subject_id`, `step_kind`, `input_fingerprint`, `actor` | The user's explicit "Retry". **One-shot:** it opens exactly one new retry cycle for that `step_kind + input_fingerprint` (§10.2); attempts in that cycle reference it. |
 | `autonomy_notification_events` | `account_id`, `notification_key`, `kind` (`NEEDS_USER`\|`CANDIDATE_QUESTION`\|`PREPARED`\|`OPERATIONAL_ERROR`\|`BLOCKED`), `subject_type`, `subject_id`, `event` (`CREATED`\|`SEEN`\|`RESOLVED`), `detail_json` | Notification history; badge and unread state are derived. |
 
 ### 4.2 New mutable coordination table
 
-`autonomy_candidate_queue` — `candidate_id` (PK), `account_id`, `search_workspace_id`, `next_eligible_at` (NULL = dormant), `lease_holder`, `lease_generation INTEGER NOT NULL DEFAULT 0`, `lease_expires_at`, `updated_at`. **No append-only trigger** — like 6B's `autonomy_queue_items`, it is operational coordination state only.
+`autonomy_candidate_queue` — `candidate_id` (PK), `account_id`, `search_workspace_id`, `next_eligible_at` (NULL = dormant), `lease_holder`, `lease_generation INTEGER NOT NULL DEFAULT 0`, `lease_expires_at`, `updated_at`. Fenced exactly like the application queue (§6.4). **No append-only trigger** — like 6B's `autonomy_queue_items`, it is operational coordination state only.
 
 ### 4.3 Additive changes to existing tables
 
 - **`autonomy_queue_items`** (6B): `+ lease_generation INTEGER NOT NULL DEFAULT 0`. Lease fields remain mutable coordination state, never authority or lifecycle truth.
 - **`review_decisions`**: `+ decision_provenance TEXT NOT NULL DEFAULT 'USER' CHECK (decision_provenance IN ('USER','SYSTEM_AUTO_CONFIRMED'))`, `+ system_basis_json TEXT` (required iff `SYSTEM_AUTO_CONFIRMED`: canonical reason code, the item's content hash, the pack revision). Existing rows are `USER`. Dispositions are unchanged — a system decision uses `acknowledged_and_proceed`.
-- **`limit_reservations`** (6B): `+ subject_type TEXT` / `+ subject_id TEXT` (both NULL or both set; `subject_type IN ('APPLICATION','CANDIDATE')`) — attribution metadata only; the existing `(account, counter_name, window_key)` remains the single source of truth for every cap. `+ settled_amount TEXT`, `+ settlement_ref TEXT UNIQUE` — idempotent settlement (§11.3).
+- **`limit_reservations`** (6B): `+ subject_type TEXT` / `+ subject_id TEXT` (both NULL or both set; `subject_type IN ('APPLICATION','CANDIDATE')`) — attribution metadata only; the existing `(account, counter_name, window_key)` remains the single source of truth for every cap. `+ settled_amount TEXT`, `+ settlement_ref TEXT` with a partial unique index `WHERE settlement_ref IS NOT NULL` — exactly-once, immutable settlement (§11.3).
 
 ### 4.4 Connection settings (separate commit)
 
@@ -122,6 +122,8 @@ When there is nothing to do for an item, it goes **dormant** (`next_eligible_at 
 
 ### 6.3 `run_tick(conn, *, settings, now, rng, worker_id)`
 
+A driver never overlaps its own `run_tick()` calls: it runs one tick to completion, then waits about `autonomy_tick_interval` before the next. Concurrency comes only from independent drivers/workers, coordinated by leases.
+
 1. **Sweeps** (§10.4) — always, even while halted; each in its own short transaction; reduce-only.
 2. **Gates.** If the scheduler gate is off or the account is halted, return after sweeps.
 3. **Select work fairly.** Alternate 1:1 between due application items and due candidate items (applications first), up to `autonomy_max_items_per_tick`. Selection never scans the whole candidate backlog against application timestamps.
@@ -132,11 +134,11 @@ When there is nothing to do for an item, it goes **dormant** (`next_eligible_at 
    4. **Re-check** pause, enrolment, halt, scheduler gate (§5). Failed → release; no decision, no attempt.
    5. **Reserve** the step's hard-maximum cost if the step is cost-bearing (§11). Failed → `next_eligible_at = retry_at`, release.
    6. **Record `STARTED`** (short transaction), then **run the step with no write transaction held**, bounded by the step's hard timeout.
-   7. **Finalize** in one short transaction guarded by `WHERE lease_holder = ? AND lease_generation = ?`: terminal attempt row, reservation settlement, outcome effects, `next_eligible_at` (now after success; backoff after failure; NULL when dormant), lease release. If the guard matches no row the worker lost its lease: it writes nothing further.
+   7. **Finalize** in one short transaction guarded by `WHERE lease_holder = ? AND lease_generation = ? AND lease_expires_at > :now`: terminal attempt row, reservation settlement, outcome effects, `next_eligible_at` (now after success; backoff after failure; NULL when dormant), lease release. If the guard matches no row the worker lost its lease — retaken **or merely expired**: it writes nothing further (a worker whose lease expired cannot commit just because nobody retook it). The attempt's outcome is then settled by recovery (§10.1).
 
 ### 6.4 Leases
 
-A lease lasts the step's hard timeout plus a margin (`autonomy_lease_margin`), so a live worker never loses its lease mid-step. Expired leases are simply retaken; a leftover `STARTED` row never blocks recovery (§10.1).
+A lease lasts the step's hard timeout plus a margin (`autonomy_lease_margin`), so a live worker never loses its lease mid-step. Acquisition atomically sets the holder, increments `lease_generation` and sets the expiry; finalization requires the expected holder, the expected generation **and** an unexpired lease. Both queues are fenced identically. Expired leases are simply retaken; a leftover `STARTED` row never blocks recovery (§10.1).
 
 ### 6.5 PREPARE authorization at the boundary
 
@@ -285,7 +287,7 @@ It never writes sibling blocker resolutions, review decisions, approved answers 
 
 ### 10.1 Lease loss and orphaned attempts
 
-- Finalization is fenced by `lease_generation` (§6.3); a worker that lost its lease commits nothing further.
+- Finalization is fenced by holder, `lease_generation` and lease expiry (§6.3); a worker that lost or outlived its lease commits nothing further.
 - A worker that takes over an item and finds a `STARTED` attempt with no terminal row appends `ABANDONED` for it. Its reservation settles at the provider-audited actual cost if proven, else at the reserved hard maximum (§11.3).
 - An existing artifact matching the step's input fingerprint is reused (`REUSED`).
 
@@ -295,11 +297,13 @@ An explicit mapping from exception types; unmapped → `INTERNAL`.
 
 | Class | Examples | Handling |
 |---|---|---|
-| `TRANSIENT` | timeout, rate limit, provider 5xx | backoff ≈ 60 s → 300 s → 900 s, ±20 % jitter from the injected `rng`, capped; honour `Retry-After` |
+| `TRANSIENT` | timeout, rate limit, provider 5xx | up to **3 automatic retries** with delays 60 s → 300 s → 900 s, ±20 % jitter from the injected `rng`; honour `Retry-After` (never shorter than the scheduled delay) |
 | `HUMAN_FIXABLE` | missing provider credentials, invalid profile, missing budget/envelope | `NEEDS_USER` with the error |
 | `INTERNAL` / `INTEGRITY` | invariant violation, schema/contract error, cost overage | `OPERATIONAL_ERROR`, non-retrying |
 
-**Escalation:** after **3 consecutive `TRANSIENT` failures of the same step with the same input fingerprint**, escalate to `NEEDS_USER` if a human could plausibly help, else `OPERATIONAL_ERROR`. A changed input fingerprint starts a new retry sequence. An escalated state clears only on new inputs or an explicit user Retry (`autonomy_retry_requests`).
+**Escalation:** a retry cycle is the initial attempt plus up to 3 automatic retries — **4 attempts in total** (fail → 60 s → fail → 300 s → fail → 900 s → fail → escalate), for the same step with the same input fingerprint. The 4th consecutive `TRANSIENT` failure escalates to `NEEDS_USER` if a human could plausibly help, else `OPERATIONAL_ERROR`. A changed input fingerprint starts a new cycle. An escalated state clears only on materially new inputs or a new explicit user Retry.
+
+**Retry requests are one-shot.** One `autonomy_retry_requests` row opens exactly one new cycle (again up to 4 attempts) for its `step_kind + input_fingerprint`; every attempt in it carries that `retry_request_id`. When that cycle escalates, the same request cannot be reused — a newer Retry or new inputs are required. Earlier failure history is never modified.
 
 ### 10.3 Idempotency
 
@@ -319,7 +323,7 @@ PREPARE steps are content-addressed and idempotent (6B §11.2); retries and reco
 
 1. **Explicit budget required.** Autonomous cost-bearing work requires an LLM budget in the standing policy (`limits.budgets.LLM` with `per_day`, and `per_application` for application steps). If it is absent, paid autonomous steps do not run; the item becomes operational `NEEDS_USER` ("Set an autonomy spending budget"). Manual use is unaffected.
 2. **Hard per-step envelope.** Each cost-bearing step kind (`EVALUATE`, `UNDERSTAND`, `FIT`, `INTELLIGENCE`) needs a hard maximum in `autonomy_step_cost_max` (derived from provider token caps and price). No envelope → fail closed (`NEEDS_USER`, "configure step cost limits").
-3. **Admission and settlement.** Before a paid step, reserve its hard maximum in `limit_reservations` (`budget:LLM:day` for the account's local day, plus `budget:LLM:application` for application steps), with `subject_type`/`subject_id`. While unsettled, usage counts the full reserved amount, so concurrent workers cannot overspend. After the step, settle once: `UPDATE … SET settled_amount = ?, settlement_ref = ?, status = 'CONSUMED' WHERE id = ? AND settled_amount IS NULL` — completion, `ABANDONED` and recovery can never double-settle. Usage then counts `COALESCE(settled_amount, amount)` for settled rows. Actual cost comes from provider-audit usage metadata × configured price; if unavailable, settle at the reserved maximum.
+3. **Admission and settlement.** Before a paid step, reserve its hard maximum in `limit_reservations` (`budget:LLM:day` for the account's local day, plus `budget:LLM:application` for application steps), with `subject_type`/`subject_id`. While unsettled, usage counts the full reserved amount, so concurrent workers cannot overspend. After the step, settle **exactly once**: `UPDATE … SET settled_amount = ?, settlement_ref = ?, status = 'CONSUMED' WHERE id = ? AND settled_amount IS NULL`. The `settled_amount IS NULL` guard is the primary exactly-once control; `settlement_ref` is a **stable** reference derived from the attempt (the same value on every retry of the settlement), unique when non-null — completion, `ABANDONED` and recovery can never double-settle. A settled row is **immutable**: a provider audit that appears later never rewrites `settled_amount`; any correction is a future auditable adjustment event (§11.6). Usage then counts `COALESCE(settled_amount, amount)` for settled rows. Actual cost comes from provider-audit usage metadata × configured price; if unavailable, settle at the reserved maximum.
 4. **Overage.** If actual cost exceeds the reserved maximum: record and charge the true amount, raise `OPERATIONAL_ERROR`, and refuse further autonomous calls of that step kind until its envelope is corrected. Accounting is never clamped.
 5. **Promotions cap.** `autonomy_max_promotions_per_day` (operator setting, default 5, lower-only) is a reserved counter `promotions:day` checked in screening and re-checked in the promotion transaction.
 6. Downward correction of past settlements, if ever needed, will be an auditable adjustment mechanism (deferred).
@@ -353,14 +357,14 @@ All state changes are attributed to the account (actor) and scoped to the caller
 | Setting | Env | Default |
 |---|---|---|
 | `autonomy_scheduler_enabled` | `JOBSEARCH_AUTONOMY_SCHEDULER=1` | off |
-| `autonomy_tick_interval` | — | 30 s |
+| `autonomy_tick_interval` | — | ≈ 30 s wait between completed ticks (a driver never overlaps itself) |
 | `autonomy_max_items_per_tick` | — | 4 (alternating) |
 | `autonomy_step_timeout` | — | 600 s per step kind |
 | `autonomy_lease_margin` | — | 120 s |
 | `autonomy_step_cost_max` | `JOBSEARCH_AUTONOMY_STEP_COST_MAX` (JSON) | none → fail closed |
 | `autonomy_max_promotions_per_day` | — | 5 (lower-only) |
 | `autonomy_dispatch_result_timeout` | — | 10 min |
-| `autonomy_retry_backoff` / `autonomy_max_consecutive_failures` | — | (60, 300, 900) s / 3 |
+| `autonomy_retry_delays` | — | (60, 300, 900) s → 3 automatic retries, 4 attempts per cycle |
 
 ---
 
@@ -368,7 +372,7 @@ All state changes are attributed to the account (actor) and scoped to the caller
 
 1. **Pure (unit + Hypothesis, injected clock/rng):** `evaluate_candidate_promotion` precedence; monotonicity (restricting any input never yields a more permissive outcome); never `PROMOTE` with weak identity, existing application/intent, unfinished/failed run, stale fit or halt; ceiling = min. `next_prepare_step` table (DONE before missing profile). `mechanical_review`: only grounded `READY` units accepted; every judgment type stays UNDECIDED (property); any content-hash/profile change invalidates. Authorization reuse predicate (stage/mode, fingerprint, hashes, validity horizon; no-horizon → fresh). Backoff and jitter determinism. Notification key occurrence semantics.
 2. **Persistence:** migration 018 on a fresh database and on a **representative pre-6C database built by `master@20979b9` code** and upgraded; re-run is a no-op; FK and integrity checks. Append-only triggers on every specified history/event table (not on `autonomy_candidate_queue`). Current-by-`seq` projections (enrolments, exception resolutions, notification events). Idempotent settlement (no double charge across completion/`ABANDONED`/recovery). Stale `lease_generation` cannot finalize.
-3. **Services (fake providers from the acceptance fixtures, injected clock):** every step kind, `REUSED`, `ABANDONED`, each error class, three-failure escalation, Retry. Authorization reuse vs fresh; `ALLOW(NONE)` never runs a step. Race injection for pause, unenrol and halt between lease and step (no start) and during a step (truthful finish, nothing further). Missing budget and missing envelope fail closed; overage charged truthfully then blocked; window rollover. Candidate: each revalidation input changed between screening and promotion → no promotion; dedupe → `NOT_ELIGIBLE`; anti-noise; human Promote/Dismiss. System Gate 4: fault-inject each of the eight rechecked conditions → refusal. Latch only on explicit review or reopening a confirmed revision; answering one item does not latch. Propagation wakes in-reach siblings with **zero** sibling writes.
+3. **Services (fake providers from the acceptance fixtures, injected clock):** every step kind, `REUSED`, `ABANDONED`, each error class, escalation on the 4th attempt of a cycle, one-shot Retry (a used retry request cannot reopen another cycle), expired-lease finalization refused even when not retaken. Authorization reuse vs fresh; `ALLOW(NONE)` never runs a step. Race injection for pause, unenrol and halt between lease and step (no start) and during a step (truthful finish, nothing further). Missing budget and missing envelope fail closed; overage charged truthfully then blocked; window rollover. Candidate: each revalidation input changed between screening and promotion → no promotion; dedupe → `NOT_ELIGIBLE`; anti-noise; human Promote/Dismiss. System Gate 4: fault-inject each of the eight rechecked conditions → refusal. Latch only on explicit review or reopening a confirmed revision; answering one item does not latch. Propagation wakes in-reach siblings with **zero** sibling writes.
 4. **Concurrency (threads, separate connections, WAL; each 20×):** two workers on one application or candidate lease; the last budget unit; the promotions cap; two promotions of the same candidate; kill switch racing a tick.
 5. **Acceptance (real workflow, fake portal runner and fake LLMs):** a user-triggered discovery run, then ticks until quiescent: a grounded eligible candidate ends promoted and system-confirmed `PREPARED` (attributed to the system, never the user); a judgment candidate → `NEEDS_USER` → answer → wake → `PREPARED`; weak-identity and already-applied duplicate candidates not promoted; an older application untouched until enrolled; **zero FILL/SUBMIT grants, intents or attempts**; the dossier shows derived state and labelled history; badge counts are correct.
    - **Halt/recovery sequence:** halt active → no new work starts → an in-flight step finishes truthfully → remove halt → still no work → explicit resume-all → fresh PREPARE evaluation → work may resume.
