@@ -13,7 +13,8 @@ SUBJECT_POLICY_SCHEMA = "semantic-subject-policy"
 SUBJECT_POLICY_SCHEMA_VERSION = "semantic-subject-policy.v1"
 DEFAULT_PATH = Path(__file__).with_name("semantic_subject_policy.v1.json")
 SENSITIVE_CLASSES = {"legal_attestation", "demographic", "criminal_record", "health"}
-_ENTRY_KEYS = {"answer_kind", "max_reach", "default_reach", "context_keys", "freshness_days", "submit_eligible", "sensitive"}
+_ENTRY_KEYS = {"answer_kind", "max_reach", "default_reach", "context_keys", "freshness_days", "submit_eligible",
+               "sensitive", "requires_current_profile_basis"}
 
 
 class SubjectPolicyError(ValueError):
@@ -52,6 +53,8 @@ def validate_subject_policy(doc: Any) -> None:
             errors.append(f"{path}.freshness_days: must be null or a positive integer")
         if not isinstance(entry["submit_eligible"], bool):
             errors.append(f"{path}.submit_eligible: must be a boolean")
+        if not isinstance(entry["requires_current_profile_basis"], bool):
+            errors.append(f"{path}.requires_current_profile_basis: must be a boolean")
         if entry["sensitive"] is not None:
             if entry["sensitive"] not in SENSITIVE_CLASSES:
                 errors.append(f"{path}.sensitive: must be null or one of {sorted(SENSITIVE_CLASSES)}")

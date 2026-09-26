@@ -46,7 +46,10 @@ def test_sensitive_required_pauses_optional_omitted():
 
 
 def test_fresh_account_answer_is_submit_ready():
-    d = run(req("notice", "employment.notice_period", candidates=[answer("employment.notice_period")]))
+    # Ruling P: a profile-fact answer needs a checkable basis to be SUBMIT-ready
+    # (the user-asserted case is pinned in the ruling-P tests below).
+    fresh = answer("employment.notice_period", basis_kind="EVIDENCE", basis_at="sha256:a", basis_now="sha256:a")
+    d = run(req("notice", "employment.notice_period", candidates=[fresh]))
     assert d.grantable
 
 
@@ -565,3 +568,42 @@ def test_optional_field_answer_state_chain_grantable_parity_with_no_field_baseli
         d = run(r)
         assert d.effective_capability == baseline.effective_capability
         assert d.grantable == baseline.grantable
+
+
+# ---- ruling P: profile facts need a checkable basis for unattended SUBMIT ----
+
+def _why(d, code="answer_not_submit_ready"):
+    return {dict(r.params).get("why") for r in d.reasons if r.code == code}
+
+
+def test_user_asserted_profile_fact_is_not_submit_ready_but_still_fillable():
+    rtw = answer("work_authorization.right_to_work", context={"country": "GB"})
+    job = {"country": "GB"}
+    d = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[rtw]))
+    assert (d.result, d.effective_capability, d.grantable) == (R.ALLOW, C.FILL, False)
+    assert "profile_basis_unverifiable" in _why(d)
+    assert d.completion_blockers == () and d.require_user_items == ()  # fillable, no question
+    d = run(req("rtw", "work_authorization.right_to_work", job_context=job, candidates=[rtw]),
+            requested_stage=C.FILL)
+    assert d.result is R.ALLOW and d.grantable
+
+
+def test_evidence_based_profile_fact_is_checked_by_basis_hash():
+    ok = answer("work_authorization.right_to_work", context={"country": "GB"},
+                basis_kind="EVIDENCE", basis_at="sha256:a", basis_now="sha256:a")
+    assert run(req("rtw", "work_authorization.right_to_work", job_context={"country": "GB"},
+                   candidates=[ok])).grantable
+
+
+def test_user_asserted_non_profile_subjects_unaffected():
+    assert run(req("why", "motivation.role_type", candidates=[answer("motivation.role_type")])).grantable
+    salary = answer("compensation.salary_expectation", reach=Reach.SEARCH_WORKSPACE, scope_id="sw_1",
+                    context={"currency": "GBP", "region": "UK", "employment_type": "PERMANENT"})
+    assert run(req("sal", "compensation.salary_expectation", candidates=[salary],
+                   job_context={"currency": "GBP", "region": "UK", "employment_type": "PERMANENT"})).grantable
+
+
+def test_optional_user_asserted_profile_fact_is_omitted_without_cap():
+    d = run(req("lic", "licence.driving", required=False, candidates=[answer("licence.driving")]))
+    assert d.grantable and d.effective_capability == C.SUBMIT
+    assert "profile_basis_unverifiable" in _why(d, "optional_omitted")

@@ -53,3 +53,27 @@ def test_invalid_subject_policy_rejected(mutate, message):
 def test_hash_is_stable():
     doc = load_subject_policy()
     assert subject_policy_hash(doc) == subject_policy_hash(copy.deepcopy(doc))
+
+
+PROFILE_FACTS = {"work_authorization.right_to_work", "work_authorization.sponsorship_required", "licence.driving",
+                 "employment.notice_period", "employment.availability_start"}
+
+
+def test_requires_current_profile_basis_baseline():
+    # Ruling P: candidate/profile facts need a checkable basis for unattended
+    # SUBMIT; preferences, free-text motivation and sensitive subjects do not.
+    doc = load_subject_policy()
+    flagged = {k for k, e in doc["subjects"].items() if e["requires_current_profile_basis"]}
+    assert flagged == PROFILE_FACTS
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d["subjects"]["licence.driving"].pop("requires_current_profile_basis"),
+    lambda d: d["subjects"]["licence.driving"].update(requires_current_profile_basis="yes"),
+    lambda d: d["subjects"]["licence.driving"].update(requires_current_profile_basis=None),
+])
+def test_requires_current_profile_basis_is_a_mandatory_boolean(mutate):
+    doc = copy.deepcopy(load_subject_policy())
+    mutate(doc)
+    with pytest.raises(SubjectPolicyError):
+        validate_subject_policy(doc)

@@ -596,6 +596,11 @@ def _submit_blocker(cand: AnswerCandidate, req: RepresentationRequirement, entry
     days = entry["freshness_days"]
     if days is not None and now - cand.confirmed_at > timedelta(days=days):
         return "expired"
+    # Ruling P (spec §7.5): a profile-fact subject's answer is SUBMIT-ready
+    # only if its current factual basis is checkable -- a USER_ASSERTION basis
+    # cannot be checked against the current profile.
+    if entry["requires_current_profile_basis"] and cand.basis_kind == "USER_ASSERTION":
+        return "profile_basis_unverifiable"
     if cand.basis_kind != "USER_ASSERTION" and (
         cand.basis_hash_current is None or cand.basis_hash_current != cand.basis_hash_at_approval
     ):

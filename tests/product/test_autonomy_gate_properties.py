@@ -63,16 +63,23 @@ SENSITIVE_SUBJECT = "demographic.eeo"  # sensitive, submit_eligible=False
 # same states the pinned unit tests in test_autonomy_gate_representation.py do.
 # ---------------------------------------------------------------------------
 
+def _checkable_answer(**kw):
+    # Ruling P: notice period is a profile fact, so only an answer with a
+    # checkable (EVIDENCE, unchanged-hash) basis is SUBMIT-ready. The builders
+    # below vary freshness/contradiction only; the basis stays checkable.
+    return answer(FRESHNESS_SUBJECT, basis_kind="EVIDENCE", basis_at="sha256:basis", basis_now="sha256:basis", **kw)
+
+
 def _req_fresh(key, required):
     return RepresentationRequirement(key=key, subject=FRESHNESS_SUBJECT, required=required,
                                       evidence_available=False,
-                                      candidates=(answer(FRESHNESS_SUBJECT, confirmed_at=NOW),))
+                                      candidates=(_checkable_answer(confirmed_at=NOW),))
 
 
 def _req_expired(key, required):
     return RepresentationRequirement(key=key, subject=FRESHNESS_SUBJECT, required=required,
                                       evidence_available=False,
-                                      candidates=(answer(FRESHNESS_SUBJECT, confirmed_at=NOW - timedelta(days=61)),))
+                                      candidates=(_checkable_answer(confirmed_at=NOW - timedelta(days=61)),))
 
 
 def _req_missing(key, required):
@@ -83,7 +90,7 @@ def _req_missing(key, required):
 def _req_contradicted(key, required):
     return RepresentationRequirement(key=key, subject=FRESHNESS_SUBJECT, required=required,
                                       evidence_available=False,
-                                      candidates=(answer(FRESHNESS_SUBJECT, contradicted=True),))
+                                      candidates=(_checkable_answer(contradicted=True),))
 
 
 def _req_unclassified(key, required):
