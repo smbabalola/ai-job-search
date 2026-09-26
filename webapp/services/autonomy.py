@@ -36,6 +36,13 @@ Deviations from the task-15 brief:
      expires releases the reservations made with it (budgets reserved at
      issuance) -- done in the ledger's revoke_grant/expire_grants. FILL
      grants keep theirs; a consumed grant's are settled by its attempt.
+
+Deviation from the task-16 brief:
+ 10. A human submission recorded while an autonomous attempt holds the
+     CLAIMED intent turns that intent CONFIRMED (record_human_intent). The
+     attempt then may not dispatch (record_click_dispatched ends it
+     EXPIRED_UNCLICKED, reason intent_confirmed_by_human), and releasing or
+     confirming an attempt only moves an intent that is still CLAIMED.
 """
 from __future__ import annotations
 
@@ -308,13 +315,19 @@ def _attempt(conn, attempt_id: str) -> dict[str, Any]:
     return dict(row)
 
 
+def _intent_state(conn, intent_id: str) -> str:
+    return conn.execute("SELECT state FROM submission_intents WHERE id = ?", (intent_id,)).fetchone()["state"]
+
+
 def _release(conn, attempt: dict[str, Any], now: datetime) -> None:
-    set_intent_state(conn, intent_id=attempt["intent_id"], state="RELEASED", now=now)
+    if _intent_state(conn, attempt["intent_id"]) == "CLAIMED":  # never release a human-CONFIRMED intent
+        set_intent_state(conn, intent_id=attempt["intent_id"], state="RELEASED", now=now)
     _settle_reservations(conn, attempt["grant_id"], "RELEASED", now)
 
 
 def _confirm(conn, attempt: dict[str, Any], now: datetime) -> None:
-    set_intent_state(conn, intent_id=attempt["intent_id"], state="CONFIRMED", now=now)
+    if _intent_state(conn, attempt["intent_id"]) == "CLAIMED":
+        set_intent_state(conn, intent_id=attempt["intent_id"], state="CONFIRMED", now=now)
     _settle_reservations(conn, attempt["grant_id"], "CONSUMED", now)
 
 
@@ -324,6 +337,11 @@ def record_click_dispatched(conn, *, attempt_id: str, now: datetime) -> bool:
     def work() -> bool:
         attempt = _attempt(conn, attempt_id)
         if attempt_state(conn, attempt_id) != "AUTHORIZED":
+            return False
+        if _intent_state(conn, attempt["intent_id"]) != "CLAIMED":
+            append_attempt_event(conn, attempt_id=attempt_id, state="EXPIRED_UNCLICKED", source="SERVER",
+                                 evidence={"reason": "intent_confirmed_by_human"}, now=now)
+            _release(conn, attempt, now)
             return False
         if now - parse_utc(attempt["created_at"]) >= CLICK_DISPATCH_TTL:
             append_attempt_event(conn, attempt_id=attempt_id, state="EXPIRED_UNCLICKED", source="SERVER",

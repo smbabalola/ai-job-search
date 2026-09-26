@@ -32,6 +32,7 @@ SEMANTIC_SUBJECT_KEY_MIGRATION_ID = "013_semantic_subject_key"
 DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID = "014_discovery_source_registry"
 AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
 AUTONOMY_CONTRACT_MIGRATION_ID = "016_autonomy_contract"
+AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID = "017_autonomy_human_intent_backfill"
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -77,6 +78,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, _migrate_discovery_source_registry, False),
         (AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID, _migrate_airswift_discovery_source, False),
         (AUTONOMY_CONTRACT_MIGRATION_ID, _migrate_autonomy_contract, False),
+        (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, _migrate_autonomy_human_intent_backfill, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1426,3 +1428,28 @@ def _migrate_autonomy_contract(conn: sqlite3.Connection) -> None:
                 f"BEFORE {action} ON {table} "
                 f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END"
             )
+
+
+def _migrate_autonomy_human_intent_backfill(conn: sqlite3.Connection) -> None:
+    # Applications the user marked applied (or confirmed via handoff) before
+    # Bundle 6B must block autonomous re-application too (spec §10.2).
+    # Idempotent: record_human_intent returns an existing live intent.
+    from datetime import datetime, timezone
+
+    from webapp.persistence.autonomy_ledger import record_human_intent
+
+    now = datetime.now(timezone.utc)
+    applied = conn.execute(
+        "SELECT we.id AS event_id, we.workspace_id, w.account_id FROM workflow_events we "
+        "JOIN workspaces w ON w.id = we.workspace_id WHERE we.new_status = 'applied' ORDER BY we.rowid"
+    ).fetchall()
+    for row in applied:
+        record_human_intent(conn, workspace_id=row["workspace_id"], account_id=row["account_id"],
+                            source="HUMAN_APPLIED", workflow_event_id=row["event_id"], now=now)
+    handoffs = conn.execute(
+        "SELECT s.workspace_id, s.account_id FROM submission_confirmations c "
+        "JOIN handoff_sessions s ON s.id = c.handoff_session_id ORDER BY c.rowid"
+    ).fetchall()
+    for row in handoffs:
+        record_human_intent(conn, workspace_id=row["workspace_id"], account_id=row["account_id"],
+                            source="HUMAN_HANDOFF", now=now)

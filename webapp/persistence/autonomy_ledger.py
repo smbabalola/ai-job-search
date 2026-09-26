@@ -21,7 +21,7 @@ import json
 import secrets
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -333,6 +333,30 @@ def add_intent_override(conn, *, intent_id: str, actor: str, reason: str, now: d
     if commit:
         conn.commit()
     return row
+
+
+def record_human_intent(conn, *, workspace_id: str, account_id: str, source: str,
+                        workflow_event_id: str | None = None, now: datetime | None = None) -> dict[str, Any] | None:
+    """A human submission (handoff confirmation or 'applied') is a CONFIRMED
+    intent, so duplicate prevention spans both paths (spec §10.2). No commit;
+    None when the workspace has no strong identity. Idempotent: an existing
+    CONFIRMED intent is returned unchanged. An autonomous CLAIMED intent
+    (attempt in flight) is turned CONFIRMED -- the human submission is proof
+    for the identity, so the claim must never be released afterwards (the
+    attempt lifecycle refuses to dispatch and never releases a CONFIRMED
+    intent)."""
+    key, _, _ = workspace_identity(conn, workspace_id)
+    if key is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    live = live_intent(conn, account_id=account_id, job_identity_key=key)
+    if live is not None:
+        if live["state"] == "CLAIMED":
+            set_intent_state(conn, intent_id=live["id"], state="CONFIRMED", now=now)
+            return live_intent(conn, account_id=account_id, job_identity_key=key)
+        return live
+    return claim_intent(conn, account_id=account_id, job_identity_key=key, application_workspace_id=workspace_id,
+                        source=source, state="CONFIRMED", workflow_event_id=workflow_event_id, now=now)
 
 
 # ---- attempts --------------------------------------------------------------

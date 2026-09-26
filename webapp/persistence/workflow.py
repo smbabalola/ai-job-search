@@ -11,6 +11,7 @@ from product.application_material_contract import COMPLETION_CONTRACT_VERSION
 from product.application_pack_v2_contract import application_pack_completion_input
 from webapp.application_material import application_material_completion
 from webapp.persistence.artifacts import get_artifact
+from webapp.persistence.autonomy_ledger import record_human_intent
 from webapp.persistence.workspaces import get_workspace
 
 TRACKER_STATUSES = (
@@ -154,6 +155,11 @@ def _record_status_change_reserved(
             "WHERE id = ? AND account_id = ?",
             (new_status, _now(), workspace_id, account_id),
         )
+        if new_status == "applied":
+            # Bundle 6B: a human submission blocks autonomous re-application
+            # to the same durable job identity (spec §10.2).
+            record_human_intent(conn, workspace_id=workspace_id, account_id=account_id,
+                                source="HUMAN_APPLIED", workflow_event_id=event_id)
         if commit:
             conn.commit()
     except Exception:

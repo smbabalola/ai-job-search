@@ -228,6 +228,7 @@ def test_post_002_upgrade_backfills_default_owner_without_data_loss(tmp_path):
         "014_discovery_source_registry",
         "015_airswift_discovery_source",
         "016_autonomy_contract",
+        "017_autonomy_human_intent_backfill",
     }
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     create_account(

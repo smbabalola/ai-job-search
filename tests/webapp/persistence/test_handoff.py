@@ -18,6 +18,7 @@ from webapp.persistence.migrations import (
     DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
     AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
     AUTONOMY_CONTRACT_MIGRATION_ID,
+    AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
 )
 
 
@@ -178,7 +179,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     ):
         conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -192,6 +193,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID,
             AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
             AUTONOMY_CONTRACT_MIGRATION_ID,
+            AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
         ),
     )
     conn.commit()
@@ -238,6 +240,10 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     assert conn.execute(
         "SELECT 1 FROM schema_migrations WHERE id = ?",
         (AUTONOMY_CONTRACT_MIGRATION_ID,),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?",
+        (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,),
     ).fetchone() is not None
     assert conn.execute(
         "SELECT COUNT(*) FROM discovery_source_settings WHERE enabled = 1"
