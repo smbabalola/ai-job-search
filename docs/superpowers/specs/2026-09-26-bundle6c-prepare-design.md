@@ -1,6 +1,6 @@
 # Bundle 6C — Prepare: Design
 
-**Status:** design approved section by section (2026-09-26); this document awaits user review before implementation planning.
+**Status:** approved for implementation planning (2026-09-26).
 **Branch:** `bundle6/6c-prepare` from `master@20979b9` (Bundle 6B merged).
 **Builds on:** `docs/superpowers/specs/2026-09-24-bundle6b-autonomy-contract-design.md` (the "6B spec"). Every 6B invariant and user ruling A–P continues to apply; this spec only adds.
 
