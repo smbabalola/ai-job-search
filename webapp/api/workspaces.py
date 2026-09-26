@@ -7,6 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from product.autonomy_contract import Capability
 from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_dir
 from webapp.services.ownership import AccountScope
 from webapp.services.http_api import (
@@ -19,6 +20,7 @@ from webapp.services.http_api import (
     list_public_extensions,
     understand_job,
 )
+from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 
 router = APIRouter(prefix="/api", tags=["workspaces"])
@@ -128,15 +130,16 @@ def post_fit(
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
-        return {
-            "artifact": fit_job(
-                conn, workspace_id, _semantic_adapter(request), request_id=body.request_id,
-                extension_ids=body.extension_ids, extensions_dir=extensions_dir,
-                account_id=scope.account_id,
-            )
-        }
+        artifact = fit_job(
+            conn, workspace_id, _semantic_adapter(request), request_id=body.request_id,
+            extension_ids=body.extension_ids, extensions_dir=extensions_dir,
+            account_id=scope.account_id,
+        )
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    record_shadow_decision(conn, settings=request.app.state.settings, account_id=scope.account_id,
+                           workspace_id=workspace_id, stage=Capability.PREPARE)
+    return {"artifact": artifact}
 
 
 @router.post("/workspaces/{workspace_id}/application-intelligence")
