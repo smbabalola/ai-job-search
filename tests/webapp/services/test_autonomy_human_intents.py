@@ -123,11 +123,13 @@ def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     noop = lambda conn: None  # noqa: E731
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_contract", noop)
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_human_intent_backfill", noop)
+    monkeypatch.setattr(migrations_module, "_migrate_autonomy_prepare", noop)  # 018 did not exist pre-6B either
     monkeypatch.setattr(workflow_module, "record_human_intent", lambda *a, **k: None)  # pre-6B: no hook
     init_db(db)
     c = connect(db)
     try:
-        c.execute("DELETE FROM schema_migrations WHERE id IN ('016_autonomy_contract', ?)", (BACKFILL,))
+        c.execute("DELETE FROM schema_migrations WHERE id IN ('016_autonomy_contract', ?, '018_autonomy_prepare')",
+                  (BACKFILL,))
         c.commit()
         assert c.execute("SELECT name FROM sqlite_master WHERE name = 'submission_intents'").fetchone() is None
         maker = lambda cn: create_workspace(cn, company="Acme", title="Eng")["id"]  # noqa: E731
