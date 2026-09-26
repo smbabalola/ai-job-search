@@ -144,3 +144,85 @@ def reconcile_approvals(conn, *, settings: Settings, now: datetime) -> int:
         except LookupError:
             continue
     return written
+
+
+# ---- review deltas (spec §11, §11.1) --------------------------------------------------
+
+def open_review_delta(conn, *, account_id: str, application_workspace_id: str, kind: str, answer_key: str | None,
+                      subject: str | None, required: bool, question: str, observed: dict[str, Any], source: str,
+                      now: datetime) -> dict[str, Any]:
+    """Delta intake (the contract 6D-B consumes). One transaction: the delta,
+    its DELTA_OPENED and, for a classification, the predecessor's
+    DELTA_RESOLVED {reason: classified}. A retried classification writes
+    nothing."""
+    from product.review_contract import FIELD_DELTA_KINDS
+    from webapp.persistence.migrations import DELTA_KINDS
+    from webapp.persistence.workspaces import get_workspace
+    ws = application_workspace_id
+    if kind not in DELTA_KINDS:
+        raise ReviewRefused("unknown_delta_kind")
+    field = kind in FIELD_DELTA_KINDS
+    if field and subject and not answer_key:
+        answer_key = f"subject:{subject}"
+    if not field:
+        answer_key, subject = None, None  # non-field deltas never become fields
+
+    def work() -> dict[str, Any]:
+        workspace = get_workspace(conn, ws, account_id=account_id)
+        if workspace is None or workspace.get("kind") != "job":
+            raise LookupError(ws)
+        nonlocal required
+        if kind == "OMIT_FIELD_REQUIRED":
+            if not answer_key or ra.current_dispositions(conn, ws).get(answer_key) != "OMIT":
+                raise ReviewRefused("not_an_omitted_field")
+            required = True
+        field_key = (observed or {}).get("field_key")
+        open_now = ra.open_deltas(conn, ws)
+        predecessors = []
+        if field and subject and field_key:
+            for d in open_now:  # idempotent retry of the same classification
+                if d["kind"] in FIELD_DELTA_KINDS and d["subject"] == subject \
+                        and d["observed"].get("field_key") == field_key:
+                    return d
+            predecessors = [d for d in open_now if d["kind"] in FIELD_DELTA_KINDS and d["subject"] is None
+                            and d["observed"].get("field_key") == field_key]
+        delta = ra.insert_delta(conn, account_id=account_id, application_workspace_id=ws, kind=kind,
+                                answer_key=answer_key, subject=subject, required=required, question=question,
+                                observed=observed or {}, source=source, now=now)
+        ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="DELTA_OPENED",
+                        binding_hash=None, detail={"delta_id": delta["id"]}, actor="system", now=now)
+        for p in predecessors:
+            ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="DELTA_RESOLVED",
+                            binding_hash=None, detail={"delta_id": p["id"], "reason": "classified",
+                                                       "successor_delta_id": delta["id"]},
+                            actor="system", now=now)
+        return {**delta, "observed": observed or {}}
+    return run_immediate(conn, work)
+
+
+_NON_FIELD_SECTIONS = {"TARGET_CHANGE": lambda o: ["apply_target"],
+                       "DOCUMENT_CONVERSION": lambda o: [f"document:{o.get('kind')}"],
+                       "NEW_UPLOAD": lambda o: [f"document:{o.get('kind')}"]}
+
+
+def review_view_mode(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                     now: datetime) -> dict[str, Any]:
+    """first_review | delta_only | full (spec §11 R2, §11.1): delta-only only
+    when the hashes prove every non-delta component unchanged and no non-field
+    delta is involved."""
+    from product.review_contract import FIELD_DELTA_KINDS, delta_only, effective_delta_key
+    ws = application_workspace_id
+    latest = ra.latest_approval(conn, ws)
+    state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
+    deltas = ra.open_deltas(conn, ws)
+    field_keys = sorted(effective_delta_key(d) for d in deltas if d["kind"] in FIELD_DELTA_KINDS)
+    if latest is None or state.binding is None:
+        return {"mode": "first_review", "changed_sections": [], "delta_keys": field_keys, "previous_hash": None}
+    only, other = delta_only(latest["binding"], state.binding, field_keys)
+    changed = set(other)
+    non_field = [d for d in deltas if d["kind"] not in FIELD_DELTA_KINDS]
+    for d in non_field:
+        changed |= set(_NON_FIELD_SECTIONS[d["kind"]](d["observed"]))
+    mode = "delta_only" if only and not non_field else "full"
+    return {"mode": mode, "changed_sections": sorted(changed), "delta_keys": field_keys,
+            "previous_hash": latest["binding_hash"]}
