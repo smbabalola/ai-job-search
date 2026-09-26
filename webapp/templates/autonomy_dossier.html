@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Autonomy dossier · {{ dossier.company }}{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Application dossier</p>
+  <h1>{{ dossier.title }} — {{ dossier.company }}</h1>
+  <p>Everything autonomy decided and did for this application. <a href="/api/workspaces/{{ dossier.application_workspace_id }}/autonomy/dossier">Export JSON</a></p></div></section>
+<section class="panel"><div class="panel-heading"><h2>Decisions</h2></div>
+  {% for d in dossier.decisions %}<article class="evidence-row">
+    <div><strong>{{ d.requested_stage }} · {{ d.mode }} → {{ d.result }}{% if d.deny_reason %} ({{ d.deny_reason }}){% endif %}</strong>
+      <p>Effective capability {{ d.effective_capability }} · {{ d.created_at }}</p>
+      <ul>{% for r in d.reasons %}<li><code>{{ r.code }}</code> {{ r.params }}</li>{% endfor %}</ul></div>
+  </article>{% else %}<p>No autonomy decisions yet.</p>{% endfor %}
+</section>
+<section class="panel"><div class="panel-heading"><h2>Submissions</h2></div>
+  {% for a in dossier.attempts %}<article class="evidence-row"><div><strong>Attempt {{ a.id }}</strong>
+    <ol>{% for e in a.events %}<li>{{ e.state }} · {{ e.source }} · {{ e.created_at }}</li>{% endfor %}</ol></div></article>
+  {% else %}<p>No submission attempts.</p>{% endfor %}
+</section>
+<section class="panel"><div class="panel-heading"><h2>What was authorized for the form</h2></div>
+  {% for g in dossier.grants %}<article class="evidence-row"><div><strong>{{ g.stage }} grant · {{ g.status }}</strong>
+    {% if g.binding.fill_manifest %}<ul>{% for page in g.binding.fill_manifest.pages %}{% for entry in page.entries %}
+      <li><code>{{ entry.page_field_key }}</code> ← {{ entry.source.kind }} {{ entry.source.ref }} ({{ entry.transform_id }})</li>
+    {% endfor %}{% endfor %}</ul>{% endif %}</div></article>
+  {% else %}<p>No grants issued.</p>{% endfor %}
+</section>
+{% endblock %}
