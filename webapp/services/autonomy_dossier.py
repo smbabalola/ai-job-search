@@ -158,4 +158,26 @@ def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_work
         step = next_prepare_step(snapshot)
         state.update(next=step.step.value if step.step else step.kind, reason=step.reason or None)
     dossier["current_state_derived"] = state
+    dossier["approvals"] = _approvals_section(conn, ws)
     return dossier
+
+
+def _approvals_section(conn, ws: str) -> dict[str, Any]:
+    """6D-A: approvals with the components that changed between successive
+    bindings, review deltas and the review event history (all by seq)."""
+    from product.review_contract import invalidation_reasons
+    from webapp.persistence import review_approval as ra
+    rows = conn.execute("SELECT id FROM application_approvals WHERE application_workspace_id = ? ORDER BY seq",
+                        (ws,)).fetchall()
+    approvals, previous = [], None
+    for row in rows:
+        approval = ra.get_approval(conn, row["id"])
+        approvals.append({
+            "id": approval["id"], "binding_hash": approval["binding_hash"], "batch_id": approval["batch_id"],
+            "actor": approval["actor"], "created_at": approval["created_at"],
+            "supersedes_id": approval["supersedes_id"], "resolved_delta_ids": approval["resolved_delta_ids"],
+            "changed_since_previous": invalidation_reasons(previous["binding"], approval["binding"])
+            if previous else [],
+        })
+        previous = approval
+    return {"approvals": approvals, "deltas": ra.list_deltas(conn, ws), "events": ra.events(conn, ws)}

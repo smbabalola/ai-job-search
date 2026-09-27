@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% set r = review.reviewable %}
+{% set mode = review.view_mode %}
+{% set changed = mode.changed_sections %}
+{% block title %}Review application · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Prepared application</p><h1>Review and approve</h1>
+  <p>State: <strong data-review-state>{{ review.state.state }}</strong>{% if review.state.reasons %} · {{ review.state.reasons | join(", ") }}{% endif %}</p>
+  <p data-copy>Filling does not submit. Submission will ask you separately.</p></div></section>
+
+{% if mode.mode == "delta_only" %}
+<section class="panel" data-delta-only-banner>
+  <p><strong>Only the new questions need you.</strong> Everything else is unchanged from your previous approval
+    (<code>{{ mode.previous_hash }}</code>).</p>
+  <ul>{% for key in mode.delta_keys %}<li><code>{{ key }}</code></li>{% endfor %}</ul>
+</section>
+{% elif changed %}
+<section class="panel" data-changed-sections><p>Changed since your previous approval:
+  {% for s in changed %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p></section>
+{% endif %}
+
+{% if r %}
+<section class="panel" data-review-section="job"{% if "job" in changed %} data-changed{% endif %}>
+  <div class="panel-heading"><h2>Job</h2></div>
+  <p>Identity <code>{{ r.job_identity_key or "none" }}</code> ({{ r.identity_strength }}) · posting <code>{{ r.job_posting_content_id }}</code></p>
+</section>
+<section class="panel" data-review-section="target"{% if "apply_target" in changed %} data-changed{% endif %}>
+  <div class="panel-heading"><h2>Where it will be sent</h2></div>
+  {% if r.target_url %}<p><code>{{ r.target_url }}</code> — {{ provenance_words.get(r.target_provenance, r.target_provenance) }}</p>
+  {% else %}<p>There is no known apply target yet.</p>{% endif %}
+</section>
+<section class="panel" data-review-section="documents">
+  <div class="panel-heading"><h2>Documents</h2></div>
+  {% if not review.binding_hash %}<p data-save-guidance>Save your document changes to review the exact files.</p>{% endif %}
+  {% for d in r.documents %}<article class="evidence-row" data-document="{{ d.kind }}"{% if ("document:" ~ d.kind) in changed %} data-changed{% endif %}>
+    <div><strong>{{ d.kind | replace("_", " ") | capitalize }}</strong> · {{ d.byte_length }} bytes · <code>{{ d.sha256 }}</code><br>
+      {% if d.origin == "ai_generated" %}AI-generated from your reviewed evidence{% else %}Your document, not content-verified by JobSearch{% endif %}
+      <p>
+        <button class="button secondary" type="button" data-action="preview" data-kind="{{ d.kind }}">Preview</button>
+        <a href="/api/workspaces/{{ ws }}/application-documents/{{ d.document_version_id }}/download">Download exact file</a>
+      </p>
+      <form data-action="replace" data-kind="{{ d.kind }}" data-revision="{{ revisions.get(d.kind, 0) }}"><input type="file" name="file" accept=".docx">
+        <button class="button secondary" type="submit">Replace with revised file</button></form>
+      <div data-preview-for="{{ d.kind }}" hidden></div>
+    </div></article>{% endfor %}
+  <button class="button" type="button" data-action="save">Save changes</button>
+</section>
+<section class="panel" data-review-section="claims">
+  <div class="panel-heading"><h2>Claims and where they come from</h2></div>
+  {% for d in r.documents %}{% for c in d.claims %}<p><code>{{ c.claim_id }}</code> — {{ c.label | replace("_", " ") }}
+    {% for e in c.evidence %}<code>{{ e.ref }}</code>{% endfor %}</p>{% endfor %}{% endfor %}
+  {% if not r.documents | selectattr("claims") | list %}<p>Your own documents are shown as a whole (not content-verified).</p>{% endif %}
+</section>
+<section class="panel" data-review-section="fields">
+  <div class="panel-heading"><h2>Planned answers</h2></div>
+  {% for f in r.fields %}<article class="evidence-row" data-field="{{ f.answer_key }}"{% if ("field:" ~ f.answer_key) in changed or f.answer_key in mode.delta_keys %} data-changed{% endif %}>
+    <div><strong>{{ f.question }}</strong>{% if f.required %} (required){% endif %}<br>
+      {% if f.disposition == "OMIT" %}Leave blank{% elif f.display_value %}{{ f.display_value }}{% else %}<em>No answer yet</em>{% endif %}
+      {% if f.provenance_label %} · {{ f.provenance_label | replace("_", " ") }}{% endif %}{% if f.reach %} · {{ f.reach }}{% endif %}{% if f.freshness %} · {{ f.freshness }}{% endif %}
+      <form data-action="answer" data-key="{{ f.answer_key }}"><input name="value" placeholder="Your answer">
+        <button class="button secondary" type="submit">Save answer</button></form>
+      {% if not f.required %}<button class="button secondary" type="button" data-action="omit" data-key="{{ f.answer_key }}">Leave blank</button>{% endif %}
+    </div></article>{% else %}<p>No questions are known for this application yet.</p>{% endfor %}
+</section>
+<section class="panel" data-review-section="warnings">
+  <div class="panel-heading"><h2>Warnings</h2></div>
+  {% for w in r.warnings %}<p data-warning-level="{{ w.level }}"><strong>{{ w.level }}</strong> {{ w.message }}
+    {% if w.level == "ATTENTION" and not w.acknowledged %}<button class="button secondary" type="button" data-action="acknowledge" data-key="{{ w.key }}">Acknowledge</button>{% elif w.acknowledged %} (acknowledged){% endif %}</p>
+  {% else %}<p>No warnings.</p>{% endfor %}
+</section>
+{% endif %}
+<section class="panel" data-review-section="actions">
+  <p>Filling does not submit. Submission will ask you separately.</p>
+  <button class="button" type="button" data-action="approve"{% if displayed_binding_hash %} data-displayed-binding-hash="{{ displayed_binding_hash }}"{% else %} disabled{% endif %}>Approve for filling</button>
+  <button class="button secondary" type="button" data-action="revoke">Revoke approval</button>
+</section>
+<script>
+(function () {
+  const base = "/api/workspaces/{{ ws }}/review";
+  async function send(path, init) {
+    const r = await fetch(base + path, Object.assign({method: "POST"}, init || {}));
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); return; }
+    window.location.reload();
+  }
+  function json(body) { return {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}; }
+  document.querySelectorAll("[data-action]").forEach(function (el) {
+    const action = el.dataset.action;
+    const handler = function (event) {
+      if (event) { event.preventDefault(); }
+      if (action === "approve") { send("/approve", json({displayed_binding_hash: el.dataset.displayedBindingHash})); }
+      else if (action === "revoke") { send("/revoke"); }
+      else if (action === "save") { send("/save"); }
+      else if (action === "acknowledge") { send("/warnings/ack", json({warning_key: el.dataset.key})); }
+      else if (action === "omit") { send("/fields/" + encodeURIComponent(el.dataset.key) + "/disposition", json({disposition: "OMIT"})); }
+      else if (action === "answer") { send("/answers", json({answer_key: el.dataset.key, value: el.elements.value.value, reach: "ACCOUNT"})); }
+      else if (action === "replace") {
+        const data = new FormData(el);
+        data.append("expected_revision", el.dataset.revision);  // the revision this page showed
+        send("/documents/" + el.dataset.kind, {body: data});
+      }
+      else if (action === "preview") {
+        fetch(base + "/documents/" + el.dataset.kind + "/preview").then(function (r) { return r.json(); }).then(function (p) {
+          const box = document.querySelector('[data-preview-for="' + el.dataset.kind + '"]');
+          box.textContent = (p.paragraphs || []).map(function (x) { return x.text; }).join("\n");
+          box.hidden = false;
+        });
+      }
+    };
+    el.addEventListener(el.tagName === "FORM" ? "submit" : "click", handler);
+  });
+})();
+</script>
+{% endblock %}

@@ -214,3 +214,28 @@ def post_delta(workspace_id: str, body: DeltaBody, conn: sqlite3.Connection = De
         conn, account_id=scope.account_id, application_workspace_id=workspace_id, kind=body.kind,
         answer_key=body.answer_key, subject=body.subject, required=body.required, question=body.question,
         observed=body.observed, source=body.source, now=_now()))
+
+
+@router.get("/documents/{kind}/preview")
+def get_preview(workspace_id: str, kind: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """A read-only rendering of the currently selected document's exact bytes."""
+    from webapp.persistence.application_documents import get_document_version, get_selection
+    from webapp.services.docx_preview import docx_paragraphs
+    from webapp.services.document_blob_store import DocumentBlobStore
+
+    def action():
+        review_state(conn, settings=request.app.state.settings, account_id=scope.account_id,
+                     application_workspace_id=workspace_id, now=_now())  # ownership -> 404
+        selection = get_selection(conn, workspace_id, kind, account_id=scope.account_id)
+        document = get_document_version(conn, selection["document_version_id"], account_id=scope.account_id) \
+            if selection else None
+        if document is None:
+            raise LookupError(kind)
+        data = DocumentBlobStore(request.app.state.settings.documents_root).read(document)
+        try:
+            paragraphs = docx_paragraphs(data)
+        except ValueError as exc:
+            raise ReviewRefused("not_previewable") from exc
+        return {"document_version_id": document["id"], "sha256": document["sha256"], "paragraphs": paragraphs}
+    return call(action)

@@ -35,8 +35,8 @@
 <section class="panel" data-inbox-section="ready">
   <div class="panel-heading"><h2>Ready</h2></div>
   {% for e in inbox.ready %}<article class="evidence-row" data-inbox-entry="PREPARED">
-    <div><strong>Application pack system-confirmed</strong>
-      <p><a href="/workspaces/{{ e.subject_id }}">Open application</a> · <a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p></div>
+    <div><strong>Ready for review</strong>
+      <p><a href="/workspaces/{{ e.subject_id }}/review">Review the application</a> · <a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p></div>
   </article>{% else %}<p>Nothing new is ready.</p>{% endfor %}
 </section>
 <script>
