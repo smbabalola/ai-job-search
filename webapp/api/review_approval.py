@@ -25,7 +25,8 @@ from webapp.services import review_answers, review_approval, review_documents
 from webapp.services.document_blob_store import DocumentBlobError
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
-from webapp.services.review_application import ReviewRefused, review_snapshot, review_state
+from webapp.persistence.application_documents import get_selection
+from webapp.services.review_application import KINDS, ReviewRefused, review_snapshot, review_state
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
 
@@ -119,10 +120,15 @@ def review_payload(conn, *, settings, account_id: str, workspace_id: str) -> dic
         mode = review_approval.review_view_mode(conn, settings=settings, account_id=account_id,
                                                 application_workspace_id=workspace_id, now=now)
         drafts = review_documents.newer_drafts(conn, account_id=account_id, application_workspace_id=workspace_id)
+        # The expected_revision the page's document controls send: from this same
+        # snapshot, so a stale page is refused rather than acting on unseen changes.
+        revisions = {kind: (get_selection(conn, workspace_id, kind, account_id=account_id) or {}).get("revision", 0)
+                     for kind in KINDS}
     finally:
         if owns_transaction:
             conn.rollback()  # end the read transaction; this path never writes
     return {"reviewable": jsonable(reviewable), "binding_hash": state.binding_hash, "newer_drafts": drafts,
+            "selection_revisions": revisions,
             "state": {"state": state.state, "reasons": list(state.reasons), "blocking": list(state.blocking),
                       "binding_matches": state.binding_matches, "approval_effective": state.approval_effective},
             "view_mode": mode}

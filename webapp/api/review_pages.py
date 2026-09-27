@@ -45,9 +45,8 @@ def review_page(workspace_id: str, request: Request, conn: sqlite3.Connection = 
                                                      actor=scope.account_id, now=_now())
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="not found") from exc
-    from webapp.persistence.application_documents import get_selection
-    revisions = {kind: (get_selection(conn, workspace_id, kind, account_id=scope.account_id) or {}).get("revision", 0)
-                 for kind in ("cv", "cover_letter")}
+    # Document controls carry the revisions of the rendered snapshot, never a later read.
     return request.app.state.templates.TemplateResponse(request, "review_application.html", {
-        "ws": workspace_id, "review": payload, "displayed_binding_hash": presented, "revisions": revisions,
+        "ws": workspace_id, "review": payload, "displayed_binding_hash": presented,
+        "revisions": payload["selection_revisions"],
         "provenance_words": PROVENANCE_WORDS})

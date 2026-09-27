@@ -261,3 +261,47 @@ def test_a_change_inside_payload_derivation_offers_no_approval(ui, monkeypatch):
     assert "data-displayed-binding-hash" not in html
     assert re.search(r'data-review-action="approve"[^>]*disabled', html)
     assert _presented(world) == []
+
+
+def test_document_controls_carry_the_rendered_snapshots_revision(ui, monkeypatch):
+    """A selection change landing after the page is presented must not leak a
+    newer expected_revision into the rendered controls: the stale page's
+    Replace / Use the new draft are then refused, never applied."""
+    from tests.webapp.services.review_fixtures import diff_counts, table_counts
+    from webapp.services import review_approval as svc
+    from webapp.services import review_documents as rd
+    client, world = ui
+    _regenerate(world)  # so Use the new draft is offered for the cv
+    shown = world.selection("cv")
+    real = svc.record_presented
+
+    def presented_then_other_tab_moves_the_cv(*a, **k):
+        out = real(*a, **k)
+        rd.select_document(world.conn, settings=world.settings, account_id=V2_ACCOUNT,
+                           application_workspace_id=world.ws, kind="cv",
+                           document_version_id=shown["document_version_id"], expected_revision=shown["revision"],
+                           actor="u", now=NOW)  # another tab: a new selection revision
+        return out
+    monkeypatch.setattr(svc, "record_presented", presented_then_other_tab_moves_the_cv)
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    moved = world.selection("cv")
+    assert moved["revision"] == shown["revision"] + 1
+    replace_rev = re.search(r'data-review-action="replace" data-kind="cv" data-revision="(\d+)"', html).group(1)
+    draft = re.search(r'data-review-action="use-new-draft"\s+data-kind="cv"\s+data-version="([^"]+)"'
+                      r'\s+data-revision="(\d+)"', html)
+    assert int(replace_rev) == int(draft.group(2)) == shown["revision"]  # the rendered snapshot's revision
+
+    before = table_counts(world.conn)
+    replaced = client.post(f"/api/workspaces/{world.ws}/review/documents/cv", data={"expected_revision": replace_rev},
+                           files={"file": ("cv.docx", docx_bytes("stale"), "application/octet-stream")})
+    selected = client.post(f"/api/workspaces/{world.ws}/review/documents/cv/select",
+                           json={"document_version_id": draft.group(1), "expected_revision": int(draft.group(2))})
+    assert (replaced.status_code, replaced.json()["detail"]) == (409, "stale_selection")
+    assert (selected.status_code, selected.json()["detail"]) == (409, "stale_selection")
+    assert diff_counts(before, table_counts(world.conn)) == {} and world.selection("cv") == moved
+
+
+def test_the_state_api_exposes_the_snapshot_revisions(ui):
+    client, world = ui
+    body = client.get(f"/api/workspaces/{world.ws}/review/state").json()
+    assert body["selection_revisions"] == {k: world.selection(k)["revision"] for k in ("cv", "cover_letter")}
