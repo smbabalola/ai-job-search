@@ -33,7 +33,7 @@ def _requirements(conn, ws: str) -> dict[str, dict[str, Any]]:
     def add(key: str, subject: str | None, required: bool, question: str,
             job_context: Mapping[str, Any]) -> dict[str, Any]:
         r = reqs.setdefault(key, {"subject": subject, "required": False, "questions": [], "blocker_ids": [],
-                                  "unclassified": subject is None, "job_context": {}})
+                                  "unclassified": subject is None, "job_context": {}, "declaration": False})
         r["required"] = r["required"] or required
         if question not in r["questions"]:
             r["questions"].append(question)
@@ -52,8 +52,19 @@ def _requirements(conn, ws: str) -> dict[str, dict[str, Any]]:
         if d["kind"] not in FIELD_DELTA_KINDS or d["id"] in classified_away:
             continue
         required = bool(d["required"]) or d["kind"] == "OMIT_FIELD_REQUIRED"
-        add(effective_delta_key(d), d["subject"], required, d["question"], d["observed"].get("job_context") or {})
+        r = add(effective_delta_key(d), d["subject"], required, d["question"], d["observed"].get("job_context") or {})
+        r["declaration"] = r["declaration"] or d["kind"] == "DECLARATION"
     return reqs
+
+
+def requires_application_answer(conn, ws: str, answer_key: str) -> bool:
+    """Spec R4: a requirement that includes a DECLARATION delta needs an
+    explicit answer for this application; no standing answer satisfies it."""
+    return bool(_requirements(conn, ws).get(answer_key, {}).get("declaration"))
+
+
+def _this_application_only(candidates, ws: str):
+    return tuple(c for c in candidates if c.reach is Reach.APPLICATION and c.scope_id == ws)
 
 
 def pending_proposals(conn, ws: str) -> list[dict[str, Any]]:
@@ -146,6 +157,8 @@ def planned_fields(conn, *, account_id: str, application_workspace_id: str, prof
                                               WarningLevel.BLOCKING, f"{question}: a proposed answer awaits you"))
         cands = answer_candidates(conn, account_id=account_id, workspace_id=ws, subject=subject,
                                   profile_payload=profile_payload)
+        if r["declaration"]:  # R4: standing answers never satisfy a declaration
+            cands = _this_application_only(cands, ws)
         req = RepresentationRequirement(key=key, subject=subject, required=required, evidence_available=False,
                                         job_context=dict(r["job_context"]), candidates=cands)
         usable, contradicted = usable_answer_candidates(

@@ -167,3 +167,111 @@ def test_each_action_and_its_event_are_atomic(v2_chain, monkeypatch):
         with pytest.raises(RuntimeError):
             action()
         assert diff_counts(before, table_counts(v2_chain.conn)) == {}
+
+
+# ---- final-review corrections: optional answers decide ANSWER; R4 declarations ----
+
+from tests.webapp.services.review_fixtures import add_contact_claim, answer, open_delta  # noqa: E402
+
+START = "employment.availability_start"
+
+
+def _state_blocking(world, key):
+    return [b for b in world.state().blocking if key in b]
+
+
+def test_answering_an_optional_question_decides_it_as_answer(v2_chain):
+    d = open_delta(v2_chain, subject=START, required=False)
+    before = len(_events(v2_chain, "FIELD_DISPOSITION_SET"))
+    _answer(v2_chain, "2026-11-01", key=d["answer_key"], reach=Reach.APPLICATION)
+    field = _field(v2_chain, d["answer_key"])
+    assert field.disposition == "ANSWER" and field.source_kind == "APPROVED_ANSWER" and field.value_hash
+    assert not _state_blocking(v2_chain, d["answer_key"])
+    [event] = _events(v2_chain, "FIELD_DISPOSITION_SET")[before:]
+    assert event["detail"] == {"answer_key": d["answer_key"], "disposition": "ANSWER"}
+    v2_chain.make_approvable()
+    assert v2_chain.approve()["approval_id"] and v2_chain.state().approval_effective
+
+
+def test_a_failed_disposition_audit_rolls_back_the_answer_and_the_disposition(v2_chain, monkeypatch):
+    d = open_delta(v2_chain, subject=START, required=False)
+    real = ra.record_event
+
+    def fail_on_disposition(conn, **kw):
+        if kw["event"] == "FIELD_DISPOSITION_SET":
+            raise RuntimeError("audit write failed")
+        return real(conn, **kw)
+    monkeypatch.setattr(ra, "record_event", fail_on_disposition)
+    before = table_counts(v2_chain.conn)
+    with pytest.raises(RuntimeError):
+        _answer(v2_chain, "2026-11-01", key=d["answer_key"], reach=Reach.APPLICATION)
+    assert diff_counts(before, table_counts(v2_chain.conn)) == {}
+    assert _field(v2_chain, d["answer_key"]).disposition is None
+
+
+def test_a_required_answer_records_no_disposition(v2_chain):
+    blocker(v2_chain.conn, v2_chain.ws, NOTICE)
+    _answer(v2_chain, "1 month")
+    assert _events(v2_chain, "FIELD_DISPOSITION_SET") == [] and _field(v2_chain).disposition == "ANSWER"
+
+
+def test_an_optional_profile_contact_can_be_used_or_left_blank(v2_chain):
+    add_contact_claim(v2_chain, "location", "London")
+    key = "contact:location"
+    assert _field(v2_chain, key).disposition is None and _state_blocking(v2_chain, key)
+    with pytest.raises(ReviewRefused) as caught:
+        _answer(v2_chain, "Paris", key=key)
+    assert caught.value.reason == "evidence_field"
+    rv.set_field_disposition(v2_chain.conn, settings=v2_chain.settings, account_id=V2_ACCOUNT,
+                             application_workspace_id=v2_chain.ws, answer_key=key, disposition="ANSWER", actor="u",
+                             now=NOW)
+    used = _field(v2_chain, key)
+    assert (used.disposition, used.source_kind, used.source_ref) == ("ANSWER", "EVIDENCE", "clm_contact_location")
+    bound = next(f for f in v2_chain.state().binding["fields"] if f["answer_key"] == key)
+    assert bound["source_kind"] == "EVIDENCE" and bound["value_hash"] == used.value_hash
+    rv.set_field_disposition(v2_chain.conn, settings=v2_chain.settings, account_id=V2_ACCOUNT,
+                             application_workspace_id=v2_chain.ws, answer_key=key, disposition="OMIT", actor="u",
+                             now=NOW)
+    assert _field(v2_chain, key).disposition == "OMIT" and not _state_blocking(v2_chain, key)
+
+
+def test_a_standing_answer_never_satisfies_a_declaration(v2_chain):
+    answer(v2_chain.conn, NOTICE, "1 month")  # ACCOUNT reach, non-sensitive subject
+    v2_chain.conn.commit()
+    d = open_delta(v2_chain, kind="DECLARATION", subject=NOTICE, required=True)
+    field = _field(v2_chain, d["answer_key"])
+    assert field.disposition is None and field.source_ref is None
+    assert _state_blocking(v2_chain, f"field_unanswered:{d['answer_key']}")
+
+
+def test_a_declaration_answer_is_stored_for_this_application_only(v2_chain):
+    from tests.webapp.services.test_review_bulk import _second
+    standing = answer(v2_chain.conn, NOTICE, "1 month")
+    v2_chain.conn.commit()
+    other = _second(v2_chain)
+    d = open_delta(v2_chain, kind="DECLARATION", subject=NOTICE, required=True)
+    out = _answer(v2_chain, "2 months", key=d["answer_key"], reach=Reach.ACCOUNT)  # ACCOUNT is requested
+    rows = {a["id"]: a for a in current_approved_answers(v2_chain.conn, account_id=V2_ACCOUNT, subject=NOTICE)}
+    mine = rows[out["approved_answer_id"]]
+    assert (mine["reach"], mine["scope_id"]) == ("APPLICATION", v2_chain.ws)
+    assert standing["id"] in rows and rows[standing["id"]]["value"] == "1 month"  # never widened or superseded
+    assert _field(v2_chain, d["answer_key"]).source_ref == out["approved_answer_id"]
+    # Another application's declaration cannot use it.
+    od = open_delta(other, kind="DECLARATION", subject=NOTICE, required=True, field_key="q9")
+    assert next(f for f in other.reviewable().fields if f.answer_key == od["answer_key"]).source_ref is None
+    # The declaration now resolves on approval.
+    v2_chain.make_approvable()
+    resolved = v2_chain.approve()["resolved_delta_ids"]
+    assert resolved == [d["id"]] and ra.open_deltas(v2_chain.conn, v2_chain.ws) == []
+
+
+def test_accepting_a_proposal_for_a_declaration_is_per_application(v2_chain):
+    b = blocker(v2_chain.conn, v2_chain.ws, NOTICE)
+    open_delta(v2_chain, kind="DECLARATION", subject=NOTICE, required=True)
+    proposal = save_proposed_answer(v2_chain.conn, blocker_id=b["id"], subject=NOTICE, value="1 month", now=NOW)
+    out = rv.accept_proposal(v2_chain.conn, settings=v2_chain.settings, account_id=V2_ACCOUNT,
+                             application_workspace_id=v2_chain.ws, proposal_id=proposal["id"], edited_value=None,
+                             reach=Reach.ACCOUNT, actor="u", now=NOW)
+    row = next(a for a in current_approved_answers(v2_chain.conn, account_id=V2_ACCOUNT, subject=NOTICE)
+               if a["id"] == out["approved_answer_id"])
+    assert (row["reach"], row["scope_id"]) == ("APPLICATION", v2_chain.ws)

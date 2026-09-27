@@ -108,7 +108,8 @@ def review_payload(conn, *, settings, account_id: str, workspace_id: str) -> dic
     state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=workspace_id, now=now)
     mode = review_approval.review_view_mode(conn, settings=settings, account_id=account_id,
                                             application_workspace_id=workspace_id, now=now)
-    return {"reviewable": jsonable(reviewable), "binding_hash": state.binding_hash,
+    drafts = review_documents.newer_drafts(conn, account_id=account_id, application_workspace_id=workspace_id)
+    return {"reviewable": jsonable(reviewable), "binding_hash": state.binding_hash, "newer_drafts": drafts,
             "state": {"state": state.state, "reasons": list(state.reasons), "blocking": list(state.blocking),
                       "binding_matches": state.binding_matches, "approval_effective": state.approval_effective},
             "view_mode": mode}

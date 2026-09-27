@@ -108,14 +108,16 @@ def _last_selection_basis(conn, ws: str, kind: str, document_version_id: str) ->
     return basis
 
 
-def newer_draft_warnings(conn, *, account_id: str, application_workspace_id: str) -> tuple[ReviewWarning, ...]:
-    """ATTENTION when the current AI generation offers a version other than the
-    selected one (never by rowid or time; the selection is never changed)."""
+def newer_drafts(conn, *, account_id: str, application_workspace_id: str) -> dict[str, dict[str, str]]:
+    """kind -> {selected_version_id, current_ai_version_id} for each kind where
+    the current AI generation (its application_document_generation pointer)
+    offers a version other than the selected one. Read only: the selection is
+    never changed; the review page offers "Use the new draft" from this."""
     ws = application_workspace_id
     generation_id = _current_generation_id(conn, ws)
     if generation_id is None:
-        return ()
-    out = []
+        return {}
+    out = {}
     for kind in KINDS:
         selection = get_selection(conn, ws, kind, account_id=account_id)
         if selection is None:
@@ -129,11 +131,16 @@ def newer_draft_warnings(conn, *, account_id: str, application_workspace_id: str
         selected = get_document_version(conn, selection["document_version_id"], account_id=account_id)
         if selected is None or selected["id"] == current_ai["id"]:
             continue
-        if selected["origin"] == "ai_generated" or \
-                _last_selection_basis(conn, ws, kind, selected["id"]) != generation_id:
-            out.append(ReviewWarning(
-                warning_key("newer_ai_draft", kind, {"selected_version_id": selected["id"],
-                                                     "current_ai_version_id": current_ai["id"]}),
-                WarningLevel.ATTENTION, f"A newer AI draft of your {kind.replace('_', ' ')} is available; "
-                                        "your version is kept"))
-    return tuple(out)
+        if selected["origin"] == "ai_generated" or                 _last_selection_basis(conn, ws, kind, selected["id"]) != generation_id:
+            out[kind] = {"selected_version_id": selected["id"], "current_ai_version_id": current_ai["id"]}
+    return out
+
+
+def newer_draft_warnings(conn, *, account_id: str, application_workspace_id: str) -> tuple[ReviewWarning, ...]:
+    """ATTENTION when the current AI generation offers a version other than the
+    selected one (never by rowid or time; the selection is never changed)."""
+    return tuple(
+        ReviewWarning(warning_key("newer_ai_draft", kind, draft), WarningLevel.ATTENTION,
+                      f"A newer AI draft of your {kind.replace('_', ' ')} is available; your version is kept")
+        for kind, draft in newer_drafts(conn, account_id=account_id,
+                                        application_workspace_id=application_workspace_id).items())

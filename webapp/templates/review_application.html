@@ -39,6 +39,10 @@
         <button class="button secondary" type="button" data-review-action="preview" data-kind="{{ d.kind }}">Preview</button>
         <a href="/api/workspaces/{{ ws }}/application-documents/{{ d.document_version_id }}/download">Download exact file</a>
       </p>
+      {% set draft = review.newer_drafts.get(d.kind) %}{% if draft %}
+      <p data-newer-draft="{{ d.kind }}">A newer AI draft is available; your version is kept until you choose.
+        <button class="button secondary" type="button" data-review-action="use-new-draft" data-kind="{{ d.kind }}"
+          data-version="{{ draft.current_ai_version_id }}" data-revision="{{ revisions.get(d.kind, 0) }}">Use the new draft</button></p>{% endif %}
       <form data-review-action="replace" data-kind="{{ d.kind }}" data-revision="{{ revisions.get(d.kind, 0) }}"><input type="file" name="file" accept=".docx">
         <button class="button secondary" type="submit">Replace with revised file</button></form>
       <div data-preview-for="{{ d.kind }}" hidden></div>
@@ -57,8 +61,9 @@
     <div><strong>{{ f.question }}</strong>{% if f.required %} (required){% endif %}<br>
       {% if f.disposition == "OMIT" %}Leave blank{% elif f.display_value %}{{ f.display_value }}{% else %}<em>No answer yet</em>{% endif %}
       {% if f.provenance_label %} · {{ f.provenance_label | replace("_", " ") }}{% endif %}{% if f.reach %} · {{ f.reach }}{% endif %}{% if f.freshness %} · {{ f.freshness }}{% endif %}
-      <form data-review-action="answer" data-key="{{ f.answer_key }}"><input name="value" placeholder="Your answer">
-        <button class="button secondary" type="submit">Save answer</button></form>
+      {% if not f.answer_key.startswith("contact:") %}<form data-review-action="answer" data-key="{{ f.answer_key }}"><input name="value" placeholder="Your answer (for this application)">
+        <button class="button secondary" type="submit">Save answer</button></form>{% endif %}
+      {% if not f.required and f.display_value and f.disposition != "ANSWER" %}<button class="button secondary" type="button" data-review-action="use-answer" data-key="{{ f.answer_key }}">Use this answer</button>{% endif %}
       {% if not f.required %}<button class="button secondary" type="button" data-review-action="omit" data-key="{{ f.answer_key }}">Leave blank</button>{% endif %}
     </div></article>{% else %}<p>No questions are known for this application yet.</p>{% endfor %}
 </section>
@@ -92,7 +97,12 @@
       else if (action === "save") { send("/save"); }
       else if (action === "acknowledge") { send("/warnings/ack", json({warning_key: el.dataset.key})); }
       else if (action === "omit") { send("/fields/" + encodeURIComponent(el.dataset.key) + "/disposition", json({disposition: "OMIT"})); }
-      else if (action === "answer") { send("/answers", json({answer_key: el.dataset.key, value: el.elements.value.value, reach: "ACCOUNT"})); }
+      else if (action === "use-answer") { send("/fields/" + encodeURIComponent(el.dataset.key) + "/disposition", json({disposition: "ANSWER"})); }
+      // Typed answers are for this application only (the narrowest reach); never silently a standing answer.
+      else if (action === "answer") { send("/answers", json({answer_key: el.dataset.key, value: el.elements.value.value, reach: "APPLICATION"})); }
+      else if (action === "use-new-draft") {  // selects only; Save changes stays a separate explicit step
+        send("/documents/" + el.dataset.kind + "/select", json({document_version_id: el.dataset.version, expected_revision: Number(el.dataset.revision)}));
+      }
       else if (action === "replace") {
         const data = new FormData(el);
         data.append("expected_revision", el.dataset.revision);  // the revision this page showed

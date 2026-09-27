@@ -175,3 +175,26 @@ def _approve(self, displayed=None, now=NOW, batch_id=None):
 
 V2World.make_approvable = _make_approvable
 V2World.approve = _approve
+
+
+# ---- final-review corrections: a profile contact claim and an optional question ----
+
+def add_contact_claim(world, field="location", value="London"):
+    """A new current profile snapshot carrying one contact claim."""
+    from webapp.persistence.artifacts import get_current_artifact, save_artifact
+    from webapp.persistence.workspaces import get_profile_workspace_id
+    profile_ws = get_profile_workspace_id(world.conn, V2_ACCOUNT)
+    current = get_current_artifact(world.conn, profile_ws, "profile_snapshot")
+    payload = dict(current["payload"])
+    payload["claims"] = [*payload.get("claims", []), {"id": f"clm_contact_{field}", "concept_id": f"cpt_contact_{field}",
+                                                      "category": "identity", "field": field, "value": value}]
+    save_artifact(world.conn, workspace_id=profile_ws, artifact_type="profile_snapshot", payload=payload)
+    world.conn.commit()
+
+
+def open_delta(world, *, kind="NEW_QUESTION", subject="employment.availability_start", required=False,
+               field_key="q1"):
+    from webapp.services.review_approval import open_review_delta
+    return open_review_delta(world.conn, account_id=V2_ACCOUNT, application_workspace_id=world.ws, kind=kind,
+                             answer_key=None, subject=subject, required=required, question=f"{subject}?",
+                             observed={"field_key": field_key}, source="FILL_SESSION:s1", now=NOW)

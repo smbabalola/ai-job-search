@@ -21,7 +21,7 @@ from webapp.persistence.workspaces import get_workspace
 from webapp.services.autonomy_context import employer_identity
 from webapp.services.autonomy_controls import run_immediate
 from webapp.services.review_application import ReviewRefused, build_reviewable
-from webapp.services.review_fields import pending_proposals
+from webapp.services.review_fields import pending_proposals, requires_application_answer
 
 
 def _field(conn, settings: Settings, account_id: str, ws: str, answer_key: str, now: datetime) -> PlannedField:
@@ -55,9 +55,11 @@ def _scope(conn, account_id: str, ws: str, reach: Reach) -> str | None:
 
 
 def _approve(conn, *, account_id: str, ws: str, subject: str, entry: Mapping[str, Any], value: Any, reach: Reach,
-             context: Mapping[str, Any] | None, provenance: str, actor: str, now: datetime) -> dict[str, Any]:
-    if entry["sensitive"] is not None:
-        reach = Reach.APPLICATION  # sensitive: this application only, never a standing answer
+             context: Mapping[str, Any] | None, provenance: str, actor: str, now: datetime,
+             per_application: bool = False) -> dict[str, Any]:
+    if entry["sensitive"] is not None or per_application:
+        # sensitive (spec §8) or a declaration (R4): this application only, never a standing answer
+        reach = Reach.APPLICATION
     scope_id = _scope(conn, account_id, ws, reach)
     stored_scope = account_id if reach is Reach.ACCOUNT else scope_id
     previous = next((a for a in current_approved_answers(conn, account_id=account_id, subject=subject)
@@ -76,10 +78,14 @@ def answer_field(conn, *, settings: Settings, account_id: str, application_works
         field = _field(conn, settings, account_id, ws, answer_key, now)
         entry = _answerable(field)
         answer = _approve(conn, account_id=account_id, ws=ws, subject=field.subject, entry=entry, value=value,
-                          reach=Reach(reach), context=context, provenance="USER", actor=actor, now=now)
+                          reach=Reach(reach), context=context, provenance="USER", actor=actor, now=now,
+                          per_application=requires_application_answer(conn, ws, answer_key))
         ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="ANSWER_EDITED",
                         binding_hash=None, detail={"answer_key": answer_key, "approved_answer_id": answer["id"]},
                         actor=actor, now=now)
+        if not field.required:  # typing an answer to an optional field decides it as ANSWER
+            _record_disposition(conn, account_id=account_id, ws=ws, answer_key=answer_key, disposition="ANSWER",
+                                actor=actor, now=now)
         return {"approved_answer_id": answer["id"]}
     return run_immediate(conn, work)
 
@@ -109,12 +115,24 @@ def accept_proposal(conn, *, settings: Settings, account_id: str, application_wo
         value = json.loads(proposal["value_json"]) if edited_value is None else edited_value
         answer = _approve(conn, account_id=account_id, ws=ws, subject=proposal["subject"], entry=entry, value=value,
                           reach=Reach(reach), context=context, provenance="USER_EDITED_PROPOSAL", actor=actor,
-                          now=now)
+                          now=now, per_application=requires_application_answer(conn, ws,
+                                                                               f"subject:{proposal['subject']}"))
         ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="PROPOSAL_ACCEPTED",
                         binding_hash=None, detail={"proposal_id": proposal_id, "approved_answer_id": answer["id"]},
                         actor=actor, now=now)
         return {"approved_answer_id": answer["id"]}
     return run_immediate(conn, work)
+
+
+def _record_disposition(conn, *, account_id: str, ws: str, answer_key: str, disposition: str, actor: str,
+                        now: datetime) -> dict[str, Any]:
+    """The disposition row and its FIELD_DISPOSITION_SET event (caller's transaction)."""
+    row = ra.set_disposition(conn, account_id=account_id, application_workspace_id=ws, answer_key=answer_key,
+                             disposition=disposition, actor=actor, now=now)
+    ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="FIELD_DISPOSITION_SET",
+                    binding_hash=None, detail={"answer_key": answer_key, "disposition": disposition},
+                    actor=actor, now=now)
+    return row
 
 
 def set_field_disposition(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
@@ -129,11 +147,8 @@ def set_field_disposition(conn, *, settings: Settings, account_id: str, applicat
             raise ReviewRefused("required_field")
         if disposition == "ANSWER" and field.subject is None:
             raise ReviewRefused("unclassified_subject")
-        row = ra.set_disposition(conn, account_id=account_id, application_workspace_id=ws, answer_key=answer_key,
-                                 disposition=disposition, actor=actor, now=now)
-        ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="FIELD_DISPOSITION_SET",
-                        binding_hash=None, detail={"answer_key": answer_key, "disposition": disposition},
-                        actor=actor, now=now)
+        row = _record_disposition(conn, account_id=account_id, ws=ws, answer_key=answer_key,
+                                  disposition=disposition, actor=actor, now=now)
         return {"disposition_id": row["id"]}
     return run_immediate(conn, work)
 

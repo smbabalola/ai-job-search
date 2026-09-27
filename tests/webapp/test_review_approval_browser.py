@@ -195,3 +195,56 @@ def test_bulk_approval_from_the_prepared_list(page, live):
     assert len(batches) == 1 and None not in batches
     for world in worlds:
         assert page.locator(f'[data-select-application="{world.ws}"]').is_disabled()
+
+
+def test_narrow_reach_answer_and_use_this_answer_then_approve(page, live):
+    """A subject whose max reach is EMPLOYER is answered through the page (for
+    this application); an optional profile contact is included with Use this
+    answer; the application then approves."""
+    from tests.webapp.services.review_fixtures import add_contact_claim
+    world = live.world
+    key = "subject:motivation.employer_specific"
+    blocker(world.conn, world.ws, "motivation.employer_specific", "Why this employer?")
+    world.conn.commit()
+    add_contact_claim(world, "location", "London")
+    dialogs = _dialogs(page)
+    _open(page, live, world.ws)
+    page.locator(f'form[data-review-action="answer"][data-key="{key}"] input[name=value]').fill("Their mission")
+    _click_and_reload(page, f'form[data-review-action="answer"][data-key="{key}"] button')
+    assert "Their mission" in page.locator(f'[data-field="{key}"]').inner_text()
+    row = live.conn.execute("SELECT reach, scope_id FROM approved_answers WHERE subject = ?",
+                            ("motivation.employer_specific",)).fetchone()
+    assert tuple(row) == ("APPLICATION", world.ws)
+
+    _click_and_reload(page, '[data-review-action="use-answer"][data-key="contact:location"]')
+    assert page.locator('[data-review-action="use-answer"]').count() == 0
+    while page.locator('[data-review-action="acknowledge"]').count():
+        _click_and_reload(page, '[data-review-action="acknowledge"]')
+    _click_and_reload(page, '[data-review-action="approve"]')
+    assert _state(page) == "APPROVED_FOR_FILL" and dialogs == []
+    bound = {f["answer_key"]: f for f in ra.latest_approval(live.conn, world.ws)["binding"]["fields"]}
+    assert bound["contact:location"]["disposition"] == "ANSWER" and bound[key]["disposition"] == "ANSWER"
+
+
+def test_use_the_new_draft_selects_only_until_save(page, live):
+    from webapp.services.application_documents import generate_application_documents
+    world = live.world
+    before = world.selection("cover_letter")
+    fresh = {row["document_kind"]: row["id"] for row in generate_application_documents(
+        world.conn, world.ws, documents_root=world.settings.documents_root,
+        extensions_dir=world.settings.extensions_dir, account_id=V2_ACCOUNT)["documents"]}
+    world.conn.commit()
+    dialogs = _dialogs(page)
+    _open(page, live, world.ws)
+    assert page.locator('[data-newer-draft="cv"]').is_visible()
+    _click_and_reload(page, '[data-review-action="use-new-draft"][data-kind="cv"]')
+    selection = live.conn.execute("SELECT document_version_id FROM application_document_selections "
+                                  "WHERE workspace_id = ? AND document_kind = ?", (world.ws, "cv")).fetchone()
+    assert selection[0] == fresh["cv"]
+    assert live.conn.execute("SELECT document_version_id FROM application_document_selections WHERE workspace_id = ? "
+                             "AND document_kind = ?", (world.ws, "cover_letter")).fetchone()[0] == \
+        before["document_version_id"]
+    assert page.locator("[data-save-guidance]").is_visible()
+    assert page.locator('[data-review-action="approve"]').is_disabled()
+    _click_and_reload(page, '[data-review-action="save"]')
+    assert not page.locator("[data-save-guidance]").count() and dialogs == []

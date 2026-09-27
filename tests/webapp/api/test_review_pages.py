@@ -11,7 +11,7 @@ from tests.webapp.services.review_fixtures import NOW, V2_ACCOUNT, docx_bytes, v
 
 COPY = "Filling does not submit. Submission will ask you separately."
 ALLOWED_ACTIONS = {"save", "approve", "revoke", "acknowledge", "answer", "omit", "replace", "select",
-                   "approve-selected", "preview"}
+                   "approve-selected", "preview", "use-answer", "use-new-draft"}
 
 
 @pytest.fixture
@@ -154,3 +154,63 @@ def test_record_presented_writes_only_at_the_expected_hash(ui):
     assert present(None) is None and _presented(world) == []
     assert present(current) == current
     assert [e["binding_hash"] for e in _presented(world)] == [current]
+
+
+# ---- final-review corrections: Use this answer, Use the new draft, APPLICATION reach ----
+
+def _regenerate(world):
+    """A newer AI generation after the user's selections (the pipeline rerun)."""
+    from webapp.services.application_documents import generate_application_documents
+    out = generate_application_documents(world.conn, world.ws, documents_root=world.settings.documents_root,
+                                         extensions_dir=world.settings.extensions_dir, account_id=V2_ACCOUNT)
+    world.conn.commit()
+    return {row["document_kind"]: row["id"] for row in out["documents"]}
+
+
+def test_optional_contact_offers_use_this_answer_and_leave_blank(ui):
+    from tests.webapp.services.review_fixtures import add_contact_claim
+    client, world = ui
+    add_contact_claim(world, "location", "London")
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    assert 'data-review-action="use-answer" data-key="contact:location"' in html
+    assert 'data-review-action="omit" data-key="contact:location"' in html
+    assert 'data-review-action="answer" data-key="contact:location"' not in html  # evidence, not typed
+    r = client.post(f"/api/workspaces/{world.ws}/review/fields/contact:location/disposition",
+                    json={"disposition": "ANSWER"})
+    assert r.status_code == 200, r.text
+    field = next(f for f in world.reviewable().fields if f.answer_key == "contact:location")
+    assert (field.disposition, field.source_kind) == ("ANSWER", "EVIDENCE")
+    assert 'data-review-action="use-answer" data-key="contact:location"' not in \
+        client.get(f"/workspaces/{world.ws}/review").text
+
+
+def test_page_answers_are_sent_for_this_application_only(ui):
+    client, world = ui
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    assert 'reach: "APPLICATION"' in html and 'reach: "ACCOUNT"' not in html
+
+
+def test_newer_ai_draft_offers_use_the_new_draft_and_never_moves_the_selection(ui):
+    from tests.webapp.services.review_fixtures import diff_counts, table_counts
+    client, world = ui
+    selected = world.selection("cv")
+    fresh = _regenerate(world)
+    assert fresh["cv"] != selected["document_version_id"]
+    assert world.selection("cv") == selected  # the rerun never moves the user's selection
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    assert 'data-newer-draft="cv"' in html and "Use the new draft" in html
+    assert re.search(rf'data-review-action="use-new-draft"\s+data-kind="cv"\s+data-version="{fresh["cv"]}"'
+                     rf'\s+data-revision="{selected["revision"]}"', html)
+    assert world.selection("cv") == selected  # rendering never moves it either
+    before = table_counts(world.conn)
+    r = client.post(f"/api/workspaces/{world.ws}/review/documents/cv/select",
+                    json={"document_version_id": fresh["cv"], "expected_revision": selected["revision"]})
+    assert r.status_code == 200, r.text
+    # Only the selection moved (in place) with its SELECTION_CHANGED event: no pack artifact, no Save.
+    assert diff_counts(before, table_counts(world.conn)) == {"application_review_events": 1}
+    assert [e["event"] for e in ra.events(world.conn, world.ws)][-1] == "SELECTION_CHANGED"
+    assert world.selection("cv")["document_version_id"] == fresh["cv"]
+    assert world.selection("cover_letter")["document_version_id"] != fresh["cover_letter"]  # only the cv moved
+    assert world.state().binding_hash is None  # not approvable until Save changes
+    assert client.post(f"/api/workspaces/{world.ws}/review/save").status_code == 200
+    assert world.state().binding_hash is not None
