@@ -90,6 +90,9 @@ def accept_proposal(conn, *, settings: Settings, account_id: str, application_wo
     ws = application_workspace_id
 
     def work() -> dict[str, Any]:
+        workspace = get_workspace(conn, ws, account_id=account_id)  # ownership before anything is read
+        if workspace is None or workspace.get("kind") != "job":
+            raise LookupError(ws)
         proposal = conn.execute(
             "SELECT p.* FROM proposed_answers p JOIN application_blockers b ON b.id = p.blocker_id "
             "WHERE p.id = ? AND b.workspace_id = ?", (proposal_id, ws)).fetchone()

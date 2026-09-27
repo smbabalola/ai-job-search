@@ -128,3 +128,75 @@ def test_unknown_or_foreign_workspace_is_404(api, method, path, body):
     kwargs = {"json": body} if body is not None else {}
     r = getattr(client, method)(f"/api/workspaces/ws_not_mine{path}", **kwargs)
     assert r.status_code == 404, (path, r.status_code, r.text)
+
+
+@pytest.fixture
+def foreign(api):
+    """A real job workspace owned by another account, with a pending
+    proposal (the caller is the default local account)."""
+    from webapp.persistence.accounts import create_account
+    from webapp.persistence.autonomy_answers import save_proposed_answer
+    from webapp.persistence.workspaces import create_workspace
+    from tests.webapp.services.review_fixtures import blocker
+    client, world = api
+    create_account(world.conn, account_id="account_other", display_name="Other")
+    ws = create_workspace(world.conn, company="Other Co", title="Engineer", account_id="account_other")["id"]
+    b = blocker(world.conn, ws, "employment.notice_period")
+    proposal = save_proposed_answer(world.conn, blocker_id=b["id"], subject="employment.notice_period",
+                                    value="SECRET", now=NOW)
+    world.conn.commit()
+    return client, world, ws, proposal["id"]
+
+
+FOREIGN_ROUTES = [
+    ("get", "/review/state", None), ("post", "/review/save", None), ("post", "/review/revoke", None),
+    ("post", "/review/approve", {"displayed_binding_hash": "x"}),
+    ("post", "/review/warnings/ack", {"warning_key": "x"}),
+    ("post", "/review/answers", {"answer_key": "subject:employment.notice_period", "value": "v",
+                                 "reach": "APPLICATION"}),
+    ("post", "/review/fields/subject:employment.notice_period/disposition", {"disposition": "OMIT"}),
+    ("post", "/review/documents/cv/select", {"document_version_id": "x", "expected_revision": 1}),
+    ("post", "/review/deltas", {"kind": "NEW_QUESTION", "required": False, "question": "q", "observed": {},
+                                "source": "s"}),
+    ("post", "/review/proposals/{proposal}/accept", {"reach": "ACCOUNT"}),
+    ("upload", "/review/documents/cv", None),
+    ("get", "/review/documents/cv/preview", None),
+]
+
+
+@pytest.mark.parametrize("method,path,body", FOREIGN_ROUTES)
+def test_another_accounts_workspace_is_404_and_unchanged(foreign, method, path, body):
+    from webapp.persistence.autonomy_answers import current_approved_answers
+    from webapp.services.review_fields import pending_proposals
+    client, world, ws, proposal_id = foreign
+    before = table_counts(world.conn)
+    url = f"/api/workspaces/{ws}{path.format(proposal=proposal_id)}"
+    if method == "upload":
+        r = client.post(url, data={"expected_revision": 0},
+                        files={"file": ("cv.docx", docx_bytes("x"), "application/octet-stream")})
+    else:
+        r = getattr(client, method)(url, **({"json": body} if body is not None else {}))
+    assert r.status_code == 404, (path, r.status_code, r.text)
+    assert diff_counts(before, table_counts(world.conn)) == {}
+    assert [p["id"] for p in pending_proposals(world.conn, ws)] == [proposal_id]
+    assert current_approved_answers(world.conn, account_id=V2_ACCOUNT, subject="employment.notice_period") == []
+
+
+def test_the_review_page_of_another_accounts_workspace_is_404(foreign):
+    client, world, ws, _ = foreign
+    before = table_counts(world.conn)
+    assert client.get(f"/workspaces/{ws}/review").status_code == 404
+    assert diff_counts(before, table_counts(world.conn)) == {}
+
+
+def test_an_invalid_answer_reach_is_422_and_writes_nothing(api):
+    from tests.webapp.services.review_fixtures import blocker
+    client, world = api
+    blocker(world.conn, world.ws, "motivation.employer_specific")  # max reach EMPLOYER
+    world.conn.commit()
+    before = table_counts(world.conn)
+    r = client.post(f"/api/workspaces/{world.ws}/review/answers",
+                    json={"answer_key": "subject:motivation.employer_specific", "value": "v", "reach": "ACCOUNT"})
+    assert r.status_code == 422, r.text
+    assert "exceeds max_reach" in r.json()["detail"]
+    assert diff_counts(before, table_counts(world.conn)) == {}

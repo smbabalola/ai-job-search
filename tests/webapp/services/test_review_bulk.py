@@ -9,8 +9,10 @@ from tests.webapp.services.review_fixtures import NOW, V2_ACCOUNT, docx_bytes, v
 
 
 def _present(world):
+    """The page presents what it rendered: the current exposed hash."""
     return svc.record_presented(world.conn, settings=world.settings, account_id=V2_ACCOUNT,
-                                application_workspace_id=world.ws, actor="u", now=NOW)
+                                application_workspace_id=world.ws, expected_binding_hash=world.state().binding_hash,
+                                actor="u", now=NOW)
 
 
 def _bulk(world, items):

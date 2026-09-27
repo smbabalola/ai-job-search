@@ -252,16 +252,21 @@ def review_view_mode(conn, *, settings: Settings, account_id: str, application_w
 
 # ---- presented review and bulk approval (spec §10) ------------------------------------
 
-def record_presented(conn, *, settings: Settings, account_id: str, application_workspace_id: str, actor: str,
-                     now: datetime) -> str | None:
+def record_presented(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                     expected_binding_hash: str | None, actor: str, now: datetime) -> str | None:
     """Called only by the human-facing review page when it renders the full
-    review: records REVIEW_PRESENTED at the approvable hash it shows. With no
-    approvable hash (no exact pack, not ready, closed) nothing is recorded."""
+    review: records REVIEW_PRESENTED at the approvable hash of the content it
+    rendered (expected_binding_hash). If the current binding no longer equals
+    it (a change landed between rendering and this transaction), or there is
+    no approvable hash (no exact pack, not ready, closed), nothing is
+    recorded and None is returned: the page then offers no approval."""
     ws = application_workspace_id
 
     def work() -> str | None:
         state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
         if state.binding_hash is None or state.state in ("CLOSED", "NOT_READY"):
+            return None
+        if expected_binding_hash is None or state.binding_hash != expected_binding_hash:
             return None
         ra.record_event(conn, account_id=account_id, application_workspace_id=ws, event="REVIEW_PRESENTED",
                         binding_hash=state.binding_hash, detail={}, actor=actor, now=now)

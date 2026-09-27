@@ -95,7 +95,8 @@ def test_approve_versus_answer_supersede(v2_chain):
 def test_bulk_versus_single_approve_make_one_record(v2_chain):
     shown = v2_chain.make_approvable().binding_hash
     assert svc.record_presented(v2_chain.conn, settings=v2_chain.settings, account_id=V2_ACCOUNT,
-                                application_workspace_id=v2_chain.ws, actor="u", now=NOW) == shown
+                                application_workspace_id=v2_chain.ws, expected_binding_hash=shown, actor="u",
+                                now=NOW) == shown
     bulk = _outcome(lambda c: svc.approve_selected(c, settings=v2_chain.settings, account_id=V2_ACCOUNT,
                                                    items=[{"workspace_id": v2_chain.ws,
                                                            "displayed_binding_hash": shown}],

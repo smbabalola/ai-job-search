@@ -117,3 +117,40 @@ def test_review_pages_do_not_use_the_global_data_action_hook():
     templates = Path(__file__).resolve().parents[3] / "webapp" / "templates"
     for name in ("review_application.html", "prepared_applications.html"):
         assert "data-action=" not in (templates / name).read_text(encoding="utf-8"), name
+
+
+def test_a_change_between_rendering_and_presentation_offers_no_approval(ui, monkeypatch):
+    """What the user approves is exactly what they saw: if the binding moves
+    after the page payload is built, the page renders but cannot approve and
+    no presentation is recorded for the unseen hash."""
+    from webapp.api import review_pages
+    client, world = ui
+    real = review_pages.review_payload
+
+    def payload_then_change(*a, **k):
+        shown = real(*a, **k)
+        world.set_target(url="https://jobs.example.test/acme/moved")  # lands before the presentation transaction
+        world.conn.commit()
+        return shown
+    monkeypatch.setattr(review_pages, "review_payload", payload_then_change)
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    assert 'data-review-section="documents"' in html  # the content still renders
+    assert "data-displayed-binding-hash" not in html
+    assert re.search(r'data-review-action="approve"[^>]*disabled', html)
+    assert _presented(world) == []
+    assert world.state().binding_hash is not None  # the new hash exists but was never presented
+
+
+def test_record_presented_writes_only_at_the_expected_hash(ui):
+    from webapp.services import review_approval as svc
+    _, world = ui
+
+    def present(expected):
+        return svc.record_presented(world.conn, settings=world.settings, account_id=V2_ACCOUNT,
+                                    application_workspace_id=world.ws, expected_binding_hash=expected, actor="u",
+                                    now=NOW)
+    current = world.state().binding_hash
+    assert present("sha256:" + "0" * 64) is None and _presented(world) == []
+    assert present(None) is None and _presented(world) == []
+    assert present(current) == current
+    assert [e["binding_hash"] for e in _presented(world)] == [current]

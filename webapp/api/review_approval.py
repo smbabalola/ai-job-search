@@ -19,6 +19,7 @@ from product.application_document_contract import ApplicationDocumentContractErr
 from product.autonomy_contract import Reach
 from product.docx_package import DocxPackageError
 from webapp.api.dependencies import get_account_scope, get_conn
+from webapp.persistence.autonomy_answers import AnswerValidationError
 from webapp.services import review_answers, review_approval, review_documents
 from webapp.services.document_blob_store import DocumentBlobError
 from webapp.services.ownership import AccountScope
@@ -93,6 +94,8 @@ def call(action: Callable[[], Any]) -> Any:
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="not found") from exc
+    except AnswerValidationError as exc:  # the answer itself is invalid for its subject
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (PipelineError, DocxPackageError, ApplicationDocumentContractError, DocumentBlobError) as exc:
         text = str(exc)
         raise HTTPException(status_code=404 if "not found" in text else 400, detail=text) from exc

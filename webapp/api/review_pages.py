@@ -38,9 +38,11 @@ def review_page(workspace_id: str, request: Request, conn: sqlite3.Connection = 
     try:
         payload = review_payload(conn, settings=settings, account_id=scope.account_id, workspace_id=workspace_id)
         # The one place REVIEW_PRESENTED is recorded (never by the data API).
+        # Only the hash of the content rendered below may become approvable.
         presented = review_approval.record_presented(conn, settings=settings, account_id=scope.account_id,
-                                                     application_workspace_id=workspace_id, actor=scope.account_id,
-                                                     now=_now())
+                                                     application_workspace_id=workspace_id,
+                                                     expected_binding_hash=payload["binding_hash"],
+                                                     actor=scope.account_id, now=_now())
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="not found") from exc
     from webapp.persistence.application_documents import get_selection
