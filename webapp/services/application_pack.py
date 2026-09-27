@@ -400,13 +400,17 @@ def confirm_application_pack(
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
     document_selection_revisions: dict[str, int] | None = None,
+    on_confirmed: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Gate 4: the sole webapp route to ``drafted`` and an exact pack binding."""
+    """Gate 4: the sole webapp route to ``drafted`` and an exact pack binding.
+    ``on_confirmed`` (v2 only) runs inside the same transaction, after the
+    pack and workflow event are written and before the commit; raising from
+    it rolls everything back (6D-A: the review audit event is atomic)."""
     if document_selection_revisions is not None:
         return _confirm_application_pack_v2(
             conn, workspace_id, effective_date=effective_date,
             documents_root=Path(documents_root), account_id=account_id,
-            selection_revisions=document_selection_revisions,
+            selection_revisions=document_selection_revisions, on_confirmed=on_confirmed,
         )
     return _confirm_application_pack_v1(
         conn, workspace_id, effective_date=effective_date, documents_root=documents_root,
@@ -503,6 +507,7 @@ def _confirm_application_pack_v1(
 def _confirm_application_pack_v2(
     conn: sqlite3.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path, account_id: str, selection_revisions: dict[str, int],
+    on_confirmed: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     from datetime import datetime, timezone
     from webapp.services.document_blob_store import DocumentBlobStore
@@ -545,6 +550,7 @@ def _confirm_application_pack_v2(
             workspace_id=workspace_id, account_id=account_id,
             eligible_reusable_document_ids=reusable_ids,
             confirmed_at=datetime.now(timezone.utc).isoformat(),
+            selection_revisions=selection_revisions,
         )
         artifact = save_artifact(conn, workspace_id=workspace_id, artifact_type="application_pack", payload=pack, commit=False)
         for artifact_type in ("job_fit_result", "application_intelligence_result"):
@@ -560,6 +566,8 @@ def _confirm_application_pack_v2(
             submitted_pack_artifact_id=artifact["id"], _allow_drafted=True,
             commit=False, account_id=account_id,
         )
+        if on_confirmed is not None:
+            on_confirmed({"artifact": artifact, "workflow_event": event})
         conn.commit()
         return {"pack": pack, "artifact": artifact, "workflow_event": event, "gate4_status": "SUCCEEDED", "projection": None, "archive_path": None}
     except Exception:

@@ -10,6 +10,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from webapp.api.applications import router as applications_router
+from webapp.api.review_pages import router as review_pages_router
+from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
 from webapp.api.autonomy import router as autonomy_router
 from webapp.api.application_documents import router as application_documents_router, reusable_router
@@ -99,6 +102,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(review_router)
     app.include_router(status_router)
     app.include_router(autonomy_router)
+    app.include_router(review_approval_router)
+    app.include_router(applications_router)
+    app.include_router(review_pages_router)
     app.include_router(views_router)
 
     return app

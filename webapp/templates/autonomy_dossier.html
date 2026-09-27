@@ -26,6 +26,14 @@
     <p>{{ r.system_basis.reason }} · content <code>{{ r.system_basis.item_content_hash }}</code></p></div></article>
   {% else %}<p>No items were confirmed by the system.</p>{% endfor %}
 </section>
+<section class="panel" data-dossier-section="approvals"><div class="panel-heading"><h2>Approvals</h2></div>
+  {% for a in dossier.approvals.approvals %}<article class="evidence-row"><div>
+    <strong>Approval <code>{{ a.id }}</code></strong> · {{ a.actor }}{% if a.batch_id %} · batch <code>{{ a.batch_id }}</code>{% endif %}
+    <p>Binding <code>{{ a.binding_hash }}</code>{% if a.changed_since_previous %} · changed: {{ a.changed_since_previous | join(", ") }}{% endif %}
+      {% if a.resolved_delta_ids %} · resolved {{ a.resolved_delta_ids | length }} delta(s){% endif %}</p></div></article>
+  {% else %}<p>No approvals yet.</p>{% endfor %}
+  {% if dossier.approvals.events %}<ol>{% for e in dossier.approvals.events %}<li>{{ e.event }} · {{ e.actor }}{% if e.binding_hash %} · <code>{{ e.binding_hash }}</code>{% endif %}</li>{% endfor %}</ol>{% endif %}
+</section>
 <section class="panel" data-dossier-section="attempt-history"><div class="panel-heading"><h2>Attempt history (observational)</h2></div>
   <p>A record of what ran; it never decides what runs next.</p>
   {% for a in dossier.attempt_history_observational %}<article class="evidence-row"><div>

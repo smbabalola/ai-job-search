@@ -20,6 +20,7 @@ from webapp.persistence.migrations import (
     AUTONOMY_CONTRACT_MIGRATION_ID,
     AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
     AUTONOMY_PREPARE_MIGRATION_ID,
+    REVIEW_APPROVAL_MIGRATION_ID,
 )
 
 
@@ -170,6 +171,8 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     # All these tables are empty here, so FK-enforced drops succeed regardless
     # of order (SQLite only blocks a DROP TABLE when a referencing row exists).
     for autonomy_table in (
+        "application_approvals", "application_review_events", "review_deltas",
+        "application_field_dispositions",
         "autonomy_candidate_exception_resolutions", "autonomy_candidate_exceptions",
         "autonomy_candidate_promotions", "autonomy_candidate_screenings", "autonomy_prepare_steps",
         "autonomy_review_latches", "autonomy_enrolments", "autonomy_retry_requests",
@@ -184,7 +187,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     ):
         conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -200,6 +203,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             AUTONOMY_CONTRACT_MIGRATION_ID,
             AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
             AUTONOMY_PREPARE_MIGRATION_ID,
+            REVIEW_APPROVAL_MIGRATION_ID,
         ),
     )
     conn.commit()

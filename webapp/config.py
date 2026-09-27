@@ -12,6 +12,15 @@ from product.autonomy_contract import Capability
 _STEP_KINDS = ("EVALUATE", "UNDERSTAND", "FIT", "INTELLIGENCE")
 
 
+def _parse_review_ttl() -> int:
+    """Bundle 6D-A approval TTL in days: default 14, configurable shorter only."""
+    try:
+        value = int(os.environ.get("JOBSEARCH_REVIEW_APPROVAL_TTL_DAYS", "14"))
+    except ValueError:
+        return 14
+    return max(1, min(14, value))
+
+
 def _parse_step_cost_max(raw: str | None) -> dict[str, Decimal]:
     """Bundle 6C per-step hard cost envelopes. Anything malformed yields {}
     so unattended paid work fails closed (spec §11.2)."""
@@ -83,6 +92,7 @@ class Settings:
     autonomy_max_promotions_per_day: int = 5
     autonomy_dispatch_result_timeout: float = 600.0
     autonomy_retry_delays: tuple = (60.0, 300.0, 900.0)
+    review_approval_ttl_days: int = field(default_factory=_parse_review_ttl)
 
     def __post_init__(self) -> None:
         self.db_path = Path(self.db_path)

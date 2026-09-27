@@ -11,6 +11,9 @@ from product.application_pack_contract import validate_application_pack_v1
 
 APPLICATION_PACK_V2 = "application-pack.v2"
 _ROOT_KEYS = {"schema_version", "generation_basis", "final_documents", "confirmed_account_id", "confirmed_at", "completion_contract_version"}
+# 6D-A: packs confirmed from now on also bind the exact selection revisions;
+# historical packs without them stay valid (but are never exact for review).
+_ROOT_KEYS_WITH_REVISIONS = _ROOT_KEYS | {"selection_revisions"}
 _GENERATION_KEYS = {"generation_artifact_id", "reviewed_application_pack"}
 _DOCUMENT_KEYS = {"document_version_id", "document_kind", "origin", "source_generation_artifact_id", "sha256", "byte_length", "original_filename"}
 _SHA = re.compile(r"[0-9a-f]{64}")
@@ -44,7 +47,7 @@ def _manifest_from_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_application_pack_v2(*, generation_artifact: dict[str, Any], selected_documents: dict[str, dict[str, Any]], verified_documents: dict[str, dict[str, Any]], workspace_id: str, account_id: str, eligible_reusable_document_ids: set[str], confirmed_at: str) -> dict[str, Any]:
+def build_application_pack_v2(*, generation_artifact: dict[str, Any], selected_documents: dict[str, dict[str, Any]], verified_documents: dict[str, dict[str, Any]], workspace_id: str, account_id: str, eligible_reusable_document_ids: set[str], confirmed_at: str, selection_revisions: dict[str, int] | None = None) -> dict[str, Any]:
     if generation_artifact.get("artifact_type") != "application_document_generation" or generation_artifact.get("workspace_id") != workspace_id:
         raise ApplicationPackV2ContractError("generation artifact does not belong to the workspace")
     generation = generation_artifact.get("payload")
@@ -76,12 +79,20 @@ def build_application_pack_v2(*, generation_artifact: dict[str, Any], selected_d
         "confirmed_at": confirmed_at,
         "completion_contract_version": basis.get("completion_contract_version"),
     }
+    if selection_revisions is not None:
+        pack["selection_revisions"] = {kind: selection_revisions[kind] for kind in ("cv", "cover_letter")}
     validate_application_pack_v2(pack)
     return pack
 
 
 def validate_application_pack_v2(value: Any) -> dict[str, Any]:
-    pack = _object(value, _ROOT_KEYS, "application-pack.v2")
+    has_revisions = isinstance(value, dict) and "selection_revisions" in value
+    pack = _object(value, _ROOT_KEYS_WITH_REVISIONS if has_revisions else _ROOT_KEYS, "application-pack.v2")
+    if has_revisions:
+        revisions = _object(pack["selection_revisions"], set(DOCUMENT_KINDS), "selection_revisions")
+        for kind, revision in revisions.items():
+            if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                raise ApplicationPackV2ContractError(f"selection revision for {kind} is invalid")
     if pack["schema_version"] != APPLICATION_PACK_V2:
         raise ApplicationPackV2ContractError("unsupported application pack version")
     generation = _object(pack["generation_basis"], _GENERATION_KEYS, "generation_basis")

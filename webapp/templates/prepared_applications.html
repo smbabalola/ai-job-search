@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Prepared applications · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Review before anything is filled</p><h1>Prepared applications</h1>
+  <p>Open each application to review it. Only applications you have opened at their current version can be approved together.</p></div></section>
+<section class="panel">
+  {% for a in applications %}<article class="evidence-row" data-application="{{ a.workspace_id }}">
+    <div>
+      <label><input type="checkbox" data-select-application="{{ a.workspace_id }}" data-hash="{{ a.binding_hash or '' }}"
+        {% if not a.presented_at_current_hash or a.state == "APPROVED_FOR_FILL" %}disabled{% endif %}>
+        <strong>{{ a.title }}</strong> — {{ a.company }}</label>
+      <p>{{ a.state | replace("_", " ") | lower }}{% if a.blocking_count %} · {{ a.blocking_count }} to resolve{% endif %}{% if a.attention_count %} · {{ a.attention_count }} to acknowledge{% endif %}
+        {% if not a.presented_at_current_hash %} · open it to review{% endif %}</p>
+      <p><a href="/workspaces/{{ a.workspace_id }}/review">Review</a></p>
+    </div></article>{% else %}<p>No applications are ready for review.</p>{% endfor %}
+  <button class="button" type="button" data-review-action="approve-selected">Approve selected (<span data-selected-count>0</span>)</button>
+</section>
+<script>
+(function () {
+  const boxes = Array.from(document.querySelectorAll("[data-select-application]"));
+  const count = document.querySelector("[data-selected-count]");
+  boxes.forEach(function (b) { b.addEventListener("change", function () {
+    count.textContent = String(boxes.filter(function (x) { return x.checked; }).length); }); });
+  document.querySelector('[data-review-action="approve-selected"]').addEventListener("click", async function () {
+    const items = boxes.filter(function (b) { return b.checked; }).map(function (b) {
+      return {workspace_id: b.dataset.selectApplication, displayed_binding_hash: b.dataset.hash}; });
+    if (!items.length) { return; }
+    const r = await fetch("/api/applications/approve-selected", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({items: items})});
+    const body = await r.json().catch(function () { return {}; });
+    const refused = (body.results || []).filter(function (x) { return x.outcome !== "approved"; });
+    if (refused.length) { window.alert(refused.map(function (x) { return x.workspace_id + ": " + x.outcome; }).join("\n")); }
+    window.location.reload();
+  });
+})();
+</script>
+{% endblock %}

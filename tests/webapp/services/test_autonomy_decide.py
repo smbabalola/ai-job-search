@@ -8,7 +8,7 @@ import pytest
 from product.autonomy_contract import Capability, Mode, ResultKind
 from product.fill_manifest import value_hash
 from webapp.persistence.autonomy_ledger import count_usage, get_grant, list_decisions
-from webapp.services.autonomy import binding_drift, decide_and_record, request_grant
+from webapp.services.autonomy import _request_grant_core, binding_drift, decide_and_record, request_grant
 from webapp.services.autonomy_context import ApplyTargetObservation, day_window
 from webapp.services.autonomy_controls import (
     enable_autonomous_preparation, engage_kill_switch, set_capability,
@@ -73,7 +73,7 @@ def test_no_grant_when_not_grantable(conn, settings, seeded):
 
 def test_submit_grant_binds_manifest_target_identity_and_policy(conn, settings, seeded):
     authorize_all(conn)
-    out = request_grant(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
+    out = _request_grant_core(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
                         stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS,
                         run_id=_run(conn))
     assert out.decision.grantable, out.decision.reasons
@@ -87,7 +87,7 @@ def test_submit_grant_binds_manifest_target_identity_and_policy(conn, settings, 
 def test_submit_requires_manifest(conn, settings, seeded):
     authorize_all(conn)
     with pytest.raises(ValueError):
-        request_grant(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
+        _request_grant_core(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
                       stage=Capability.SUBMIT, now=NOW, fill_manifest=None, observation=OBS)
 
 
@@ -178,7 +178,7 @@ def test_manifest_must_match_request_workspace_and_observed_adapter(conn, settin
 def test_binding_includes_target_url_adapter_version_and_tenant(conn, settings, seeded):
     from webapp.services.autonomy_context import canonical_target_url
     authorize_all(conn)
-    out = request_grant(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
+    out = _request_grant_core(conn, settings=settings, account_id=ACCOUNT, application_workspace_id=seeded,
                         stage=Capability.SUBMIT, now=NOW, fill_manifest=manifest(seeded), observation=OBS,
                         run_id=_run(conn))
     target = get_grant(conn, out.grant["id"])["binding"]["apply_target"]

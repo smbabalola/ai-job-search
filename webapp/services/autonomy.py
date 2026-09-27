@@ -178,7 +178,7 @@ def decide_and_record(conn, *, settings: Settings, account_id: str, application_
     return run_immediate(conn, work)
 
 
-def request_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+def _request_grant_core(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None) -> GrantOutcome:
@@ -244,7 +244,7 @@ def _settle_reservations(conn, grant_id: str, status: str, now: datetime) -> Non
         set_reservation_status(conn, reservation_id=row["id"], status=status, now=now)
 
 
-def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
+def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
                      requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                      run_id: str | None = None) -> PreClickResult:
     """Spec §10.3: one BEGIN IMMEDIATE transaction re-checks the kill switch and
@@ -422,3 +422,34 @@ def resolve_ambiguous(conn, *, attempt_id: str, submitted: bool, actor: str, now
         (_confirm if submitted else _release)(conn, attempt, now)
         return state
     return run_immediate(conn, work)
+
+
+# ---- Bundle 6D-A Task 11 (spec §12 G2): no public SUBMIT authority ----------------
+
+class SubmissionNotAvailable(PermissionError):
+    """No SUBMIT authority exists before Bundle 6E-A. 6E-A replaces these
+    unconditional refusals with validation of its one-time
+    submission_authorizations, then invokes the preserved private cores."""
+
+
+def request_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                  stage: Capability, now: datetime, fill_manifest: dict | None,
+                  requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
+                  run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None) -> GrantOutcome:
+    """Public grant entry point: SUBMIT is refused before anything is read or
+    written; FILL goes to the unchanged engine."""
+    if stage == Capability.SUBMIT:
+        raise SubmissionNotAvailable("submission_not_available")
+    return _request_grant_core(conn, settings=settings, account_id=account_id,
+                               application_workspace_id=application_workspace_id, stage=stage, now=now,
+                               fill_manifest=fill_manifest, requirements=requirements, observation=observation,
+                               run_id=run_id, cost_estimates=cost_estimates)
+
+
+def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
+                     requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
+                     run_id: str | None = None) -> PreClickResult:
+    """Public pre-click entry point: unconditionally refused in 6D (the
+    preserved engine is _pre_click_commit_core, reachable from no production
+    code until 6E-A)."""
+    raise SubmissionNotAvailable("submission_not_available")

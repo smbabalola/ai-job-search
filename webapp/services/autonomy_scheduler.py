@@ -189,6 +189,8 @@ def _sweeps(conn, settings: Settings, now: datetime, meter) -> dict[str, Any]:
     out["resolved_notifications"] = sum(
         reconcile_notifications(conn, account_id=row["id"], now=now)
         for row in conn.execute("SELECT id FROM accounts").fetchall())
+    from webapp.services.review_approval import reconcile_approvals  # 6D-A: reduce-only audit sweep
+    out["review_invalidations"] = reconcile_approvals(conn, settings=settings, now=now)
     return out
 
 

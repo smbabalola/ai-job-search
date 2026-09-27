@@ -34,6 +34,19 @@ AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID = "015_airswift_discovery_source"
 AUTONOMY_CONTRACT_MIGRATION_ID = "016_autonomy_contract"
 AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID = "017_autonomy_human_intent_backfill"
 AUTONOMY_PREPARE_MIGRATION_ID = "018_autonomy_prepare"
+REVIEW_APPROVAL_MIGRATION_ID = "019_review_approval"
+REVIEW_APPROVAL_APPEND_ONLY_TABLES = (
+    "application_approvals", "application_review_events", "review_deltas", "application_field_dispositions",
+)
+REVIEW_EVENTS = (  # spec §13; DOCUMENT_EDITED is reserved for the deferred D3 follow-on
+    "REVIEW_PRESENTED", "PACK_CONFIRMED", "DOCUMENT_REPLACED", "DOCUMENT_EDITED", "SELECTION_CHANGED", "ANSWER_EDITED",
+    "PROPOSAL_ACCEPTED", "FIELD_DISPOSITION_SET", "WARNING_ACKNOWLEDGED", "APPROVED", "APPROVAL_INVALIDATED",
+    "REVOKED", "EXPIRED", "DELTA_OPENED", "DELTA_RESOLVED",
+)
+DELTA_KINDS = (
+    "NEW_QUESTION", "CHANGED_QUESTION", "NEW_UPLOAD", "DECLARATION", "TARGET_CHANGE", "TRANSFORM_FAILURE",
+    "OMIT_FIELD_REQUIRED", "DOCUMENT_CONVERSION",
+)
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -81,6 +94,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (AUTONOMY_CONTRACT_MIGRATION_ID, _migrate_autonomy_contract, False),
         (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, _migrate_autonomy_human_intent_backfill, False),
         (AUTONOMY_PREPARE_MIGRATION_ID, _migrate_autonomy_prepare, False),
+        (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, True),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1651,3 +1665,99 @@ def _migrate_autonomy_prepare(conn: sqlite3.Connection) -> None:
                 f"BEFORE {action} ON {table} "
                 f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END"
             )
+
+
+# ---- Bundle 6D-A: review & approval (019) ----
+
+def _migrate_review_approval(conn: sqlite3.Connection) -> None:
+    events = ", ".join(f"'{e}'" for e in REVIEW_EVENTS)
+    kinds = ", ".join(f"'{k}'" for k in DELTA_KINDS)
+    # One atomic migration: never executescript (it commits implicitly).
+    _execute_statements(conn, f"""
+        CREATE TABLE application_approvals (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            scope TEXT NOT NULL CHECK (scope = 'FILL'),
+            binding_json TEXT NOT NULL,
+            binding_hash TEXT NOT NULL,
+            supersedes_id TEXT REFERENCES application_approvals(id),
+            batch_id TEXT,
+            resolved_delta_ids_json TEXT NOT NULL DEFAULT '[]',
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_application_approvals_ws ON application_approvals(application_workspace_id, seq);
+
+        CREATE TABLE application_review_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            event TEXT NOT NULL CHECK (event IN ({events})),
+            binding_hash TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_review_events_ws ON application_review_events(application_workspace_id, event, seq);
+
+        CREATE TABLE review_deltas (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            kind TEXT NOT NULL CHECK (kind IN ({kinds})),
+            answer_key TEXT,
+            subject TEXT,
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            question TEXT NOT NULL,
+            observed_json TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_review_deltas_ws ON review_deltas(application_workspace_id, seq);
+
+        CREATE TABLE application_field_dispositions (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            answer_key TEXT NOT NULL,
+            disposition TEXT NOT NULL CHECK (disposition IN ('ANSWER', 'OMIT')),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_field_dispositions_ws
+            ON application_field_dispositions(application_workspace_id, answer_key, seq);
+    """)
+    for table in REVIEW_APPROVAL_APPEND_ONLY_TABLES:
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
+                         f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+    _rebuild_approved_answers_with_application_reach(conn)
+
+
+def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -> None:
+    """SQLite can't alter a CHECK: the documented 12-step rebuild. Rows, seq
+    values, indexes and triggers are preserved; FKs are checked afterwards."""
+    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approved_answers'"
+                             ).fetchone()[0]
+    old_check = "CHECK (reach IN ('EMPLOYER', 'SEARCH_WORKSPACE', 'ACCOUNT'))"
+    assert old_check in table_sql, "approved_answers reach CHECK changed; update the 019 rebuild"
+    extras = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = 'approved_answers' AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL").fetchall()]
+    new_sql = table_sql.replace(old_check, "CHECK (reach IN ('APPLICATION', 'EMPLOYER', 'SEARCH_WORKSPACE', 'ACCOUNT'))")
+    new_sql = new_sql.replace("CREATE TABLE approved_answers", "CREATE TABLE approved_answers_019", 1)
+    conn.execute(new_sql)
+    conn.execute("INSERT INTO approved_answers_019 SELECT * FROM approved_answers")
+    conn.execute("DROP TABLE approved_answers")  # drops its indexes and triggers too
+    conn.execute("ALTER TABLE approved_answers_019 RENAME TO approved_answers")
+    for statement in extras:
+        conn.execute(statement)
+    problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if problems:
+        raise RuntimeError(f"019 approved_answers rebuild broke foreign keys: {problems}")
+#---END2
