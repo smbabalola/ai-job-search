@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from product.application_document_contract import ApplicationDocumentContractError
 from product.autonomy_contract import Reach
+from product.review_contract import derive_review_state
 from product.docx_package import DocxPackageError
 from webapp.api.dependencies import get_account_scope, get_conn
 from webapp.persistence.autonomy_answers import AnswerValidationError
@@ -24,7 +25,7 @@ from webapp.services import review_answers, review_approval, review_documents
 from webapp.services.document_blob_store import DocumentBlobError
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
-from webapp.services.review_application import ReviewRefused, build_reviewable, review_state
+from webapp.services.review_application import ReviewRefused, review_snapshot, review_state
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
 
@@ -102,13 +103,25 @@ def call(action: Callable[[], Any]) -> Any:
 
 
 def review_payload(conn, *, settings, account_id: str, workspace_id: str) -> dict[str, Any]:
+    """Read only. The displayed Reviewable and the exposed binding hash come
+    from ONE ReviewSnapshot, and every read happens inside one SQLite read
+    transaction, so the payload is one coherent database snapshot: it can
+    never show content A with approvable hash B. (The page's
+    record_presented re-check then refuses A if state moved on since.)"""
     now = _now()
-    reviewable = build_reviewable(conn, settings=settings, account_id=account_id,
-                                  application_workspace_id=workspace_id, now=now)
-    state = review_state(conn, settings=settings, account_id=account_id, application_workspace_id=workspace_id, now=now)
-    mode = review_approval.review_view_mode(conn, settings=settings, account_id=account_id,
-                                            application_workspace_id=workspace_id, now=now)
-    drafts = review_documents.newer_drafts(conn, account_id=account_id, application_workspace_id=workspace_id)
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")  # deferred: the snapshot is fixed at the first read below
+    try:
+        snapshot = review_snapshot(conn, settings=settings, account_id=account_id,
+                                   application_workspace_id=workspace_id, now=now)
+        reviewable, state = snapshot.reviewable, derive_review_state(snapshot)
+        mode = review_approval.review_view_mode(conn, settings=settings, account_id=account_id,
+                                                application_workspace_id=workspace_id, now=now)
+        drafts = review_documents.newer_drafts(conn, account_id=account_id, application_workspace_id=workspace_id)
+    finally:
+        if owns_transaction:
+            conn.rollback()  # end the read transaction; this path never writes
     return {"reviewable": jsonable(reviewable), "binding_hash": state.binding_hash, "newer_drafts": drafts,
             "state": {"state": state.state, "reasons": list(state.reasons), "blocking": list(state.blocking),
                       "binding_matches": state.binding_matches, "approval_effective": state.approval_effective},

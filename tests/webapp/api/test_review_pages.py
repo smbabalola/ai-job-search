@@ -214,3 +214,50 @@ def test_newer_ai_draft_offers_use_the_new_draft_and_never_moves_the_selection(u
     assert world.state().binding_hash is None  # not approvable until Save changes
     assert client.post(f"/api/workspaces/{world.ws}/review/save").status_code == 200
     assert world.state().binding_hash is not None
+
+
+# ---- consent snapshot: the window INSIDE review_payload ----------------------------
+
+def _change_after_first_assembly(monkeypatch, world):
+    """Commit a binding change from a second connection (world.conn) right
+    after the payload's Reviewable has been assembled, before the payload's
+    hash is derived."""
+    from webapp.services import review_application
+    real, calls = review_application._assemble, []
+
+    def assemble_then_change(*a, **k):
+        out = real(*a, **k)
+        if not calls:
+            world.set_target(url="https://jobs.example.test/acme/moved")
+            world.conn.commit()
+        calls.append(1)
+        return out
+    monkeypatch.setattr(review_application, "_assemble", assemble_then_change)
+
+
+def test_payload_content_and_hash_come_from_one_snapshot(ui, monkeypatch):
+    from webapp.api.review_approval import review_payload
+    from webapp.persistence.db import connect
+    _, world = ui
+    before = world.state().binding_hash
+    reader = connect(world.settings.db_path)
+    try:
+        _change_after_first_assembly(monkeypatch, world)
+        payload = review_payload(reader, settings=world.settings, account_id=V2_ACCOUNT, workspace_id=world.ws)
+        assert not reader.in_transaction  # the read transaction was ended
+    finally:
+        reader.close()
+    assert payload["reviewable"]["target_url"].endswith("acme/123")  # content A
+    assert payload["binding_hash"] == before                      # hash A, never B
+    assert world.state().binding_hash != before                    # B exists, but only after the snapshot
+
+
+def test_a_change_inside_payload_derivation_offers_no_approval(ui, monkeypatch):
+    """The page can never pair displayed content A with approvable hash B."""
+    client, world = ui
+    _change_after_first_assembly(monkeypatch, world)
+    html = client.get(f"/workspaces/{world.ws}/review").text
+    assert "acme/123" in html and "acme/moved" not in html  # the rendered content is A
+    assert "data-displayed-binding-hash" not in html
+    assert re.search(r'data-review-action="approve"[^>]*disabled', html)
+    assert _presented(world) == []

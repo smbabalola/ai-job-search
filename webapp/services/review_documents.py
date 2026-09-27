@@ -131,7 +131,8 @@ def newer_drafts(conn, *, account_id: str, application_workspace_id: str) -> dic
         selected = get_document_version(conn, selection["document_version_id"], account_id=account_id)
         if selected is None or selected["id"] == current_ai["id"]:
             continue
-        if selected["origin"] == "ai_generated" or                 _last_selection_basis(conn, ws, kind, selected["id"]) != generation_id:
+        if selected["origin"] == "ai_generated" or \
+                _last_selection_basis(conn, ws, kind, selected["id"]) != generation_id:
             out[kind] = {"selected_version_id": selected["id"], "current_ai_version_id": current_ai["id"]}
     return out
 
