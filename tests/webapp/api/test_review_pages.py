@@ -50,7 +50,7 @@ def test_without_an_exact_pack_approve_is_disabled_and_no_hash_is_emitted(ui):
                         expected_revision=world.selection("cv")["revision"], actor="u", now=NOW)
     html = client.get(f"/workspaces/{world.ws}/review").text
     assert "data-displayed-binding-hash" not in html and "Save your document changes" in html
-    assert re.search(r'data-action="approve"[^>]*disabled', html)
+    assert re.search(r'data-review-action="approve"[^>]*disabled', html)
     assert _presented(world) == []
 
 
@@ -71,7 +71,7 @@ def test_no_submission_action_or_route_exists(ui):
     client, world = ui
     for path in (f"/workspaces/{world.ws}/review", "/applications/prepared"):
         html = client.get(path).text
-        actions = set(re.findall(r'data-action="([^"]+)"', html))
+        actions = set(re.findall(r'data-review-action="([^"]+)"', html))
         assert actions <= ALLOWED_ACTIONS, actions
         assert not re.search(r'<form[^>]*action="[^"]*submit', html, re.IGNORECASE)
         assert COPY in html or path.startswith("/applications")
@@ -82,7 +82,7 @@ def test_no_submission_action_or_route_exists(ui):
 def test_prepared_page_lists_applications_with_bulk_control(ui):
     client, world = ui
     html = client.get("/applications/prepared").text
-    assert f'data-application="{world.ws}"' in html and 'data-action="approve-selected"' in html
+    assert f'data-application="{world.ws}"' in html and 'data-review-action="approve-selected"' in html
     assert "Approve selected" in html and "Approve all" not in html
 
 
@@ -108,3 +108,12 @@ def test_dossier_has_an_approvals_section(ui):
     approval = world.approve()
     html = client.get(f"/workspaces/{world.ws}/autonomy").text
     assert 'data-dossier-section="approvals"' in html and approval["approval_id"] in html
+
+
+def test_review_pages_do_not_use_the_global_data_action_hook():
+    """app.js reloads the page for any button[data-action] it does not know;
+    the 6D-A pages use their own data-review-action so clicks are not raced."""
+    from pathlib import Path
+    templates = Path(__file__).resolve().parents[3] / "webapp" / "templates"
+    for name in ("review_application.html", "prepared_applications.html"):
+        assert "data-action=" not in (templates / name).read_text(encoding="utf-8"), name

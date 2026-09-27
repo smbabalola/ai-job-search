@@ -13,7 +13,7 @@
         {% if not a.presented_at_current_hash %} · open it to review{% endif %}</p>
       <p><a href="/workspaces/{{ a.workspace_id }}/review">Review</a></p>
     </div></article>{% else %}<p>No applications are ready for review.</p>{% endfor %}
-  <button class="button" type="button" data-action="approve-selected">Approve selected (<span data-selected-count>0</span>)</button>
+  <button class="button" type="button" data-review-action="approve-selected">Approve selected (<span data-selected-count>0</span>)</button>
 </section>
 <script>
 (function () {
@@ -21,7 +21,7 @@
   const count = document.querySelector("[data-selected-count]");
   boxes.forEach(function (b) { b.addEventListener("change", function () {
     count.textContent = String(boxes.filter(function (x) { return x.checked; }).length); }); });
-  document.querySelector('[data-action="approve-selected"]').addEventListener("click", async function () {
+  document.querySelector('[data-review-action="approve-selected"]').addEventListener("click", async function () {
     const items = boxes.filter(function (b) { return b.checked; }).map(function (b) {
       return {workspace_id: b.dataset.selectApplication, displayed_binding_hash: b.dataset.hash}; });
     if (!items.length) { return; }

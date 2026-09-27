@@ -36,14 +36,14 @@
     <div><strong>{{ d.kind | replace("_", " ") | capitalize }}</strong> · {{ d.byte_length }} bytes · <code>{{ d.sha256 }}</code><br>
       {% if d.origin == "ai_generated" %}AI-generated from your reviewed evidence{% else %}Your document, not content-verified by JobSearch{% endif %}
       <p>
-        <button class="button secondary" type="button" data-action="preview" data-kind="{{ d.kind }}">Preview</button>
+        <button class="button secondary" type="button" data-review-action="preview" data-kind="{{ d.kind }}">Preview</button>
         <a href="/api/workspaces/{{ ws }}/application-documents/{{ d.document_version_id }}/download">Download exact file</a>
       </p>
-      <form data-action="replace" data-kind="{{ d.kind }}" data-revision="{{ revisions.get(d.kind, 0) }}"><input type="file" name="file" accept=".docx">
+      <form data-review-action="replace" data-kind="{{ d.kind }}" data-revision="{{ revisions.get(d.kind, 0) }}"><input type="file" name="file" accept=".docx">
         <button class="button secondary" type="submit">Replace with revised file</button></form>
       <div data-preview-for="{{ d.kind }}" hidden></div>
     </div></article>{% endfor %}
-  <button class="button" type="button" data-action="save">Save changes</button>
+  <button class="button" type="button" data-review-action="save">Save changes</button>
 </section>
 <section class="panel" data-review-section="claims">
   <div class="panel-heading"><h2>Claims and where they come from</h2></div>
@@ -57,22 +57,22 @@
     <div><strong>{{ f.question }}</strong>{% if f.required %} (required){% endif %}<br>
       {% if f.disposition == "OMIT" %}Leave blank{% elif f.display_value %}{{ f.display_value }}{% else %}<em>No answer yet</em>{% endif %}
       {% if f.provenance_label %} · {{ f.provenance_label | replace("_", " ") }}{% endif %}{% if f.reach %} · {{ f.reach }}{% endif %}{% if f.freshness %} · {{ f.freshness }}{% endif %}
-      <form data-action="answer" data-key="{{ f.answer_key }}"><input name="value" placeholder="Your answer">
+      <form data-review-action="answer" data-key="{{ f.answer_key }}"><input name="value" placeholder="Your answer">
         <button class="button secondary" type="submit">Save answer</button></form>
-      {% if not f.required %}<button class="button secondary" type="button" data-action="omit" data-key="{{ f.answer_key }}">Leave blank</button>{% endif %}
+      {% if not f.required %}<button class="button secondary" type="button" data-review-action="omit" data-key="{{ f.answer_key }}">Leave blank</button>{% endif %}
     </div></article>{% else %}<p>No questions are known for this application yet.</p>{% endfor %}
 </section>
 <section class="panel" data-review-section="warnings">
   <div class="panel-heading"><h2>Warnings</h2></div>
   {% for w in r.warnings %}<p data-warning-level="{{ w.level }}"><strong>{{ w.level }}</strong> {{ w.message }}
-    {% if w.level == "ATTENTION" and not w.acknowledged %}<button class="button secondary" type="button" data-action="acknowledge" data-key="{{ w.key }}">Acknowledge</button>{% elif w.acknowledged %} (acknowledged){% endif %}</p>
+    {% if w.level == "ATTENTION" and not w.acknowledged %}<button class="button secondary" type="button" data-review-action="acknowledge" data-key="{{ w.key }}">Acknowledge</button>{% elif w.acknowledged %} (acknowledged){% endif %}</p>
   {% else %}<p>No warnings.</p>{% endfor %}
 </section>
 {% endif %}
 <section class="panel" data-review-section="actions">
   <p>Filling does not submit. Submission will ask you separately.</p>
-  <button class="button" type="button" data-action="approve"{% if displayed_binding_hash %} data-displayed-binding-hash="{{ displayed_binding_hash }}"{% else %} disabled{% endif %}>Approve for filling</button>
-  <button class="button secondary" type="button" data-action="revoke">Revoke approval</button>
+  <button class="button" type="button" data-review-action="approve"{% if displayed_binding_hash %} data-displayed-binding-hash="{{ displayed_binding_hash }}"{% else %} disabled{% endif %}>Approve for filling</button>
+  <button class="button secondary" type="button" data-review-action="revoke">Revoke approval</button>
 </section>
 <script>
 (function () {
@@ -83,8 +83,8 @@
     window.location.reload();
   }
   function json(body) { return {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}; }
-  document.querySelectorAll("[data-action]").forEach(function (el) {
-    const action = el.dataset.action;
+  document.querySelectorAll("[data-review-action]").forEach(function (el) {
+    const action = el.dataset.reviewAction;
     const handler = function (event) {
       if (event) { event.preventDefault(); }
       if (action === "approve") { send("/approve", json({displayed_binding_hash: el.dataset.displayedBindingHash})); }
