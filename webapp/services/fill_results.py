@@ -136,3 +136,38 @@ def fill_status(conn, *, settings: Settings, account_id: str, application_worksp
         stale = True
     return {"status": status, "stale": stale, "ready_to_fill": ready, "run_id": latest["id"],
             "stop_reason": last["reason"] if state == "FILL_STOPPED" else None}
+
+
+APPROVED_WORDING = "Approved: open the employer page to prepare filling"
+READY_WORDING = "Ready to fill"
+
+
+def fill_status_label(status: Mapping[str, Any], *, approval_effective: bool) -> str | None:
+    """The one wording of spec §16.2 statuses (list, dossier, fill-plan page)."""
+    stale = " (stale: the approval or plan changed since)" if status.get("stale") else ""
+    code = status["status"]
+    if code == "FILLING":
+        return "Filling (the page is quarantined)"
+    if code == "FILLED_AWAITING_SUBMISSION":
+        return "Filled and quarantined; submission is a later, separate step" + stale
+    if code == "FILLED_CONTEXT_UNVERIFIED":
+        return "Filled earlier, but the filled page can no longer be verified" + stale
+    if status.get("ready_to_fill"):
+        return READY_WORDING
+    if code == "PLAN_NEEDS_REVIEW":
+        return "The fill plan needs your review"
+    if code == "UNSUPPORTED_FORM":
+        return "This form is not supported for safe filling"
+    if code == "FILL_STOPPED":
+        return f"Filling stopped ({status.get('stop_reason')})"
+    return APPROVED_WORDING if approval_effective else None
+
+
+def fill_summary(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                 now: datetime) -> dict[str, Any]:
+    from webapp.services.fill_plans import approval_context
+    status = fill_status(conn, settings=settings, account_id=account_id,
+                         application_workspace_id=application_workspace_id, now=now)
+    effective = approval_context(conn, settings=settings, account_id=account_id,
+                                 application_workspace_id=application_workspace_id, now=now) is not None
+    return {**status, "label": fill_status_label(status, approval_effective=effective)}

@@ -12,6 +12,7 @@ from webapp.api.dependencies import get_account_scope, get_conn
 from webapp.api.review_approval import _now
 from webapp.persistence import review_approval as ra
 from webapp.services import review_approval
+from webapp.services.fill_results import fill_summary
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import review_snapshot
 
@@ -49,6 +50,9 @@ def prepared_applications(conn, *, settings, account_id: str) -> list[dict[str, 
             "binding_hash": state.binding_hash,
             "presented_at_current_hash": bool(state.binding_hash and ra.presented_at(conn, row["id"],
                                                                                     state.binding_hash)),
+            # 6D-B: fill status next to the unchanged 6D-A review state (spec §16.2)
+            "fill_status": fill_summary(conn, settings=settings, account_id=account_id,
+                                        application_workspace_id=row["id"], now=now),
         })
     return out
 
