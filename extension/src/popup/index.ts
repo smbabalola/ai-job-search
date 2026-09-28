@@ -21,7 +21,6 @@ async function render(): Promise<void> {
     app.innerHTML = `
       <p>Paired &#x2713;</p>
       <div id="fill">${renderFillView(state?.view ?? null, state?.permissionsGranted ?? false)}</div>
-      <button id="run-autofill">Run autofill on this tab</button>
     `;
     document.getElementById("enable-fill")?.addEventListener("click", async () => {
       // Requested from the popup: a user gesture is required (spec §10.1).
@@ -35,12 +34,6 @@ async function render(): Promise<void> {
     });
     document.getElementById("abort-fill")?.addEventListener("click", async () => {
       if (tab?.id !== undefined) await chrome.tabs.remove(tab.id);  // the only exit: close the tab
-      window.close();
-    });
-    document.getElementById("run-autofill")?.addEventListener("click", async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) return;
-      chrome.runtime.sendMessage({ type: "popup_run_autofill", tabId: tab.id });
       window.close();
     });
   } else {

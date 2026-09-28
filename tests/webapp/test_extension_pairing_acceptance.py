@@ -154,7 +154,11 @@ def test_valid_code_pairs_and_persists_across_popup_reload(extension_context, li
     page.click("#pair-button")
     expect(page.locator("#app")).to_contain_text("Paired", timeout=5_000)
 
-    assert page.locator("#run-autofill").count() == 1
+    # 6D-B Task 14: the Phase 3 autofill button is retired; a paired popup
+    # offers only safe FILL (here: its permission request, since automated
+    # Chrome has not granted the optional tabs/webNavigation permissions).
+    assert page.locator("#run-autofill").count() == 0
+    assert page.locator("#enable-fill, #start-fill").count() == 1
     assert code not in page.content(), "pairing code must never render in popup HTML"
 
     # Regression guard for a real bug found during manual acceptance
@@ -282,12 +286,11 @@ def test_expired_code_rejected_via_direct_expiry_fast_forward(
 #   - extension/test/probe.test.ts (7 tests) and the real-browser
 #     test_probe_page_detects_real_greenhouse_adapter_with_zero_dom_mutation
 #     test below: real adapter detection + zero DOM mutation.
-#   - extension/test/snapshot-projection.test.ts (4 tests): server
-#     projection -> CandidateSnapshot mapping, no fabricated fields.
-#   - extension/test/content-script.test.ts: real autofill/suggest/ask/
-#     never behavior once a session and snapshot exist.
+#   - (6D-B Task 14 retired the Phase 3 autofill writer and its snapshot
+#     projection; the single employer-page writer is the 6D-B executor,
+#     extension/test/single-writer-callgraph.test.ts.)
 #   - tests/webapp/api/test_handoff_routes.py: the full session
-#     lifecycle over real HTTP, including snapshot projection auth.
+#     lifecycle over real HTTP.
 #
 # The one thing none of these can exercise is the literal toolbar-icon
 # click that grants activeTab in a real browser. That step is a required
