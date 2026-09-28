@@ -227,6 +227,7 @@ def test_at_most_one_outcome_under_concurrent_reports(grant_world, tmp_path):
     run = filling(grant_world)
     env = intent(grant_world, run, 0).envelope
     db = grant_world.conn.execute("PRAGMA database_list").fetchone()[2]
+    post = page_after(grant_world, 1)  # built here: the fixture connection is never shared with the threads
     barrier, results = threading.Barrier(2), []
 
     def report(value):
@@ -239,9 +240,11 @@ def test_at_most_one_outcome_under_concurrent_reports(grant_world, tmp_path):
             results.append(("ok", fa.record_outcome(conn, run_id=run["id"], action_index=0,
                                                    envelope_id=env.envelope_id, outcome=value,
                                                    readback_hash=fill_value_hash("ada@example.com"),
-                                                   post_observation=page_after(grant_world, 1), now=NOW)))
+                                                   post_observation=post, now=NOW)))
         except fr.FillRefused as exc:
             results.append(("refused", exc.reason))
+        except Exception as exc:  # recorded, so an unexpected error fails the assertion visibly
+            results.append(("error", repr(exc)))
         finally:
             conn.close()
 
@@ -250,7 +253,7 @@ def test_at_most_one_outcome_under_concurrent_reports(grant_world, tmp_path):
         t.start()
     for t in threads:
         t.join()
-    assert sorted(r[0] for r in results) == ["ok", "refused"]
+    assert sorted(r[0] for r in results) == ["ok", "refused"], results
     rows = grant_world.conn.execute("SELECT COUNT(*) FROM fill_action_events WHERE event = 'OUTCOME'").fetchone()[0]
     assert rows == 1
 

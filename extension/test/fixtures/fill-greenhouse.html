@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Acme (greenhouse@2 observer fixture)</title></head>
+<body>
+<header><input type="search" id="site-search" name="q" aria-label="Search jobs"></header>
+<form id="application_form" method="post" action="/submit">
+  <input type="hidden" name="authenticity_token" value="token-123">
+  <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+  <div><label for="notice">What is your notice period?</label><input id="notice" name="notice" type="text" required maxlength="60"></div>
+  <div><label for="city">Cafe&#769;</label><input id="city" name="city" type="text"></div>
+  <div><label for="source">How did you hear about us?</label>
+    <select id="source" name="source"><option value="">Choose</option><option value="lnk">LinkedIn</option><option value="ref">  Referral </option></select></div>
+  <div><label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx"></div>
+  <div><label for="cover_letter">Cover Letter</label><input id="cover_letter" name="cover_letter" type="file" accept=".pdf,.doc,.docx"></div>
+  <div><label for="about">Tell us about yourself</label><textarea id="about" name="about"></textarea></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+</body></html>

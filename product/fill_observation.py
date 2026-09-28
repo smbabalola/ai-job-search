@@ -168,6 +168,14 @@ def ambiguous_identities(doc: Mapping[str, Any]) -> list[list[str]]:
     return [keys for keys in groups.values() if len(keys) > 1]
 
 
+def unlabeled_identities(doc: Mapping[str, Any]) -> list[str]:
+    """APPLICATION elements with neither label nor question text (spec §7.2,
+    Review Focus 1): the user could not judge such a row, so the identity is
+    ambiguous rather than an empty question."""
+    return [e["page_field_key"] for e in doc["elements"] if e["classification"] == "APPLICATION"
+            and not (e["identity"]["label"] or "").strip() and not (e["identity"]["question"] or "").strip()]
+
+
 def unsupported_causes(doc: Mapping[str, Any], catalogue: Mapping[Any, Any]) -> list[str]:
     """Closed §14 causes decidable from the observation alone (the widget
     cause needs the approval and is decided by the plan builder)."""
@@ -184,6 +192,6 @@ def unsupported_causes(doc: Mapping[str, Any], catalogue: Mapping[Any, Any]) -> 
     if any(e["classification"] == "APPLICATION" and origins.get(e["identity"]["frame_path"]) != context["origin"]
            for e in doc["elements"]):
         causes.append("CROSS_ORIGIN_APPLICATION_FRAME")
-    if ambiguous_identities(doc):
+    if ambiguous_identities(doc) or unlabeled_identities(doc):
         causes.append("AMBIGUOUS_FIELD_IDENTITY")
     return causes

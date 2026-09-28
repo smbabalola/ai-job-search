@@ -145,3 +145,18 @@ def test_adapter_rule_proofs_are_re_verified_against_the_catalogue():
                      proof={"kind": "ADAPTER_NON_APPLICATION_RULE", "rule": "greenhouse.site_state_hidden@1"})
     with pytest.raises(ObservationError, match="does not hold"):
         validate_observation(observation([forged]), CATALOGUE)  # an application field can't be hidden by a false proof
+
+
+def test_an_application_field_without_label_or_question_is_ambiguous():
+    from product.fill_certification import CATALOGUE
+    from product.fill_observation import unlabeled_identities, unsupported_causes
+    from tests.product.fill_observation_fixtures import element, observation
+    bare = element("gh:bare", label=None, question=None, name="bare", id="bare")
+    labelled = element("gh:ok", label=None, question="Where are you based?", name="ok", id="ok")
+    doc = observation([bare, labelled])
+    assert unlabeled_identities(doc) == ["gh:bare"]
+    assert "AMBIGUOUS_FIELD_IDENTITY" in unsupported_causes(doc, CATALOGUE)
+    hidden_site_state = element("gh:csrf", control_kind="hidden", type="hidden", label=None, question=None,
+                                name="authenticity_token", classification="NON_APPLICATION",
+                                proof={"kind": "ADAPTER_NON_APPLICATION_RULE", "rule": "greenhouse.site_state_hidden@1"})
+    assert unlabeled_identities(observation([hidden_site_state, labelled])) == []

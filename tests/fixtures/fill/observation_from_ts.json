@@ -1,0 +1,1023 @@
+{
+  "generated_by": "extension/test/fill-observer.test.ts",
+  "expected": {
+    "resume_sha256_bytes": "255044462d312e3420726573756d65206279746573"
+  },
+  "observations": {
+    "greenhouse": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "page:site-search",
+          "control_kind": "custom",
+          "identity": {
+            "tag": "input",
+            "type": "search",
+            "name": "q",
+            "id": "site-search",
+            "form_owner": null,
+            "label": null,
+            "question": "Search jobs",
+            "aria": {
+              "aria-label": "Search jobs"
+            },
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:6491a778c3f3c28ae8d6a26e9c86f72eb5977ad9c77593d876f6e1d45e2c05d3",
+          "classification": "NON_APPLICATION",
+          "proof": {
+            "kind": "OUTSIDE_APPLICATION_ROOT",
+            "rule": null
+          },
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:name:authenticity_token",
+          "control_kind": "hidden",
+          "identity": {
+            "tag": "input",
+            "type": "hidden",
+            "name": "authenticity_token",
+            "id": null,
+            "form_owner": "application_form",
+            "label": null,
+            "question": null,
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": false,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:edcb144251cc84182fd84d0c128f7e866a76809ab319e1d909d3c7fc28bc9d36",
+          "classification": "NON_APPLICATION",
+          "proof": {
+            "kind": "ADAPTER_NON_APPLICATION_RULE",
+            "rule": "greenhouse.site_state_hidden@1"
+          },
+          "value_state": {
+            "state": "NONBLANK",
+            "current_value_hash": "sha256:b1595fbd55601b5f8134eb237b9e3bea8b573da79c07b1522cf327594efe2059"
+          }
+        },
+        {
+          "page_field_key": "gh:email",
+          "control_kind": "email",
+          "identity": {
+            "tag": "input",
+            "type": "email",
+            "name": "email",
+            "id": "email",
+            "form_owner": "application_form",
+            "label": "Email",
+            "question": "Email",
+            "aria": {},
+            "required": true,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:1e1d5d915d8715b97c4c6cc2779974220320fb72a771e025fc016638feb6c94a",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "NONBLANK",
+            "current_value_hash": "sha256:42c782e58f28a05d9d14303b6bf93392e59b35fca2b1cd2febbb26dae83f37ce"
+          }
+        },
+        {
+          "page_field_key": "gh:notice",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "notice",
+            "id": "notice",
+            "form_owner": "application_form",
+            "label": "What is your notice period?",
+            "question": "What is your notice period?",
+            "aria": {},
+            "required": true,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": 60,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:1db0e11d91cb8ce8ee9ffa104b41be3ae8d075dde2e54028201b5ab443b04b21",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:city",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "city",
+            "id": "city",
+            "form_owner": "application_form",
+            "label": "Café",
+            "question": "Café",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:4effd9ad35901669a3e6f1cb0db8bda7310616e02aee4e986c71549fc2d72266",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:source",
+          "control_kind": "select",
+          "identity": {
+            "tag": "select",
+            "type": "select-one",
+            "name": "source",
+            "id": "source",
+            "form_owner": "application_form",
+            "label": "How did you hear about us?",
+            "question": "How did you hear about us?",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [
+              {
+                "option_value": "",
+                "option_text": "Choose"
+              },
+              {
+                "option_value": "lnk",
+                "option_text": "LinkedIn"
+              },
+              {
+                "option_value": "ref",
+                "option_text": "Referral"
+              }
+            ],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:caa648248266ebcf8a7aadc5d54e3fda795b1d0305753e56e3c5c6e5462e4bb7",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:resume",
+          "control_kind": "file",
+          "identity": {
+            "tag": "input",
+            "type": "file",
+            "name": "resume",
+            "id": "resume",
+            "form_owner": "application_form",
+            "label": "Resume/CV",
+            "question": "Resume/CV",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": ".pdf,.doc,.docx",
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:074ff3c6e8e8302cea8ea7afaa94ec4eefecda9c0d770d3ac11ffee1e2adbc12",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "NONBLANK",
+            "current_value_hash": "sha256:fb5bc96982a42c40471581a4d5d581e6f4ad0b5591a2839fd40e0764d3b5266e"
+          }
+        },
+        {
+          "page_field_key": "gh:cover_letter",
+          "control_kind": "file",
+          "identity": {
+            "tag": "input",
+            "type": "file",
+            "name": "cover_letter",
+            "id": "cover_letter",
+            "form_owner": "application_form",
+            "label": "Cover Letter",
+            "question": "Cover Letter",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": ".pdf,.doc,.docx",
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:ac1c1acc4afd10ae41737273d88b32782cac03368b80199e929b630c172a9dc9",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:about",
+          "control_kind": "textarea",
+          "identity": {
+            "tag": "textarea",
+            "type": "textarea",
+            "name": "about",
+            "id": "about",
+            "form_owner": "application_form",
+            "label": "Tell us about yourself",
+            "question": "Tell us about yourself",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:6db435c76e436f6ded1cdebb0aaea96245bedb6a533effe618b7502e0502e91f",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": [
+        {
+          "control_fingerprint": "sha256:d389c7945e72a4c4b5feaf5e95e90b0fbb97eefa415267cb9bc73901d208ae21"
+        }
+      ]
+    },
+    "lever": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://jobs.lever.co/acme/0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/apply",
+        "origin": "https://jobs.lever.co",
+        "adapter_id": "lever",
+        "adapter_version": "lever@2",
+        "tenant_key": "acme",
+        "ats_job_id": "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://jobs.lever.co"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "lever:name:_csrf",
+          "control_kind": "hidden",
+          "identity": {
+            "tag": "input",
+            "type": "hidden",
+            "name": "_csrf",
+            "id": null,
+            "form_owner": "application_form",
+            "label": null,
+            "question": null,
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": false,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:e5d60ac76b77aaf9cdd3875e212520557e7ad04bb8282ddf7d5730b0ec665757",
+          "classification": "NON_APPLICATION",
+          "proof": {
+            "kind": "ADAPTER_NON_APPLICATION_RULE",
+            "rule": "lever.site_state_hidden@1"
+          },
+          "value_state": {
+            "state": "NONBLANK",
+            "current_value_hash": "sha256:2ca8e4c82270e17553c846c1d59abda577b2be4ecbc79ace977f071ddcce7257"
+          }
+        },
+        {
+          "page_field_key": "lever:name",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "name",
+            "id": "name",
+            "form_owner": "application_form",
+            "label": "Full name",
+            "question": "Full name",
+            "aria": {},
+            "required": true,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:3a544dbaab4b228682253a67099996d172f34127eb0301040d765857fe43458f",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "lever:email",
+          "control_kind": "email",
+          "identity": {
+            "tag": "input",
+            "type": "email",
+            "name": "email",
+            "id": "email",
+            "form_owner": "application_form",
+            "label": "Email",
+            "question": "Email",
+            "aria": {},
+            "required": true,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:1e1d5d915d8715b97c4c6cc2779974220320fb72a771e025fc016638feb6c94a",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "lever:phone",
+          "control_kind": "tel",
+          "identity": {
+            "tag": "input",
+            "type": "tel",
+            "name": "phone",
+            "id": "phone",
+            "form_owner": "application_form",
+            "label": "Phone",
+            "question": "Phone",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:c9987e4e8790b6b4e3df7f4a9a3e049acee5c4eed8949f88fd1459d0d6a13146",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "lever:resume",
+          "control_kind": "file",
+          "identity": {
+            "tag": "input",
+            "type": "file",
+            "name": "resume",
+            "id": "resume",
+            "form_owner": "application_form",
+            "label": "Resume/CV",
+            "question": "Resume/CV",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": ".pdf,.docx",
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:bbe96da675b9ffd618723c85f79db3b3c48fe9a78d80f1a60fed176f32e882a7",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": [
+        {
+          "control_fingerprint": "sha256:40e4698dc5b6f841b2fe3136874d9d7be1daa0a889d5b7bc850f66d4772b766f"
+        }
+      ]
+    },
+    "aria_only": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "gh:start",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "start",
+            "id": "start",
+            "form_owner": "application_form",
+            "label": null,
+            "question": "When can you start?",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:a7e4396005f691924ac8a29ccb58d4124b194edb83b4ca0cdac9c1b7f7bd6340",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:salary",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "salary",
+            "id": "salary",
+            "form_owner": "application_form",
+            "label": null,
+            "question": "Expected salary",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:39db5942dbc2edbb8e0162d9ad462bca7f1026be0e5b08c8823aff8f62ead4e2",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:country",
+          "control_kind": "select",
+          "identity": {
+            "tag": "select",
+            "type": "select-one",
+            "name": "country",
+            "id": "country",
+            "form_owner": "application_form",
+            "label": "Country of residence",
+            "question": "Country of residence",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [
+              {
+                "option_value": "uk",
+                "option_text": "United Kingdom"
+              },
+              {
+                "option_value": "fr",
+                "option_text": "France"
+              }
+            ],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:d8d0fb0e0a4ca5ffd4d9f2354c3a601b9df8dfe3f86fc5fd76b6a1989ffc089e",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "NONBLANK",
+            "current_value_hash": "sha256:3fbd94c5a6a026c66ed69df36f3e5e66d08b363cdb7af768be70e811fe19b2b0"
+          }
+        },
+        {
+          "page_field_key": "gh:mystery",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "mystery",
+            "id": "mystery",
+            "form_owner": "application_form",
+            "label": null,
+            "question": null,
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:e833a8621db3c58185835bbdf0f52fa3ea42d5b7cb1de2a0ed14924a37e73d08",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": []
+    },
+    "duplicate": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "gh:name:reference",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "reference",
+            "id": null,
+            "form_owner": "application_form",
+            "label": "Reference",
+            "question": "Reference",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:8894f073f11f5212394f6597331d846a2950203a0f837fc1e96ad4d838155172",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:name:reference#2",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "reference",
+            "id": null,
+            "form_owner": "application_form",
+            "label": "Reference",
+            "question": "Reference",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:8894f073f11f5212394f6597331d846a2950203a0f837fc1e96ad4d838155172",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": []
+    },
+    "conditional": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "gh:email",
+          "control_kind": "email",
+          "identity": {
+            "tag": "input",
+            "type": "email",
+            "name": "email",
+            "id": "email",
+            "form_owner": "application_form",
+            "label": "Email",
+            "question": "Email",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:db30431c88bbc67613fda4e57500eef363b61624200e525493fed6973d08fc78",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:visa",
+          "control_kind": "text",
+          "identity": {
+            "tag": "input",
+            "type": "text",
+            "name": "visa",
+            "id": "visa",
+            "form_owner": "application_form",
+            "label": "Will you require visa sponsorship?",
+            "question": "Will you require visa sponsorship?",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": false,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:718d88f3bced5b303214478106496d650262b8dd518db69759736da72851731a",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": []
+    },
+    "wizard": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": [
+          "NEXT_BUTTON",
+          "STEP_INDICATOR"
+        ]
+      },
+      "elements": [
+        {
+          "page_field_key": "gh:email",
+          "control_kind": "email",
+          "identity": {
+            "tag": "input",
+            "type": "email",
+            "name": "email",
+            "id": "email",
+            "form_owner": "application_form",
+            "label": "Email",
+            "question": "Email",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:db30431c88bbc67613fda4e57500eef363b61624200e525493fed6973d08fc78",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": [
+        {
+          "control_fingerprint": "sha256:9de7dbebccda880fa728736968a830463ed2ca4d50603f8a1c52e8d3d326e1f5"
+        }
+      ]
+    },
+    "cross_origin": {
+      "schema_version": "fill-observation.v1",
+      "context": {
+        "canonical_url": "https://boards.greenhouse.io/acme/jobs/123",
+        "origin": "https://boards.greenhouse.io",
+        "adapter_id": "greenhouse",
+        "adapter_version": "greenhouse@2",
+        "tenant_key": "acme",
+        "ats_job_id": "123",
+        "frames": [
+          {
+            "frame_path": "0",
+            "origin": "https://boards.greenhouse.io"
+          },
+          {
+            "frame_path": "0.0",
+            "origin": "https://forms.other-origin.test"
+          },
+          {
+            "frame_path": "0.1",
+            "origin": "https://ads.other-origin.test"
+          }
+        ],
+        "application_root_found": true,
+        "multi_step_indicators": []
+      },
+      "elements": [
+        {
+          "page_field_key": "gh:email",
+          "control_kind": "email",
+          "identity": {
+            "tag": "input",
+            "type": "email",
+            "name": "email",
+            "id": "email",
+            "form_owner": "application_form",
+            "label": "Email",
+            "question": "Email",
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0"
+          },
+          "field_fingerprint": "sha256:db30431c88bbc67613fda4e57500eef363b61624200e525493fed6973d08fc78",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        },
+        {
+          "page_field_key": "gh:frame:0",
+          "control_kind": "custom",
+          "identity": {
+            "tag": "iframe",
+            "type": null,
+            "name": null,
+            "id": null,
+            "form_owner": null,
+            "label": null,
+            "question": null,
+            "aria": {},
+            "required": false,
+            "disabled": false,
+            "readonly": false,
+            "visible": true,
+            "options": [],
+            "accept": null,
+            "multiple": false,
+            "maxlength": null,
+            "pattern": null,
+            "min": null,
+            "max": null,
+            "frame_path": "0.0"
+          },
+          "field_fingerprint": "sha256:4f8c0a3e7815f7dbec5158e6bfa92057e9406a6ce313227c9a6ae4ab42ba6cbb",
+          "classification": "APPLICATION",
+          "proof": null,
+          "value_state": {
+            "state": "BLANK"
+          }
+        }
+      ],
+      "submit_controls": []
+    }
+  }
+}
