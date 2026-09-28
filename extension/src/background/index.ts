@@ -24,6 +24,16 @@ import type { ProbeResult } from "../content/probe";
 import type { ContentScriptMessage } from "../content/messages";
 import type { CandidateSnapshot } from "../adapters/types";
 
+import * as fillQuarantine from "../fill/quarantine";
+import { checkSiblingContainment } from "../fill/siblings";
+
+// 6D-B Task 2 test hook: compiled only into the FILL_TEST_HOOKS build
+// (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
+// whole branch is removed at build time.
+if (__FILL_TEST_HOOKS__) {
+  (globalThis as unknown as Record<string, unknown>).__fillTest = { ...fillQuarantine, checkSiblingContainment };
+}
+
 const BASE_URL = "http://127.0.0.1:8420";
 
 // The one loopback origin the webapp bridge content script is allowed

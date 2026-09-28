@@ -1,10 +1,18 @@
 import { build } from "esbuild";
-import { cp, mkdir, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const extensionRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const outputRoot = resolve(extensionRoot, "dist", "extension");
+// FILL_TEST_HOOKS=1 builds a separate, test-only variant (6D-B Task 2):
+// it exposes the quarantine/sibling modules on the service worker for the
+// browser proof suite and grants tabs/webNavigation up front, because
+// automated Chrome cannot answer an optional-permission prompt. The
+// production build (dist/extension) never contains the hook: the branch is
+// compiled out by the __FILL_TEST_HOOKS__ define.
+const testHooks = process.env.FILL_TEST_HOOKS === "1";
+const outputRoot = resolve(extensionRoot, "dist", testHooks ? "extension-test-hooks" : "extension");
+const define = { __FILL_TEST_HOOKS__: String(testHooks) };
 
 export async function buildExtension() {
   await rm(outputRoot, { recursive: true, force: true });
@@ -22,6 +30,10 @@ export async function buildExtension() {
     format: "esm",
     platform: "browser",
     target: "chrome120",
+    define,
+    // Syntax-only minification folds the compiled-out `if (false)` test-hook
+    // branch away entirely; identifiers and whitespace are left alone.
+    minifySyntax: true,
     outfile: resolve(outputRoot, "background", "index.js"),
   });
   await build({
@@ -56,6 +68,12 @@ export async function buildExtension() {
     target: "chrome120",
     outfile: resolve(outputRoot, "attachment-runner", "index.js"),
   });
+  if (testHooks) {
+    const testManifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
+    testManifest.permissions = [...testManifest.permissions, ...(testManifest.optional_permissions ?? [])];
+    delete testManifest.optional_permissions;
+    await writeFile(resolve(outputRoot, "manifest.json"), JSON.stringify(testManifest, null, 2));
+  }
   const manifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
   if (manifest.background?.service_worker !== "background/index.js") {
     throw new Error("manifest service worker does not match the production bundle path");
