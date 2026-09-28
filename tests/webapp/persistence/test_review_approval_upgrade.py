@@ -74,12 +74,12 @@ def _objects_on(c, table, kind):
     return {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = ? AND tbl_name = ?", (kind, table))}
 
 
-def test_fresh_database_gets_nineteen_migrations_and_a_rerun_is_a_noop(tmp_path):
+def test_fresh_database_gets_all_migrations_through_020_and_a_rerun_is_a_noop(tmp_path):
     db = tmp_path / "fresh.sqlite3"
     init_db(db)
     c = connect(db)
     ids, schema = _migrations(c), _schema(c)
-    assert len(ids) == 19 and ids[-1] == REVIEW_APPROVAL_MIGRATION_ID
+    assert len(ids) == 20 and ids[-2:] == [REVIEW_APPROVAL_MIGRATION_ID, "020_fill"]
     init_db(db)
     assert _migrations(c) == ids and _schema(c) == schema
     c.close()
@@ -116,7 +116,7 @@ def test_pre_6d_database_upgrades_through_019(pre_6d_db):
 
     init_db(db)
     c = connect(db)
-    assert _migrations(c) == [*migrations_before, REVIEW_APPROVAL_MIGRATION_ID]
+    assert _migrations(c) == [*migrations_before, REVIEW_APPROVAL_MIGRATION_ID, "020_fill"]
     assert [tuple(r) for r in c.execute("SELECT * FROM approved_answers ORDER BY seq")] == answers_before
     assert _objects_on(c, "approved_answers", "trigger") >= triggers_before
     assert _objects_on(c, "approved_answers", "index") >= indexes_before
