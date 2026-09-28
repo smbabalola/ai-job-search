@@ -199,13 +199,31 @@ function uniqueKey(used: Set<string>, base: string): string {
   return key;
 }
 
-export async function observe(document: Document, adapter: CertifiedAdapter,
-                              context: ObserveContext): Promise<ObservationV1> {
+export interface ScannedControl {
+  pageFieldKey: string;
+  element: Element;
+  kind: ControlKind;
+  identity: IdentityV1;
+  classification: ElementV1["classification"];
+  proof: ElementV1["proof"];
+}
+
+export interface PageScan {
+  root: Element | null;
+  frames: FrameV1[];
+  iframes: HTMLIFrameElement[];
+  controls: ScannedControl[];
+  actionControls: Element[];
+}
+
+// Synchronous: the executor re-locates its target and re-checks the
+// fingerprint in the same task as the write (spec §11.3 c.2). observe()
+// builds the observation from exactly this scan.
+export function scanControls(document: Document, adapter: CertifiedAdapter, origin: string): PageScan {
   const root = adapter.applicationRoot(document);
-  const target = adapter.targetIdentity(new URL(context.canonicalUrl));
-  const frames: FrameV1[] = [{ frame_path: "0", origin: context.origin }];
+  const frames: FrameV1[] = [{ frame_path: "0", origin }];
   const iframes = Array.from(document.querySelectorAll("iframe"));
-  iframes.forEach((frame, i) => frames.push({ frame_path: `0.${i}`, origin: frameOrigin(frame, context.origin) }));
+  iframes.forEach((frame, i) => frames.push({ frame_path: `0.${i}`, origin: frameOrigin(frame, origin) }));
 
   const candidates = new Set<Element>(Array.from(document.querySelectorAll("input, select, textarea, button")));
   if (root) {
@@ -219,23 +237,15 @@ export async function observe(document: Document, adapter: CertifiedAdapter,
 
   const used = new Set<string>();
   const hidden = new Set(adapter.nonApplicationRule.hiddenNames);
-  const elements: ElementV1[] = [];
-  const submitControls: { control_fingerprint: string }[] = [];
+  const controls: ScannedControl[] = [];
+  const actionControls: Element[] = [];
   for (const el of ordered) {
     const application = inRoot(el, root);
     if (isActionControl(el)) {
-      if (application) {
-        const input = el as HTMLInputElement;
-        submitControls.push({ control_fingerprint: await canonicalHash("fill-submit-control", "v1", {
-          tag: el.tagName.toLowerCase(), type: input.type ?? null, name: el.getAttribute("name"), id: el.id || null,
-          text: collapse(el.tagName === "BUTTON" ? el.textContent : input.value), form_owner: formOwner(el),
-          frame_path: "0",
-        }) });
-      }
+      if (application) actionControls.push(el);
       continue;
     }
     const kind = controlKind(el);
-    const identity = identityOf(el, "0");
     const name = el.getAttribute("name");
     const base = !application ? `page:${el.id || name || el.tagName.toLowerCase()}`
       : el.id ? `${adapter.keyPrefix}:${el.id}`
@@ -249,11 +259,8 @@ export async function observe(document: Document, adapter: CertifiedAdapter,
       classification = "NON_APPLICATION";
       proof = { kind: "ADAPTER_NON_APPLICATION_RULE", rule: adapter.nonApplicationRule.ruleId };
     }
-    elements.push({
-      page_field_key: uniqueKey(used, base), control_kind: kind, identity,
-      field_fingerprint: await canonicalHash("fill-field", "v1", identity as unknown as Canonical),
-      classification, proof, value_state: await valueStateOf(el, kind),
-    });
+    controls.push({ pageFieldKey: uniqueKey(used, base), element: el, kind, identity: identityOf(el, "0"),
+      classification, proof });
   }
   // A frame inside the application root is part of the application surface
   // the observer cannot read: reported as an application element in that
@@ -261,19 +268,45 @@ export async function observe(document: Document, adapter: CertifiedAdapter,
   // unlabeled/unsupported element), never silently ignored.
   for (const [i, frame] of iframes.entries()) {
     if (!root || !root.contains(frame)) continue;
-    const identity = identityOf(frame, `0.${i}`);
+    controls.push({ pageFieldKey: uniqueKey(used, `${adapter.keyPrefix}:frame:${i}`), element: frame, kind: "custom",
+      identity: identityOf(frame, `0.${i}`), classification: "APPLICATION", proof: null });
+  }
+  return { root, frames, iframes, controls, actionControls };
+}
+
+export function submitControlPayload(el: Element): Canonical {
+  const input = el as HTMLInputElement;
+  return {
+    tag: el.tagName.toLowerCase(), type: input.type ?? null, name: el.getAttribute("name"), id: el.id || null,
+    text: collapse(el.tagName === "BUTTON" ? el.textContent : input.value), form_owner: formOwner(el),
+    frame_path: "0",
+  };
+}
+
+export async function observe(document: Document, adapter: CertifiedAdapter,
+                              context: ObserveContext): Promise<ObservationV1> {
+  const scan = scanControls(document, adapter, context.origin);
+  const target = adapter.targetIdentity(new URL(context.canonicalUrl));
+  const elements: ElementV1[] = [];
+  for (const control of scan.controls) {
     elements.push({
-      page_field_key: uniqueKey(used, `${adapter.keyPrefix}:frame:${i}`), control_kind: "custom", identity,
-      field_fingerprint: await canonicalHash("fill-field", "v1", identity as unknown as Canonical),
-      classification: "APPLICATION", proof: null, value_state: { state: "BLANK" },
+      page_field_key: control.pageFieldKey, control_kind: control.kind, identity: control.identity,
+      field_fingerprint: await canonicalHash("fill-field", "v1", control.identity as unknown as Canonical),
+      classification: control.classification, proof: control.proof,
+      value_state: control.element.tagName === "IFRAME" ? { state: "BLANK" } : await valueStateOf(control.element, control.kind),
     });
+  }
+  const submitControls = [];
+  for (const el of scan.actionControls) {
+    submitControls.push({ control_fingerprint: await canonicalHash("fill-submit-control", "v1", submitControlPayload(el)) });
   }
   return {
     schema_version: "fill-observation.v1",
     context: {
       canonical_url: context.canonicalUrl, origin: context.origin, adapter_id: adapter.id,
-      adapter_version: adapter.adapterVersion, tenant_key: target.tenantKey, ats_job_id: target.atsJobId, frames,
-      application_root_found: root !== null, multi_step_indicators: multiStepIndicators(document, root),
+      adapter_version: adapter.adapterVersion, tenant_key: target.tenantKey, ats_job_id: target.atsJobId,
+      frames: scan.frames, application_root_found: scan.root !== null,
+      multi_step_indicators: multiStepIndicators(document, scan.root),
     },
     elements,
     submit_controls: submitControls,

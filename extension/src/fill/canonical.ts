@@ -9,6 +9,7 @@
 // never a silent mismatch (tests/product/test_fill_observation_from_ts.py).
 
 import { UnpairedSurrogateError } from "./hash";
+import { sha256HexSync } from "./sha256";
 
 export type Canonical = null | boolean | number | string | Canonical[] | { [key: string]: Canonical };
 
@@ -74,4 +75,9 @@ export async function sha256Hex(bytes: Uint8Array<ArrayBuffer> | ArrayBuffer): P
 export async function canonicalHash(schema: string, schemaVersion: string, payload: Canonical): Promise<string> {
   const envelope = canonicalJson({ schema, schema_version: schemaVersion, payload });
   return "sha256:" + await sha256Hex(new TextEncoder().encode(envelope));
+}
+
+export function canonicalHashSync(schema: string, schemaVersion: string, payload: Canonical): string {
+  const envelope = canonicalJson({ schema, schema_version: schemaVersion, payload });
+  return "sha256:" + sha256HexSync(new TextEncoder().encode(envelope));
 }

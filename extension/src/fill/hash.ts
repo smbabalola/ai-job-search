@@ -10,6 +10,8 @@
 // ensure_ascii=False (\" \\ \b \f \n \r \t, other controls as \u00xx
 // lowercase, U+2028/U+2029 raw), which the vectors verify.
 
+import { sha256HexSync } from "./sha256";
+
 export const FILL_VALUE_HASH_SCHEMA = "fill-rendered-value";
 export const FILL_VALUE_HASH_VERSION = "v1";
 
@@ -48,4 +50,13 @@ export async function fillValueHash(value: string): Promise<string> {
     `"schema_version":"${FILL_VALUE_HASH_VERSION}"}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(envelope));
   return "sha256:" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// The synchronous twin (same normalization and envelope) for the executor's
+// single-task check-then-write (spec §11.3 c.2).
+export function fillValueHashSync(value: string): string {
+  const normalized = normalizeFillValue(value);
+  const envelope = `{"payload":${JSON.stringify(normalized)},"schema":"${FILL_VALUE_HASH_SCHEMA}",` +
+    `"schema_version":"${FILL_VALUE_HASH_VERSION}"}`;
+  return "sha256:" + sha256HexSync(new TextEncoder().encode(envelope));
 }
