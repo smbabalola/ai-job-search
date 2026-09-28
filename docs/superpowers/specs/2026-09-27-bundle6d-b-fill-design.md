@@ -52,7 +52,7 @@ Three decisions shape everything else:
 | D1 | Architecture: a **server-authoritative plan with a thin extension executor**. The extension observes and executes; the server maps, plans, authorizes and records. |
 | D2 | **6D-A is unchanged.** 6D-B adds a separate immutable `fill-plan.v1` and an append-only fill-plan confirmation bound to `(plan_hash, approval_id, approval_binding_hash)`. |
 | D3 | Every application field is `WRITE`, `ATTACH_LOCAL` or an explicit `OMIT`. Only a proven non-application control may be `IGNORE_NON_APPLICATION`. Any other application field is a delta and a stop. |
-| D4 | The network firewall is a **total quarantine** built from `declarativeNetRequest` session rules. It is preceded by a **communications reset** (PRELOAD quarantine, then reload). |
+| D4 | The network firewall is a **total quarantine** built from `declarativeNetRequest` session rules. It is preceded by a **communications reset** (PRELOAD quarantine, then reload). Its guarantee is scoped to the requests DNR sees; §10.8 states exactly what is and isn't covered. |
 | D5 | **Single-page forms only.** Wizard indicators mean `UNSUPPORTED_FORM` before any write. |
 | D6 | Documents are `ATTACH_LOCAL`: the exact approved bytes are placed in the approved input and verified by a byte SHA-256 read back from `input.files`. No claim is made that the employer received them. |
 | D7 | **No release in 6D-B.** The quarantine stays active at `FILLED_AWAITING_SUBMISSION`. Destroying the execution context (closing the tab) is the only exit. |
@@ -99,12 +99,19 @@ Three decisions shape everything else:
 **Residual risks documented, not hidden:**
 - `webNavigation` and `tabs` can't see SharedWorkers, service workers or not-yet-activated prerendered pages. These are handled only by the quarantine rules and adapter certification (§10.5, D15).
 - A packed extension can't observe individual blocked requests. Prevention is structural; in-page detection is best-effort (§10.6).
+- Traffic that `declarativeNetRequest` doesn't see is outside the network guarantee (§10.8), most notably WebRTC peer and STUN/TURN traffic. It is handled only by adapter certification.
+- During PRELOAD, the page's GET traffic (including GET beacons) is allowed by design. It can carry only what the page already held, never executor-written data.
 
 ## 5. Invariants
 
 - **I1. No unapproved write.** Every employer-page mutation corresponds to exactly one action of a confirmed `fill-plan.v1`, whose confirmation is bound to the currently effective 6D-A approval.
 - **I2. No write outside quarantine.** No mutation happens unless the exact TOTAL quarantine ruleset has been read back and verified immediately before that action, and the communications reset preceded it.
-- **I3. Nothing leaves the tab.** While a run's context exists, every network request from the execution tab is blocked, as are background requests initiated by the employer origin (Q2).
+- **I3. Executor-written data can't leave through any DNR-visible request.**
+  - Before TOTAL is verified, the executor has written nothing (I2). PRELOAD deliberately allows GET/HEAD, so the page's own GET traffic, including GET "beacons", can leave during PRELOAD, but it can't carry anything the executor wrote.
+  - From TOTAL verification until the execution context is destroyed:
+    - every request DNR sees from the execution tab is blocked, for every type in `QUARANTINE_RESOURCE_TYPES_V1` and every method;
+    - every background request (`TAB_ID_NONE`) initiated by the employer origin is blocked (Q2).
+  - Channels DNR doesn't see are outside this invariant (§10.8), and are handled only by adapter certification (D15).
 - **I4. Closed plan.** The executor never maps, classifies or chooses. Anything the plan doesn't cover stops the run before the next write.
 - **I5. Exact values.** Each written value's readback hash equals the plan's `rendered_value_hash`, and each attached file's byte SHA-256 equals the approved document SHA.
 - **I6. At most once.** An action is applied at most once. The server accepts at most one terminal outcome per action, and uncertainty is terminal (`WRITE_OUTCOME_UNKNOWN`).
@@ -197,7 +204,7 @@ Nothing else qualifies. In particular, `type=hidden`, `role=search` and cookie-b
 ### 7.4 Adapter certification (`fill-certification`)
 
 A certified adapter version declares all of the following, with regression fixtures for each rule:
-- `network_model = NO_UNCONTAINED_PERSISTENT_CHANNELS`;
+- `network_model = NO_UNCONTAINED_PERSISTENT_CHANNELS`. The version's pages use no WebRTC, and no persistent channel that the communications reset and Q1/Q2 can't contain (§10.8);
 - the supported control kinds (e.g. text, email, textarea, single select; radio or checkbox only when its forms accept state changes without clicks);
 - deterministic mapping rules (`rule_id@version` → an answer key or document kind);
 - non-application rules;
@@ -365,6 +372,8 @@ QUARANTINE_RESOURCE_TYPES_V1 = main_frame, sub_frame, stylesheet, script, image,
 - **PRELOAD v1:**
   - Q1-PRE (`tabIds=[execution_tab_id]`) blocks the request methods `post`, `put`, `patch`, `delete`, `connect`, `options` for all types, and blocks the types `websocket`, `webtransport`, `ping` for any method;
   - Q2 (below).
+
+  PRELOAD **deliberately allows GET/HEAD** (scripts, styles, images, fonts and GET `fetch`/XHR), because the page has to rebuild itself during the reset. So GET-borne data, including image/script/`fetch` GET beacons, *can* leave during PRELOAD. That is acceptable only because the executor has written nothing yet (I2). PRELOAD is a reset aid, not a confidentiality boundary. The confidentiality boundary begins at verified TOTAL.
 - **TOTAL v1:**
   - **Q1 TARGET_TAB_TOTAL**: `tabIds=[execution_tab_id]`, all of `QUARANTINE_RESOURCE_TYPES_V1`, every method, action `block`;
   - **Q2 EMPLOYER_BACKGROUND**: `tabIds=[TAB_ID_NONE]` with `initiatorDomains=[employer origin host]`, all types, every method, action `block`;
@@ -406,6 +415,32 @@ Each of these is a stop reason while a run is active and evidence afterwards.
 - Closing the tab removes the rules and records `EXECUTION_CONTEXT_CLOSED` when observed.
 - Browser shutdown clears the session rules. **6D-B makes no continuity guarantee across a shutdown.** The run is terminated, the old page is never resumed as an authorized context, and a new run needs the full reset.
 
+### 10.8 Scope of the network guarantee (what is and isn't covered)
+
+**Covered, from verified TOTAL until the execution context is destroyed:**
+- every request `declarativeNetRequest` sees that originates in the execution tab (Q1), for every type in `QUARANTINE_RESOURCE_TYPES_V1` and every method, including:
+  - navigations, frame loads and form posts;
+  - `fetch`/XHR, beacons/`ping`;
+  - WebSocket and WebTransport handshakes;
+  - GET subresources;
+- every request DNR sees with no associated tab (`TAB_ID_NONE`) and the employer origin as initiator (Q2), which includes the employer's service-worker `fetch()` calls.
+
+**Covered by other mechanisms, not by DNR:**
+- channels opened before the run (the communications reset, §10.4);
+- sibling tabs and frames on the employer origin (refusal, §10.5).
+
+**Not covered by the network guarantee:**
+- **WebRTC** (`RTCPeerConnection` data channels and media, STUN/TURN traffic), which DNR doesn't see;
+- requests made by **other extensions**;
+- browser-internal traffic (e.g. Safe Browsing, DNS prefetch/preconnect), which carries no page form data;
+- responses served from a service worker's own cache (these are inbound, not transmissions);
+- prerendered or other contexts the tab and frame APIs can't see (§10.5);
+- a compromised browser, or Chrome defects in DNR enforcement (§4).
+
+**Certification closes what DNR doesn't cover.** `network_model = NO_UNCONTAINED_PERSISTENT_CHANNELS` (§7.4, D15) additionally requires the certified adapter version's pages to use **no WebRTC**, and no persistent channel that the reset and Q1/Q2 can't contain. This is established on that version's fixtures during certification (spike S2) and re-checked when certification changes.
+
+6D-B never claims "nothing can leave the browser". It claims exactly the covered list above.
+
 ## 11. Grant, run lifecycle and per-action authorization
 
 ### 11.1 Run states
@@ -436,14 +471,35 @@ A service `request_fill_grant(fill_run_id)` runs in one `BEGIN IMMEDIATE` transa
 - the 6D-A approval is effective;
 - a valid confirmation exists for the run's `(plan_hash, approval_id, approval_binding_hash)`;
 - the run's revalidated observation equals the plan's;
-- `QUARANTINE_ACTIVE` is recorded with the TOTAL `ruleset_hash`.
+- `QUARANTINE_ACTIVE` is recorded with the TOTAL `ruleset_hash`;
+- **G4 manifest coverage** holds (§11.2.1).
 
-It then calls the **existing public** `request_grant(stage=FILL, fill_manifest=…)`. The manifest v1 is derived 1:1 from the plan's WRITE and ATTACH_LOCAL actions:
-- `source.kind` is EVIDENCE, APPROVED_ANSWER or PACK_DOCUMENT;
-- `value_hash` follows the pinned per-kind rule;
-- `transform_id` is the plan's.
+It then calls the **existing public** `request_grant(stage=FILL, fill_manifest=…)`, with the fill-manifest v1 derived from the plan per §11.2.1. The 6B binding and TTL are unchanged. The same transaction records the run's grant binding `(grant_id, approval_id, approval_binding_hash, plan_hash, structure_fingerprint, observation_fingerprint, ruleset_hash)`. The 6B gate is applied fully (pause, kill switch/sentinel, capability ceiling, policy, budgets, `fill_per_day`).
 
-The 6B binding and TTL are unchanged. The same transaction records the run's grant binding `(grant_id, approval_id, approval_binding_hash, plan_hash, structure_fingerprint, observation_fingerprint, ruleset_hash)`. The 6B gate is applied fully (pause, kill switch/sentinel, capability ceiling, policy, budgets, `fill_per_day`).
+#### 11.2.1 G4 manifest coverage (6D-A §12 G4, made explicit)
+
+**Derivation.** The manifest has exactly one entry per plan action of kind `WRITE` or `ATTACH_LOCAL`, and no other entries. `OMIT` and `IGNORE_NON_APPLICATION` actions have no manifest entry, because they write nothing.
+
+| Manifest field | WRITE (answer) | WRITE (evidence, e.g. contact) | ATTACH_LOCAL |
+|---|---|---|---|
+| `page_field_key` | the action's | the action's | the action's |
+| `subject` / `normalized_field_type` | the binding field's `subject` | the contact `normalized_field_type` | `normalized_field_type` = document kind |
+| `source.kind` | `APPROVED_ANSWER` | `EVIDENCE` | `PACK_DOCUMENT` |
+| `source.ref` | the binding field's `source_ref` (`approved_answer_id`) | the binding field's `source_ref` (evidence claim id) | the approved document's `sha256` (6B: pack document hash) |
+| `source.confirmation_id` | the `answer_confirmation_id` that 6B requires for that answer | `null` | `null` |
+| `transform_id` | the plan's; must be in the binding field's `permitted_transforms` | the same | `identity` |
+| `value_hash` | **the 6D-A approved `value_hash`** (the approved, untransformed value); the rendered hash stays in the plan | the same | `value_hash(document sha256)` |
+| `required` | the observed field's `required` | the same | the same |
+
+**Coverage check.** It runs at grant issue (§11.2) **and again at every intent** (§11.3 b) against the current effective binding. Every one of these must hold, or the grant is refused (and the intent refused and the run stopped with `APPROVAL_NOT_EFFECTIVE`); there are no partial grants:
+1. **Answer entries.** An `APPROVED_ANSWER` entry has a binding field with `disposition = ANSWER`, the same `answer_key`, `source_kind = APPROVED_ANSWER`, the same `source_ref` and `value_hash`, and a `transform_id` in `permitted_transforms`.
+2. **Evidence entries.** An `EVIDENCE` entry has a binding field with `disposition = ANSWER`, `source_kind = EVIDENCE`, the same `source_ref` (the approved evidence ref) and `value_hash`, and a permitted transform.
+3. **Document entries.** A `PACK_DOCUMENT` entry has a binding document of the same kind whose `sha256` equals `source.ref`, with the same `document_version_id`.
+4. **No OMIT target.** No entry's `page_field_key` maps to an action whose `answer_key` is bound `OMIT`, and no answer key bound `OMIT` appears in any entry.
+5. **A bijection.** The set of manifest `page_field_key`s equals the plan's set of WRITE and ATTACH_LOCAL actions, with no extra entry, no missing entry and no duplicate.
+6. **The same approval.** The binding checked is the one with the run's `approval_id` and `approval_binding_hash`. A different current binding means the approval isn't effective for this run.
+
+These rules are pure functions (`product/fill_plan.py`), with a test for each rule and each way it can fail.
 
 ### 11.3 Per-action protocol (strict plan order)
 
@@ -458,6 +514,7 @@ The 6B binding and TTL are unchanged. The same transaction records the run's gra
 - the grant is ISSUED and unexpired, and the run's grant binding is unchanged;
 - current FILL authority: it recomputes the 6B authorization reducers (pause, kill switch/sentinel, capability ceiling, current policy version) without consuming any budget, and a reduction refuses the intent and revokes the grant;
 - the 6D-A approval is still effective (review state recomputed);
+- G4 manifest coverage still holds against that binding (§11.2.1);
 - the plan confirmation is still valid;
 - the action index is the next expected one.
 
@@ -795,7 +852,10 @@ A **structural call-graph test** proves that no employer-page mutation primitive
 ## 23. Acceptance criteria
 
 1. **Closed plan.** Every mutation matches a confirmed plan action. A field outside the plan never gets written, and it produces the §8.3/§13 routing.
-2. **Firewall.** Under the adversarial pages (§24), after PRELOAD (REVALIDATING step 2) no state-changing request, beacon or socket leaves the execution tab. After TOTAL, no request of any kind leaves it, and none is initiated by the employer background context (Q2). The S2 assertions hold in CI.
+2. **Firewall** (scoped per §10.8). The S2 assertions hold in CI, under the adversarial pages (§24):
+   - Under PRELOAD, no non-GET/HEAD request, `ping`/`sendBeacon`, WebSocket or WebTransport handshake leaves the execution tab. GET requests may leave, and the test asserts that no executor write has happened before TOTAL.
+   - After TOTAL is verified, no DNR-visible request of any type or method leaves the execution tab, and no `TAB_ID_NONE` request initiated by the employer origin succeeds (Q2).
+   - A certified adapter's fixtures use no WebRTC, and a WebRTC fixture page is refused certification.
 3. **Reset.** A socket or worker created before the run can't transmit after the reset, and a page that can't rebuild its surface under PRELOAD ends `UNSUPPORTED_FORM` with zero writes.
 4. **No release.** No UI, route or message lifts the quarantine. `FILLED_AWAITING_SUBMISSION` pages stay quarantined until the tab closes.
 5. **Exact values.** Every WRITE's readback hash equals `rendered_value_hash`, and every ATTACH_LOCAL byte SHA equals the approved SHA. A mismatch stops the run.
@@ -812,6 +872,15 @@ A **structural call-graph test** proves that no employer-page mutation primitive
 16. **Boundary.** No route, primitive or UI element submits. The 6D-A G2 refusal and structural tests still pass. The Phase 3 "I submitted it myself" confirmation still works.
 17. **Concurrency.** Two concurrent run starts for one application produce one run. Duplicate intents return one envelope. Concurrent outcomes for one action accept exactly one. Lease expiry gives `EXECUTOR_LOST`. Each race runs 20× clean.
 18. **Migration.** `020` is fresh and atomic, and an upgrade from a `master@8b28c57` database is clean, with 6D-A tables byte-identical.
+19. **G4 coverage.** Each of the six §11.2.1 rules has a failing case that refuses the grant, and the same case arising mid-run refuses the next intent:
+    - an answer entry whose `value_hash`, `source_ref` or transform doesn't match;
+    - an evidence ref not in the binding;
+    - a document SHA or version that doesn't match;
+    - an entry targeting an OMIT field;
+    - a manifest with an extra, missing or duplicate entry;
+    - a binding other than the run's.
+
+    OMIT and IGNORE actions never produce a manifest entry.
 
 ## 24. Testing strategy
 
