@@ -7,7 +7,7 @@ import { canonicalJson } from "../src/fill/canonical";
 import { certifiedAdapterFor, greenhouseFill, leverFill, type CertifiedAdapter } from "../src/fill/certified-adapters";
 import { fillValueHash } from "../src/fill/hash";
 import type { ObservationV1 } from "../src/fill/observation-types";
-import { observe } from "../src/fill/observer";
+import { observe, structureFingerprint } from "../src/fill/observer";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GH_URL = "https://boards.greenhouse.io/acme/jobs/123";
@@ -158,12 +158,14 @@ describe("observation v1 (spec §7.1)", () => {
   });
 });
 
-afterAll(() => {
+afterAll(async () => {
+  const structures: Record<string, string> = {};
+  for (const [name, obs] of Object.entries(emitted)) structures[name] = await structureFingerprint(obs as ObservationV1);
   // The shared cross-language fixture: validated (fingerprints recomputed)
   // by tests/product/test_fill_observation_from_ts.py.
   const out = path.resolve(here, "..", "..", "tests", "fixtures", "fill", "observation_from_ts.json");
   mkdirSync(path.dirname(out), { recursive: true });
   const expected = { resume_sha256_bytes: Buffer.from(RESUME).toString("hex") };
   writeFileSync(out, JSON.stringify({ generated_by: "extension/test/fill-observer.test.ts", expected,
-    observations: emitted }, null, 2) + "\n", "utf-8");
+    structure_fingerprints: structures, observations: emitted }, null, 2) + "\n", "utf-8");
 });

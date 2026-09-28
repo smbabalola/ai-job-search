@@ -66,3 +66,9 @@ def test_a_tampered_ts_fingerprint_is_refused():
     doc["elements"][2]["identity"]["label"] = "Email address"
     with pytest.raises(ObservationError):
         validate_observation(doc, CATALOGUE)
+
+
+@pytest.mark.parametrize("name", sorted(OBS))
+def test_ts_structure_fingerprints_equal_python(name):
+    from product.fill_observation import structure_fingerprint
+    assert DATA["structure_fingerprints"][name] == structure_fingerprint(OBS[name])

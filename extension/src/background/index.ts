@@ -26,6 +26,10 @@ import type { CandidateSnapshot } from "../adapters/types";
 
 import * as fillQuarantine from "../fill/quarantine";
 import { checkSiblingContainment } from "../fill/siblings";
+import {
+  detectCertifiedAdapter, fillPermissionsGranted, fillViewFor, registerFillListeners, routeFillDetection,
+  startFillRun,
+} from "./fill-wiring";
 
 // 6D-B Task 2 test hook: compiled only into the FILL_TEST_HOOKS build
 // (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
@@ -91,6 +95,38 @@ async function persistSequenceForSession(handoffSessionId: string, sequence: num
 chrome.tabs.onRemoved.addListener((tabId) => {
   sessionRegistry.releaseTab(tabId);
 });
+
+// 6D-B safe FILL: tab close, opener-created tabs, and restart recovery (a
+// run is never resumed after the worker restarts).
+registerFillListeners();
+
+// 6D-B: starts a quarantined, plan-bound FILL run on the user-activated tab.
+// Same pending-context and handoff-session binding as the handoff flow; only
+// a certified adapter version (greenhouse@2 / lever@2) may run.
+export async function startSafeFillOnTab(tabId: number): Promise<void> {
+  const pendingContext = await pendingContextStore.peek();
+  if (!pendingContext) {
+    console.warn("[JobSearch Handoff] no pending handoff context; open the job from JobSearch first.");
+    return;
+  }
+  const tab = await chrome.tabs.get(tabId);
+  if (!isActiveTabOnPendingTarget(tab.url, pendingContext)) {
+    console.warn("[JobSearch Handoff] active tab does not match the pending handoff target.");
+    return;
+  }
+  const adapter = await detectCertifiedAdapter(tabId).catch(() => null);
+  if (!adapter) {
+    console.warn("[JobSearch Handoff] no certified adapter for this page; safe FILL is not available here.");
+    return;
+  }
+  const session = await associateHandoffSession(
+    pendingContext, new URL(pendingContext.targetUrl).hostname,
+    { atsAdapterId: adapter.adapterId, atsAdapterVersion: adapter.adapterVersion }, serverClient,
+  );
+  await pendingContextStore.clear();
+  sessionRegistry.bindTab(tabId, session);
+  await startFillRun(tabId, session, adapter.adapterId);
+}
 
 // Runs the content bundle once with no snapshot present — content/index.ts's
 // else-branch detects this and runs probePage() (detect/scan/classify only:
@@ -381,6 +417,22 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     void runAutofillOnTab((message as { tabId: number }).tabId).catch(
       (err) => console.warn("[JobSearch Handoff] autofill failed", err),
     );
+    return;
+  }
+
+  const typed = typeof message === "object" && message !== null ? message as { type?: unknown; tabId?: unknown } : null;
+  if (typed?.type === "popup_start_fill" && typeof typed.tabId === "number") {
+    void startSafeFillOnTab(typed.tabId).catch((err) => console.warn("[JobSearch Handoff] safe FILL failed", err));
+    return;
+  }
+  if (typed?.type === "fill_state" && typeof typed.tabId === "number" && !sender.tab) {
+    const tabId = typed.tabId;
+    void fillPermissionsGranted().then((permissionsGranted) => sendResponse({ view: fillViewFor(tabId),
+      permissionsGranted }));
+    return true;
+  }
+  if (typed?.type === "fill_detection") {
+    routeFillDetection(message as { runId?: unknown; kind?: unknown; detail?: unknown }, sender);
     return;
   }
 

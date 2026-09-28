@@ -3,6 +3,15 @@
   "expected": {
     "resume_sha256_bytes": "255044462d312e3420726573756d65206279746573"
   },
+  "structure_fingerprints": {
+    "greenhouse": "sha256:a470bc04db734fcff8b68aa26c7d62426010596ae4a45909856c811e7002d6a8",
+    "lever": "sha256:7eea92a55934a0849fe34986e8a3d1ac3c184f6e65ed85b89fad2cae08b5458c",
+    "aria_only": "sha256:deeb914ea67c984ba71c170f6086450eadd40263e08c17b95399dc1e671c4876",
+    "duplicate": "sha256:51d2b9722db4d26eec74ab99078627669b59a14518ee0e3b18f8e2b46665a394",
+    "conditional": "sha256:e6eb15420ed8fd49306f2d91de072801a6ccf9a710bdb24a7b1da3f09ca31d52",
+    "wizard": "sha256:a30e1d160112d8012eb3e4b081840a335d37b621fbd54bc424b741dc503b6e4d",
+    "cross_origin": "sha256:3dd6bd965f38f5be3fe70958e9e6749b1c791bf5313bd30b1be895ee60d0ba87"
+  },
   "observations": {
     "greenhouse": {
       "schema_version": "fill-observation.v1",

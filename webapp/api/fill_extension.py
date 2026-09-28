@@ -18,7 +18,7 @@ from webapp.api.dependencies import get_conn
 from webapp.api.handoff import get_session_scope
 from webapp.persistence import fill as f
 from webapp.services import fill_actions, fill_runs
-from webapp.services.fill_results import fill_status
+from webapp.services.fill_results import fill_status, run_plan_hash
 from webapp.services.handoff import SessionScope
 from webapp.services.review_application import ReviewRefused
 
@@ -65,6 +65,15 @@ class DetectionBody(_Body):
 
 class FinalBody(_Body):
     observation: dict[str, Any]
+
+
+class StopBody(_Body):
+    reason: str
+    detail: dict[str, Any] = {}
+
+
+_ACTION_KEYS = ("page_field_key", "field_fingerprint", "action_kind", "rendered_value_hash", "document",
+                "document_kind")
 
 
 def _now() -> datetime:
@@ -123,11 +132,17 @@ def get_plan_status(session_id: str, run_id: str, request: Request, conn: sqlite
     run = _owned_run(conn, scope, session_id, run_id)
     last = f.run_state(conn, run_id)
     binding = f.get_grant_binding(conn, run_id)
+    plan_hash = binding["plan_hash"] if binding else run_plan_hash(conn, run_id)
+    plan = f.get_plan_by_hash(conn, plan_hash)["plan"] if plan_hash else None
     status = call(lambda: fill_status(conn, settings=request.app.state.settings, account_id=scope.account_id,
                                       application_workspace_id=run["application_workspace_id"], now=_now()))
     return {"run_id": run_id, "state": last["event"], "reason": last["reason"], "detail": last["detail"],
             "grant_id": binding["grant_id"] if binding else None,
-            "ruleset_hash": binding["ruleset_hash"] if binding else None, "fill_status": status}
+            "ruleset_hash": binding["ruleset_hash"] if binding else None, "fill_status": status,
+            # The plan carries references and hashes only (no cleartext): the
+            # executor's local pre-check compares the page against it.
+            "plan_hash": plan_hash, "structure_fingerprint": plan["structure_fingerprint"] if plan else None,
+            "actions": [{k: a[k] for k in _ACTION_KEYS} for a in plan["actions"]] if plan else []}
 
 
 @router.post("/runs/{run_id}/quarantine")
@@ -201,3 +216,13 @@ def post_final(session_id: str, run_id: str, body: FinalBody, conn: sqlite3.Conn
                scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_actions.final_validate(conn, run_id=run_id, observation=body.observation, now=_now()))
+
+
+@router.post("/runs/{run_id}/stop")
+def post_stop(session_id: str, run_id: str, body: StopBody, conn: sqlite3.Connection = Depends(get_conn),
+              scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
+    """Reduce-only: the executor may end its own run for a condition only it
+    can observe (fill_runs.EXECUTOR_STOP_REASONS), never extend it."""
+    _owned_run(conn, scope, session_id, run_id)
+    return call(lambda: fill_runs.executor_stop(conn, run_id=run_id, reason=body.reason, detail=body.detail,
+                                                now=_now()))

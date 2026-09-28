@@ -21,8 +21,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from product.autonomy_contract import Capability, parse_utc, to_utc_iso
-from product.fill_certification import CATALOGUE, certified
-from product.fill_changes import classify_changes
+from product.fill_certification import CATALOGUE
 from product.fill_constants import VALUE_ENVELOPE_TTL
 from product.fill_hash import fill_value_hash
 from product.fill_manifest import manifest_hash
@@ -39,7 +38,8 @@ from webapp.services import autonomy_context
 from webapp.services.autonomy_controls import engage_kill_switch_in_transaction, run_immediate, sentinel_present
 from webapp.services.fill_plans import _open_deltas, approval_context, approved_values
 from webapp.services.fill_runs import (
-    FillRefused, confirmation_ids, current_state, finish_in_transaction, is_terminal, stop_run_in_transaction,
+    FillRefused, completed_actions, confirmation_ids, current_state, diff_stop_in_transaction, finish_in_transaction,
+    is_terminal, stop_run_in_transaction,
 )
 
 PRECHECK_KEYS = frozenset({"ruleset_hash", "structure_fingerprint", "field_fingerprint", "siblings_contained"})
@@ -76,11 +76,6 @@ def _run_context(conn, run_id: str) -> dict[str, Any]:
     plan = f.get_plan_by_hash(conn, binding["plan_hash"]) if binding else None
     return {"run": run, "binding": binding, "plan": plan["plan"] if plan else None,
             "plan_row": plan}
-
-
-def _completed(conn, run_id: str) -> set[int]:
-    return {e["action_index"] for e in f.action_events(conn, run_id)
-            if e["event"] == "OUTCOME" and e["outcome"] not in FAILURE_OUTCOMES}
 
 
 def _next_index(conn, run_id: str, plan: Mapping[str, Any]) -> int | None:
@@ -231,27 +226,6 @@ def _store_observation(conn, run: Mapping[str, Any], phase: str, action_index: i
                                 now=now)
 
 
-def _diff_stop(conn, *, ctx: Mapping[str, Any], observation: Mapping[str, Any], completed: set[int],
-               now: datetime) -> dict[str, Any] | None:
-    """Classify a re-observation against the plan; open every delta together
-    and stop, or stop on a structural/value change. None = clean."""
-    run, plan = ctx["run"], ctx["plan"]
-    base = f.get_observation(conn, ctx["plan_row"]["observation_id"])["observation"]
-    change = classify_changes(base, observation, plan=plan, completed=completed,
-                              entry=certified(plan["adapter_id"], plan["adapter_version"]))
-    if change.stop_reason is None:
-        if structure_fingerprint(observation) != plan["structure_fingerprint"]:
-            change.stop_reason, change.detail = "STRUCTURE_CHANGED", {"changes": ["structure_fingerprint"]}
-        else:
-            return None
-    detail = dict(change.detail)
-    if change.deltas:
-        detail["delta_ids"] = _open_deltas(conn, account_id=run["account_id"], ws=run["application_workspace_id"],
-                                           specs=change.deltas, source=f"FILL_RUN:{run['id']}", now=now)
-    stop_run_in_transaction(conn, run_id=run["id"], reason=change.stop_reason, detail=detail, now=now)
-    return {"state": "FILL_STOPPED", "reason": change.stop_reason, **detail}
-
-
 def _validity_delta(conn, ctx: Mapping[str, Any], action: Mapping[str, Any], now: datetime) -> list[str]:
     """spec §13: the page rejected the rendered value → a TRANSFORM_FAILURE delta."""
     run = ctx["run"]
@@ -314,7 +288,8 @@ def record_outcome(conn, *, run_id: str, action_index: int, envelope_id: str | N
             return {"state": "FILL_STOPPED", "reason": failure}
         record(outcome, document_sha256_verified=action["document"]["sha256"]
                if action["action_kind"] == "ATTACH_LOCAL" else None)
-        stopped = _diff_stop(conn, ctx=ctx, observation=post_observation, completed=_completed(conn, run_id), now=now)
+        stopped = diff_stop_in_transaction(conn, run=ctx["run"], plan_row=ctx["plan_row"], observation=post_observation,
+                                           completed=completed_actions(conn, run_id), now=now)
         if stopped is not None:
             return stopped
         following = _next_index(conn, run_id, plan)
@@ -355,12 +330,13 @@ def final_validate(conn, *, run_id: str, observation: dict[str, Any], now: datet
             raise FillRefused("run_not_active")
         run, plan = ctx["run"], ctx["plan"]
         _store_observation(conn, run, "FINAL", None, observation, now)
-        completed = _completed(conn, run_id)
+        completed = completed_actions(conn, run_id)
         if completed != set(range(len(plan["actions"]))):
             stop_run_in_transaction(conn, run_id=run_id, reason="STRUCTURE_CHANGED",
                                     detail={"cause": "ACTIONS_INCOMPLETE"}, now=now)
             return {"state": "FILL_STOPPED", "reason": "STRUCTURE_CHANGED"}
-        stopped = _diff_stop(conn, ctx=ctx, observation=observation, completed=completed, now=now)
+        stopped = diff_stop_in_transaction(conn, run=ctx["run"], plan_row=ctx["plan_row"], observation=observation,
+                                           completed=completed, now=now)
         if stopped is not None:
             return stopped
         finish_in_transaction(conn, run_id=run_id, event="FILLED_AWAITING_SUBMISSION", now=now)

@@ -216,3 +216,13 @@ def test_a_stop_after_the_run_ended_is_refused(grant_world):
         fr.stop_run(grant_world.conn, run_id=run["id"], reason="EXECUTOR_LOST", detail={}, now=NOW)
     with pytest.raises(sqlite3.IntegrityError):  # one result per run
         f.insert_result(grant_world.conn, fill_run_id=run["id"], result={}, result_hash="x", now=NOW)
+
+
+def test_a_surface_that_does_not_remount_after_the_reset_is_unsupported(grant_world):
+    run = start(grant_world)
+    observe(grant_world, run, "INITIAL")
+    doc = observation_doc()
+    doc["context"]["application_root_found"] = False
+    out = observe(grant_world, run, "REVALIDATION", doc)
+    assert out["state"] == "UNSUPPORTED_FORM"
+    assert f.run_state(grant_world.conn, run["id"])["detail"] == {"causes": ["RESET_SURFACE_MISMATCH"]}

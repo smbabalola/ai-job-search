@@ -23,7 +23,9 @@ from product.fill_changes import classify_changes
 from product.fill_constants import FILL_TIMING_VERSION, RUN_LEASE_TTL
 from product.fill_observation import observation_fingerprint, structure_fingerprint, validate_observation
 from product.fill_plan import DeltaSpec, derive_manifest, g4_violations
-from product.fill_vocab import OBSERVATION_PHASES, QUARANTINE_PHASES, STOP_REASONS, TERMINAL_RUN_EVENTS
+from product.fill_vocab import (
+    FAILURE_OUTCOMES, OBSERVATION_PHASES, QUARANTINE_PHASES, STOP_REASONS, TERMINAL_RUN_EVENTS,
+)
 from webapp.config import Settings
 from webapp.persistence import fill as f
 from webapp.persistence.autonomy_answers import latest_answer_confirmation_id
@@ -111,6 +113,56 @@ def stop_run(conn, *, run_id: str, reason: str, detail: Mapping[str, Any] | None
         if is_terminal(current_state(conn, run_id)):
             raise FillRefused("run_not_active")
         return stop_run_in_transaction(conn, run_id=run_id, reason=reason, detail=detail, now=now)
+    return run_immediate(conn, work)
+
+
+def diff_stop_in_transaction(conn, *, run: Mapping[str, Any], plan_row: Mapping[str, Any],
+                             observation: Mapping[str, Any], completed: set[int], now: datetime) -> dict[str, Any] | None:
+    """Classify a re-observation against the plan (spec §13); open every delta
+    together and stop, or stop on a structural/value change. None = clean."""
+    plan = plan_row["plan"]
+    base = f.get_observation(conn, plan_row["observation_id"])["observation"]
+    change = classify_changes(base, observation, plan=plan, completed=completed,
+                              entry=certified(plan["adapter_id"], plan["adapter_version"]))
+    if change.stop_reason is None:
+        if structure_fingerprint(observation) != plan["structure_fingerprint"]:
+            change.stop_reason, change.detail = "STRUCTURE_CHANGED", {"changes": ["structure_fingerprint"]}
+        else:
+            return None
+    detail = dict(change.detail)
+    if change.deltas:
+        detail["delta_ids"] = _open_deltas(conn, account_id=run["account_id"], ws=run["application_workspace_id"],
+                                           specs=change.deltas, source=f"FILL_RUN:{run['id']}", now=now)
+    stop_run_in_transaction(conn, run_id=run["id"], reason=change.stop_reason, detail=detail, now=now)
+    return {"state": "FILL_STOPPED", "reason": change.stop_reason, **detail}
+
+
+def completed_actions(conn, run_id: str) -> set[int]:
+    return {e["action_index"] for e in f.action_events(conn, run_id)
+            if e["event"] == "OUTCOME" and e["outcome"] not in FAILURE_OUTCOMES}
+
+
+# ---- executor-reported stops ------------------------------------------------------------------
+
+# Only conditions the executor observes locally and the server cannot: a
+# stop is reduce-only, so an executor may end its own run, never extend it.
+EXECUTOR_STOP_REASONS = frozenset({
+    "PERMISSIONS_MISSING", "SIBLING_EMPLOYER_CONTEXT_OPEN", "STRUCTURE_UNSTABLE", "QUARANTINE_RULESET_CHANGED",
+    "EXECUTOR_LOST", "PREFILLED_VALUE_CONFLICT", "FIELD_VALUE_REVERTED", "OMIT_FIELD_NOT_BLANK",
+})
+
+
+def executor_stop(conn, *, run_id: str, reason: str, detail: Mapping[str, Any] | None, now: datetime) -> dict[str, Any]:
+    if reason not in EXECUTOR_STOP_REASONS:
+        raise ValueError(f"{reason!r} is not an executor-reportable stop reason")
+
+    def work() -> dict[str, Any]:
+        _run_for(conn, run_id)
+        if is_terminal(current_state(conn, run_id)):
+            raise FillRefused("run_not_active")
+        stop_run_in_transaction(conn, run_id=run_id, reason=reason, detail={"reported_by": "executor",
+                                                                            **dict(detail or {})}, now=now)
+        return {"state": "FILL_STOPPED", "reason": reason}
     return run_immediate(conn, work)
 
 
@@ -204,11 +256,23 @@ def record_observation(conn, *, settings: Settings, run_id: str, phase: str, act
             return {"observation_id": stored["id"], **_route_initial(conn, settings=settings, run=run,
                                                                      observation_id=stored["id"], now=now)}
         if phase == "REVALIDATION":
+            if not observation["context"]["application_root_found"]:  # the surface did not come back (§10.4)
+                finish_in_transaction(conn, run_id=run_id, event="UNSUPPORTED_FORM",
+                                      detail={"causes": ["RESET_SURFACE_MISMATCH"]}, now=now)
+                return {"observation_id": stored["id"], "state": "UNSUPPORTED_FORM",
+                        "causes": ["RESET_SURFACE_MISMATCH"]}
             match = _revalidation_match(conn, run_id)
             if not match.matched:
                 _stop_on_mismatch(conn, run=run, match=match, now=now)
                 return {"observation_id": stored["id"], "state": "FILL_STOPPED", "reason": match.stop_reason}
             return {"observation_id": stored["id"], "state": "REVALIDATING", "matched": True}
+        if phase == "PRE_ACTION":  # the server re-checks the page before the next intent (§11.3 a, §13)
+            binding = f.get_grant_binding(conn, run_id)
+            stopped = diff_stop_in_transaction(conn, run=run, plan_row=f.get_plan_by_hash(conn, binding["plan_hash"]),
+                                               observation=observation, completed=completed_actions(conn, run_id),
+                                               now=now) if binding else None
+            if stopped is not None:
+                return {"observation_id": stored["id"], **stopped}
         return {"observation_id": stored["id"], "state": state}
     return run_immediate(conn, work)
 

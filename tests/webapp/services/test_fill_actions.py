@@ -356,3 +356,49 @@ def test_after_filled_a_detection_is_an_event_only(grant_world):
     out = fa.record_detection(grant_world.conn, run_id=run["id"], kind="EXECUTION_CONTEXT_CLOSED", detail={}, now=NOW)
     assert out == {"state": "FILLED_AWAITING_SUBMISSION"}
     assert events(grant_world, run)[-1] == ("FILLED_AWAITING_SUBMISSION", None)
+
+
+# ---- Task 13: pre-action re-observation and executor-reported stops ------------------------
+
+def pre_action(w, run, doc, i=0):
+    return fr.record_observation(w.conn, settings=w.settings, run_id=run["id"], phase="PRE_ACTION", action_index=i,
+                                 observation=doc, now=NOW)
+
+
+def test_the_user_typing_into_a_pending_target_is_a_prefilled_conflict(grant_world):
+    run = filling(grant_world)
+    doc = page_after(grant_world, 0)
+    doc["elements"][0]["value_state"] = {"state": "NONBLANK", "current_value_hash": fill_value_hash("me@typed.test")}
+    assert pre_action(grant_world, run, doc)["reason"] == "PREFILLED_VALUE_CONFLICT"
+    assert events(grant_world, run)[-1] == ("FILL_STOPPED", "PREFILLED_VALUE_CONFLICT")
+
+
+def test_the_user_editing_a_completed_field_is_field_value_reverted(grant_world):
+    run = filling(grant_world)
+    do(grant_world, run, 0)
+    doc = page_after(grant_world, 1)
+    doc["elements"][0]["value_state"] = {"state": "NONBLANK", "current_value_hash": fill_value_hash("edited@x.test")}
+    assert pre_action(grant_world, run, doc, 1)["reason"] == "FIELD_VALUE_REVERTED"
+
+
+def test_a_clean_pre_action_observation_continues(grant_world):
+    run = filling(grant_world)
+    do(grant_world, run, 0)
+    assert pre_action(grant_world, run, page_after(grant_world, 1), 1)["state"] == "FILLING"
+
+
+@pytest.mark.parametrize("reason", ["PERMISSIONS_MISSING", "SIBLING_EMPLOYER_CONTEXT_OPEN", "STRUCTURE_UNSTABLE",
+                                    "QUARANTINE_RULESET_CHANGED", "EXECUTOR_LOST", "PREFILLED_VALUE_CONFLICT",
+                                    "FIELD_VALUE_REVERTED", "OMIT_FIELD_NOT_BLANK"])
+def test_the_executor_can_only_stop_with_observable_reasons(grant_world, reason):
+    run = filling(grant_world)
+    out = fr.executor_stop(grant_world.conn, run_id=run["id"], reason=reason, detail={"local": True}, now=NOW)
+    assert out == {"state": "FILL_STOPPED", "reason": reason}
+
+
+@pytest.mark.parametrize("reason", ["APPROVAL_NOT_EFFECTIVE", "GRANT_REFUSED", "DELTA_OPENED", "NOT_A_REASON"])
+def test_server_decided_reasons_are_not_executor_reportable(grant_world, reason):
+    run = filling(grant_world)
+    with pytest.raises(ValueError):
+        fr.executor_stop(grant_world.conn, run_id=run["id"], reason=reason, detail={}, now=NOW)
+    assert events(grant_world, run)[-1] == ("FILLING", None)

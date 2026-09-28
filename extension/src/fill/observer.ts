@@ -312,3 +312,15 @@ export async function observe(document: Document, adapter: CertifiedAdapter,
     submit_controls: submitControls,
   };
 }
+
+// Python's product.fill_observation.structure_fingerprint: everything but the
+// mutable value states (spec §7.2). Cross-checked on the emitted fixture.
+export async function structureFingerprint(obs: ObservationV1): Promise<string> {
+  return canonicalHash("fill-structure", "v1", {
+    context: obs.context as unknown as Canonical,
+    elements: obs.elements.map((e) => ({ page_field_key: e.page_field_key, control_kind: e.control_kind,
+      field_fingerprint: e.field_fingerprint, classification: e.classification,
+      proof: e.proof as unknown as Canonical })),
+    submit_controls: obs.submit_controls as unknown as Canonical,
+  });
+}

@@ -180,6 +180,7 @@ EXT_ROUTES = [
     ("post", "/runs/{rid}/heartbeat", None),
     ("post", "/runs/{rid}/detections", {"kind": "SUBMIT_ATTEMPT_OBSERVED"}),
     ("post", "/runs/{rid}/final", {"observation": {}}),
+    ("post", "/runs/{rid}/stop", {"reason": "EXECUTOR_LOST", "detail": {}}),
 ]
 
 
@@ -227,3 +228,25 @@ def test_our_run_is_not_visible_under_another_workspace(foreign):
     from webapp.persistence.workspaces import create_workspace
     mine = create_workspace(w.conn, company="Mine", title="Role", account_id=V2_ACCOUNT)["id"]
     assert client.get(f"/api/workspaces/{mine}/fill-runs/{rid}").status_code == 404
+
+
+def test_plan_status_carries_the_plan_actions_without_cleartext(api):
+    ext, _, w = api
+    rid = _to_filling(ext)
+    status = ext.call("get", f"/runs/{rid}/plan-status")
+    plan = _plan(w)
+    assert status["structure_fingerprint"] == plan["structure_fingerprint"]
+    assert [a["page_field_key"] for a in status["actions"]] == [a["page_field_key"] for a in plan["actions"]]
+    assert set(status["actions"][0]) == {"page_field_key", "field_fingerprint", "action_kind", "rendered_value_hash",
+                                         "document", "document_kind"}
+    for sentinel in SENTINELS:
+        assert sentinel not in json.dumps(status)
+
+
+def test_the_executor_stop_route_is_reduce_only(api):
+    ext, _, w = api
+    rid = _to_filling(ext)
+    ext.call("post", f"/runs/{rid}/stop", {"reason": "APPROVAL_NOT_EFFECTIVE", "detail": {}}, expect=422)
+    out = ext.call("post", f"/runs/{rid}/stop", {"reason": "SIBLING_EMPLOYER_CONTEXT_OPEN", "detail": {"tab": 3}})
+    assert out == {"state": "FILL_STOPPED", "reason": "SIBLING_EMPLOYER_CONTEXT_OPEN"}
+    ext.call("post", f"/runs/{rid}/stop", {"reason": "EXECUTOR_LOST", "detail": {}}, expect=409)

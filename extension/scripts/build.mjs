@@ -21,6 +21,7 @@ export async function buildExtension() {
   await mkdir(resolve(outputRoot, "popup"), { recursive: true });
   await mkdir(resolve(outputRoot, "content-bridge"), { recursive: true });
   await mkdir(resolve(outputRoot, "attachment-runner"), { recursive: true });
+  await mkdir(resolve(outputRoot, "fill-page"), { recursive: true });
   await cp(resolve(extensionRoot, "manifest.json"), resolve(outputRoot, "manifest.json"));
   await cp(resolve(extensionRoot, "icons"), resolve(outputRoot, "icons"), { recursive: true });
   await cp(resolve(extensionRoot, "popup.html"), resolve(outputRoot, "popup.html"));
@@ -67,6 +68,16 @@ export async function buildExtension() {
     platform: "browser",
     target: "chrome120",
     outfile: resolve(outputRoot, "attachment-runner", "index.js"),
+  });
+  // 6D-B: the observer + executor + detections page bundle, injected on
+  // demand into the user-activated tab in the ISOLATED world (spec §18).
+  await build({
+    entryPoints: [resolve(extensionRoot, "src", "fill", "page-bundle.ts")],
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: "chrome120",
+    outfile: resolve(outputRoot, "fill-page", "index.js"),
   });
   if (testHooks) {
     const testManifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
