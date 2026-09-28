@@ -499,6 +499,26 @@ OMIT and IGNORE go through the intent and outcome for the audit, but get no valu
   - pause, kill switch, a policy reduction, approval invalidation, confirmation staleness or grant expiry → the next intent is refused and the run stops;
   - the existing `revoke_issued_grants` covers the kill switch.
 
+### 11.5 Timing constants (named, versioned, boundary-tested)
+
+Every timing value is a named constant in one versioned module per side. The Python and TypeScript definitions carry the same version identifier, and the values are never scattered as literals:
+
+| Constant | v1 value |
+|---|---|
+| `FILL_TIMING_VERSION` | `fill-timing.v1` |
+| `HEARTBEAT_INTERVAL` | 10 s |
+| `RUN_LEASE_TTL` | 45 s |
+| `VALUE_ENVELOPE_TTL` | 30 s |
+| `SETTLE_QUIET_PERIOD` | 50 ms |
+| `SETTLE_CAP` | 1 s |
+
+Tests exercise each constant at its boundary:
+- a lease just before and just after expiry;
+- an envelope used just before and just after its TTL;
+- a mutation at the quiet-period edge and one at the cap.
+
+The run records `FILL_TIMING_VERSION` in its identity, so its evidence says which timing rules applied.
+
 ## 12. Executor
 
 ### 12.1 Allowlist
