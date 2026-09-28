@@ -174,32 +174,36 @@ def _open_deltas(conn, *, account_id: str, ws: str, specs, source: str, now: dat
 
 def propose_plan(conn, *, settings: Settings, account_id: str, application_workspace_id: str, observation_id: str,
                  now: datetime) -> ProposeOutcome:
-    ws = application_workspace_id
+    return run_immediate(conn, lambda: propose_plan_in_transaction(
+        conn, settings=settings, account_id=account_id, application_workspace_id=application_workspace_id,
+        observation_id=observation_id, now=now))
 
-    def work() -> ProposeOutcome:
-        ctx, obs, result = _build(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
-                                  observation_id=observation_id, now=now)
-        if ctx is None:
-            return ProposeOutcome("APPROVAL_NOT_EFFECTIVE")
-        if result.unsupported:
-            return ProposeOutcome("UNSUPPORTED_FORM", details={"causes": list(result.unsupported)})
-        if result.deltas:
-            source = f"FILL_RUN:{obs['fill_run_id']}" if obs["fill_run_id"] else f"FILL_OBSERVATION:{obs['id']}"
-            opened = _open_deltas(conn, account_id=account_id, ws=ws, specs=result.deltas, source=source, now=now)
-            return ProposeOutcome("DELTAS_OPENED", details={"delta_ids": opened,
-                                                            "delta_kinds": sorted({d.kind for d in result.deltas})})
-        if result.stop:
-            reason, detail = result.stop
-            return ProposeOutcome("STOPPED", details={"reason": reason, **detail})
-        if result.needs_review:
-            return ProposeOutcome("PLAN_NEEDS_REVIEW", details={"needs_review": [asdict(r) for r in result.needs_review]})
-        plan = result.plan
-        f.insert_plan(conn, account_id=account_id, application_workspace_id=ws, plan=plan, plan_hash=plan["plan_hash"],
-                      approval_id=ctx["approval_id"], approval_binding_hash=ctx["binding_hash"],
-                      observation_id=observation_id, now=now)
-        return ProposeOutcome("PLAN_PROPOSED", plan["plan_hash"],
-                              f.plan_confirmed(conn, plan["plan_hash"], ctx["approval_id"], ctx["binding_hash"]))
-    return run_immediate(conn, work)
+
+def propose_plan_in_transaction(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                                observation_id: str, now: datetime) -> ProposeOutcome:
+    ws = application_workspace_id
+    ctx, obs, result = _build(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                              observation_id=observation_id, now=now)
+    if ctx is None:
+        return ProposeOutcome("APPROVAL_NOT_EFFECTIVE")
+    if result.unsupported:
+        return ProposeOutcome("UNSUPPORTED_FORM", details={"causes": list(result.unsupported)})
+    if result.deltas:
+        source = f"FILL_RUN:{obs['fill_run_id']}" if obs["fill_run_id"] else f"FILL_OBSERVATION:{obs['id']}"
+        opened = _open_deltas(conn, account_id=account_id, ws=ws, specs=result.deltas, source=source, now=now)
+        return ProposeOutcome("DELTAS_OPENED", details={"delta_ids": opened,
+                                                        "delta_kinds": sorted({d.kind for d in result.deltas})})
+    if result.stop:
+        reason, detail = result.stop
+        return ProposeOutcome("STOPPED", details={"reason": reason, **detail})
+    if result.needs_review:
+        return ProposeOutcome("PLAN_NEEDS_REVIEW", details={"needs_review": [asdict(r) for r in result.needs_review]})
+    plan = result.plan
+    f.insert_plan(conn, account_id=account_id, application_workspace_id=ws, plan=plan, plan_hash=plan["plan_hash"],
+                  approval_id=ctx["approval_id"], approval_binding_hash=ctx["binding_hash"],
+                  observation_id=observation_id, now=now)
+    return ProposeOutcome("PLAN_PROPOSED", plan["plan_hash"],
+                          f.plan_confirmed(conn, plan["plan_hash"], ctx["approval_id"], ctx["binding_hash"]))
 
 
 def record_mapping_choice(conn, *, settings: Settings, account_id: str, application_workspace_id: str,

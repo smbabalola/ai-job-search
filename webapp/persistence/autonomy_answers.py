@@ -135,6 +135,14 @@ def confirm_answer(conn, *, approved_answer_id: str, confirmed_by: str, now: dat
     return row
 
 
+def latest_answer_confirmation_id(conn, approved_answer_id: str) -> str | None:
+    """The latest answer_confirmations row (by seq) for an approved answer
+    (6D-B: the manifest's source.confirmation_id). Read-only."""
+    row = conn.execute("SELECT id FROM answer_confirmations WHERE approved_answer_id = ? ORDER BY seq DESC LIMIT 1",
+                       (approved_answer_id,)).fetchone()
+    return row[0] if row else None
+
+
 def current_approved_answers(conn, *, account_id: str, subject: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT a.*, ("

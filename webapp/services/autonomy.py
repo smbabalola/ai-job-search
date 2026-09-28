@@ -181,7 +181,8 @@ def decide_and_record(conn, *, settings: Settings, account_id: str, application_
 def _request_grant_core(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
-                  run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None) -> GrantOutcome:
+                  run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None,
+                  in_transaction: bool = False) -> GrantOutcome:
     if stage not in (Capability.FILL, Capability.SUBMIT):
         raise ValueError("grants exist only for FILL and SUBMIT")
     if fill_manifest is None:
@@ -220,6 +221,10 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
             reserve_budget(conn, account_id=account_id, counter_name=f"budget:{budget.category}:{budget.window}",
                            window_key=key, amount=budget.estimate, grant_id=grant["id"], now=now)
         return GrantOutcome(decision, row, grant)
+    if in_transaction:
+        if not conn.in_transaction:
+            raise RuntimeError("in_transaction=True needs the caller's open BEGIN IMMEDIATE transaction")
+        return work()
     return run_immediate(conn, work)
 
 
@@ -435,15 +440,18 @@ class SubmissionNotAvailable(PermissionError):
 def request_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
-                  run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None) -> GrantOutcome:
+                  run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None,
+                  in_transaction: bool = False) -> GrantOutcome:
     """Public grant entry point: SUBMIT is refused before anything is read or
-    written; FILL goes to the unchanged engine."""
+    written; FILL goes to the unchanged engine. in_transaction=True (6D-B
+    request_fill_grant, spec §11.2) runs the same gate inside the caller's
+    BEGIN IMMEDIATE transaction instead of opening one."""
     if stage == Capability.SUBMIT:
         raise SubmissionNotAvailable("submission_not_available")
     return _request_grant_core(conn, settings=settings, account_id=account_id,
                                application_workspace_id=application_workspace_id, stage=stage, now=now,
                                fill_manifest=fill_manifest, requirements=requirements, observation=observation,
-                               run_id=run_id, cost_estimates=cost_estimates)
+                               run_id=run_id, cost_estimates=cost_estimates, in_transaction=in_transaction)
 
 
 def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
