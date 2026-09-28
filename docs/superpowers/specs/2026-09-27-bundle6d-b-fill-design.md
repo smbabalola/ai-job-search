@@ -385,7 +385,7 @@ Session rules are the only kind that support `tabIds`. The canonical ruleset (id
 
 1. Verify the permissions and sibling containment (§10.5).
 2. Install PRELOAD and verify it by read-back.
-3. **Reload the same target URL.** This destroys sockets, workers bound to the page, and script state created before the firewall.
+3. **Reload the same target URL.** This closes the **document's own** sockets (WebSocket, WebTransport) and dedicated workers, and discards its script state from before the firewall. It does **not** stop a service worker, whose network `fetch()` is contained by Q2. Nor does it stop any other channel that survives a reload; such channels are uncontained and grounds for refusing certification (§10.8).
 4. Take a full re-observation. Its `observation_fingerprint` must equal the confirmed plan's, with no writes on any difference:
    - a different `structure_fingerprint` goes through the §13 diff routing;
    - the same structure with different value states is `OBSERVATION_MISMATCH`.
@@ -426,7 +426,7 @@ Each of these is a stop reason while a run is active and evidence afterwards.
 - every request DNR sees with no associated tab (`TAB_ID_NONE`) and the employer origin as initiator (Q2), which includes the employer's service-worker `fetch()` calls.
 
 **Covered by other mechanisms, not by DNR:**
-- channels opened before the run (the communications reset, §10.4);
+- channels **owned by the page document** and opened before the run (WebSocket, WebTransport, dedicated workers), which the reload closes (§10.4). Channels that survive a reload (e.g. held by a service worker or SharedWorker) are *not* covered here, and are grounds for refusing certification;
 - sibling tabs and frames on the employer origin (refusal, §10.5).
 
 **Not covered by the network guarantee:**
@@ -835,16 +835,26 @@ A **structural call-graph test** proves that no employer-page mutation primitive
 ## 22. Technical spikes (the first plan tasks; outcomes gate the design)
 
 - **S1. `SET_FILES_LOCAL` in the ISOLATED world, with byte readback.** Place a `File` through `DataTransfer` from the isolated world, confirm the page sees it (including React forms on the fixtures), and hash the bytes read back from `input.files[0]`. **If exact byte verification is impossible, stop and return to the user before weakening D6 or I5.**
-- **S2. Quarantine enforcement.** In Playwright with the packed extension, prove that PRELOAD and TOTAL block every listed type and method from the tab, and that Q2 blocks the employer's service-worker fetches:
-  - form POST;
-  - `fetch`/XHR;
-  - `sendBeacon`;
-  - an image beacon;
-  - WebSocket and WebTransport handshakes;
-  - `pushState` plus navigation;
-  - `window.open`.
+- **S2. Quarantine enforcement.** Run in Playwright with the packed extension, against a local fixture server that records every request it receives. **PRELOAD and TOTAL are tested separately**, each against its own expected outcome:
 
-  Also prove that the reload destroys a socket opened beforehand, and that the extension's own server calls are unaffected.
+  | Probe from the execution tab | Under PRELOAD | Under TOTAL |
+  |---|---|---|
+  | form POST (navigation) | blocked | blocked |
+  | non-GET `fetch`/XHR | blocked | blocked |
+  | `sendBeacon` / `ping` | blocked | blocked |
+  | WebSocket and WebTransport handshakes | blocked | blocked |
+  | GET `fetch`/XHR | **allowed** | blocked |
+  | image beacon (GET) | **allowed** | blocked |
+  | script, style and font GET subresources | **allowed** | blocked |
+  | GET navigation (including after `pushState`) | **allowed** | blocked |
+  | employer service-worker `fetch()` (`TAB_ID_NONE`, employer initiator: Q2) | blocked | blocked |
+
+  Also:
+  - no executor write occurs before TOTAL is verified;
+  - the extension's own server calls are unaffected under both rulesets;
+  - `window.open` is not claimed as covered by Q1, since it creates a new tab. The test proves the popup is blocked (no user activation), or that an opened tab is detected (§10.6, §10.5) and stops the run before the next write.
+
+  **The reset is tested only on paths it actually covers.** A WebSocket or WebTransport connection **owned by the page document** and opened before the run is closed by the reload: the fixture server observes the close, and no frames arrive afterwards. A service worker **survives** a reload, so it isn't claimed to be reset. Its network `fetch()` is covered by Q2 (tested above). Any other channel that could survive the reset (e.g. a socket held by a service worker or SharedWorker, or WebRTC) is **uncontained**. A fixture using one must be refused certification by the certification check, and S2 includes such a fixture to prove the refusal.
 - **S3. Controlled inputs.** Prove that isolated-world setters plus `input`/`change` register in React- and Vue-controlled fields on the certified fixtures, and establish which control kinds need a click (not certifiable).
 - **S4. Sibling enumeration.** `tabs` + `webNavigation.getAllFrames` detect sibling tabs and same-origin frames in other tabs. Document the prerender and worker blind spots.
 - **S5. Cross-language hash vectors** (§7.5).
@@ -856,7 +866,11 @@ A **structural call-graph test** proves that no employer-page mutation primitive
    - Under PRELOAD, no non-GET/HEAD request, `ping`/`sendBeacon`, WebSocket or WebTransport handshake leaves the execution tab. GET requests may leave, and the test asserts that no executor write has happened before TOTAL.
    - After TOTAL is verified, no DNR-visible request of any type or method leaves the execution tab, and no `TAB_ID_NONE` request initiated by the employer origin succeeds (Q2).
    - A certified adapter's fixtures use no WebRTC, and a WebRTC fixture page is refused certification.
-3. **Reset.** A socket or worker created before the run can't transmit after the reset, and a page that can't rebuild its surface under PRELOAD ends `UNSUPPORTED_FORM` with zero writes.
+3. **Reset** (covered paths only):
+   - A WebSocket or WebTransport connection owned by the page document and opened before the run is closed by the reload, and transmits nothing afterwards (S2).
+   - A service worker that survives the reload can't reach the network under PRELOAD or TOTAL through `fetch()` initiated by the employer origin (Q2, S2).
+   - An adapter fixture with a channel the reset and Q2 don't cover (a worker-held socket, WebRTC) is **refused certification**, so it never runs.
+   - A page that can't rebuild its surface under PRELOAD ends `UNSUPPORTED_FORM` with zero writes.
 4. **No release.** No UI, route or message lifts the quarantine. `FILLED_AWAITING_SUBMISSION` pages stay quarantined until the tab closes.
 5. **Exact values.** Every WRITE's readback hash equals `rendered_value_hash`, and every ATTACH_LOCAL byte SHA equals the approved SHA. A mismatch stops the run.
 6. **OMIT and prefill.** An OMIT field is never mutated, and a non-blank OMIT field stops the run. A conflicting prefilled WRITE target stops the run, and an equal one is a verified no-op.
