@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>6D-B spike: React-controlled form</title></head>
+<body>
+<!-- Spike fixture (6D-B Task 1, S1/S3). Every control is React-controlled:
+     the DOM value is derived from React state, so a write React does not
+     register is reverted by the next render (window.__forceRender). -->
+<div id="root"></div>
+<pre id="state"></pre>
+<script src="vendor/react-18.3.1.production.min.js"></script>
+<script src="vendor/react-dom-18.3.1.production.min.js"></script>
+<script>
+  const h = React.createElement;
+  function App() {
+    const [text, setText] = React.useState("");
+    const [choice, setChoice] = React.useState("");
+    const [agree, setAgree] = React.useState(false);
+    const [radio, setRadio] = React.useState("");
+    const [file, setFile] = React.useState(null);
+    const [, setTick] = React.useState(0);
+    window.__forceRender = () => setTick((t) => t + 1);
+    const state = { text, choice, agree, radio, file };
+    React.useEffect(() => { document.getElementById("state").textContent = JSON.stringify(state); });
+    return h("form", { id: "application_form", onSubmit: (e) => e.preventDefault() },
+      h("label", { htmlFor: "q_text" }, "Notice period"),
+      h("input", { id: "q_text", type: "text", value: text, onChange: (e) => setText(e.target.value) }),
+      h("label", { htmlFor: "q_select" }, "Country"),
+      h("select", { id: "q_select", value: choice, onChange: (e) => setChoice(e.target.value) },
+        h("option", { value: "" }, "Choose"), h("option", { value: "GB" }, "United Kingdom"),
+        h("option", { value: "DK" }, "Denmark")),
+      h("label", null, h("input", { id: "q_checkbox", type: "checkbox", checked: agree,
+        onChange: (e) => setAgree(e.target.checked) }), "Relocate"),
+      h("label", null, h("input", { id: "q_radio_yes", type: "radio", name: "q_radio", value: "yes",
+        checked: radio === "yes", onChange: (e) => setRadio(e.target.value) }), "Yes"),
+      h("label", null, h("input", { id: "q_radio_no", type: "radio", name: "q_radio", value: "no",
+        checked: radio === "no", onChange: (e) => setRadio(e.target.value) }), "No"),
+      h("label", { htmlFor: "q_file" }, "Resume/CV"),
+      h("input", { id: "q_file", type: "file", onChange: (e) => {
+        const f = e.target.files[0];
+        setFile(f ? { name: f.name, size: f.size, type: f.type } : null);
+      } }));
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>
