@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme — Backend Engineer (certified lever@2 fixture)</title></head>
+<body>
+<!-- A plain-DOM, single-page Lever-style application form: the fixture the
+     lever@2 certification (framework "dom") is proved on. No WebRTC,
+     SharedWorker or service worker. -->
+<form class="application-form" id="application_form" method="post" action="/record/lever_submit">
+  <input type="hidden" name="_csrf" value="fixture-csrf">
+  <div><label for="name">Full name</label><input id="name" name="name" type="text" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div><label for="location">Location</label><input id="location" name="location" type="text"></div>
+  <div><label for="start">What is your earliest start date?</label><input id="start" name="start" type="date"></div>
+  <div><label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" accept=".pdf,.docx"></div>
+  <button type="submit" id="btn-submit">Submit application</button>
+</form>
+</body>
+</html>
