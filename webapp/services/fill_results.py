@@ -4,10 +4,11 @@ fingerprints and outcomes only (no cleartext), plus the explicit non-claims."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from product.autonomy_contract import canonical_hash, to_utc_iso
 from product.fill_vocab import TERMINAL_RUN_EVENTS
+from webapp.config import Settings
 from webapp.persistence import fill as f
 
 RESULT_SCHEMA = "fill-result.v1"
@@ -75,3 +76,63 @@ def write_result(conn, run_id: str, *, now: datetime) -> dict[str, Any]:
     }
     return f.insert_result(conn, fill_run_id=run_id, result=result,
                            result_hash=canonical_hash("fill-result", "v1", result), now=now)
+
+
+# ---- fill status (spec §16.2) ---------------------------------------------------------------
+
+_IN_PROGRESS = frozenset({"OBSERVING", "PLAN_PROPOSED", "REVALIDATING", "QUARANTINE_ACTIVE", "FILLING",
+                          "FINAL_VALIDATING"})
+
+
+def _environment_ready(conn, account_id: str, latest_run: Mapping[str, Any] | None) -> bool:
+    paired = conn.execute("SELECT 1 FROM extension_credentials WHERE account_id = ? AND revoked_at IS NULL",
+                          (account_id,)).fetchone() is not None
+    if latest_run is not None:
+        last = f.run_state(conn, latest_run["id"])
+        if last and last["reason"] == "PERMISSIONS_MISSING":
+            return False
+    return paired
+
+
+def fill_status(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                now: datetime) -> dict[str, Any]:
+    """Derived from the latest run, next to the unchanged 6D-A review state.
+    stale: the current approval or confirmed plan is not the run's (or the
+    filled surface changed after FILLED). ready_to_fill: an effective
+    approval, a current supported observation, a confirmed matching plan and
+    the environment (a live extension pairing, permissions not missing)."""
+    from webapp.services.fill_plans import approval_context, fill_plan_presentation
+    ws = application_workspace_id
+    runs = [r for r in f.runs_for_application(conn, ws) if r["account_id"] == account_id]
+    latest = runs[-1] if runs else None
+    approval = approval_context(conn, settings=settings, account_id=account_id, application_workspace_id=ws, now=now)
+    observation = f.latest_workspace_observation(conn, ws, "INITIAL")
+    view = fill_plan_presentation(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                                  observation_id=observation["id"], now=now) if observation and approval else None
+    ready = bool(approval and view and view["state"] == "PLAN_PROPOSED" and view["confirmed"]
+                 and _environment_ready(conn, account_id, latest))
+    if latest is None:
+        return {"status": "NOT_STARTED", "stale": False, "ready_to_fill": ready, "run_id": None, "stop_reason": None}
+    last = f.run_state(conn, latest["id"])
+    state = last["event"]
+    if state in _IN_PROGRESS:
+        status = "FILLING"
+    elif state == "FILLED_AWAITING_SUBMISSION":
+        lease = f.get_lease(conn, latest["id"])
+        live = lease is not None and lease["expires_at"] >= to_utc_iso(now)
+        status = "FILLED_AWAITING_SUBMISSION" if live else "FILLED_CONTEXT_UNVERIFIED"
+    else:
+        status = state
+    binding = f.get_grant_binding(conn, latest["id"])
+    plan_hash = binding["plan_hash"] if binding else run_plan_hash(conn, latest["id"])
+    plan = f.get_plan_by_hash(conn, plan_hash) if plan_hash else None
+    stale = False
+    if plan is not None:
+        stale = approval is None or (approval["approval_id"], approval["binding_hash"]) != (
+            plan["approval_id"], plan["approval_binding_hash"]) or not f.plan_confirmed(
+            conn, plan_hash, plan["approval_id"], plan["approval_binding_hash"])
+    if status in ("FILLED_AWAITING_SUBMISSION", "FILLED_CONTEXT_UNVERIFIED") and any(
+            d["kind"] == "POST_FILL_CHANGE_OBSERVED" for d in f.detection_events(conn, latest["id"])):
+        stale = True
+    return {"status": status, "stale": stale, "ready_to_fill": ready, "run_id": latest["id"],
+            "stop_reason": last["reason"] if state == "FILL_STOPPED" else None}

@@ -86,6 +86,12 @@ def latest_observation(conn, fill_run_id: str, phase: str | None = None) -> dict
     return _decode(conn.execute(sql + " ORDER BY seq DESC LIMIT 1", args).fetchone(), "observation_json")
 
 
+def latest_workspace_observation(conn, application_workspace_id: str, phase: str) -> dict[str, Any] | None:
+    return _decode(conn.execute("SELECT * FROM fill_observations WHERE application_workspace_id = ? AND phase = ? "
+                                "ORDER BY seq DESC LIMIT 1", (application_workspace_id, phase)).fetchone(),
+                   "observation_json")
+
+
 # ---- plans, mapping choices, confirmations ----------------------------------------------
 
 def insert_plan(conn, *, account_id: str, application_workspace_id: str, plan: dict[str, Any], plan_hash: str,
