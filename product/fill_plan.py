@@ -22,6 +22,7 @@ from product.fill_certification import (
 from product.fill_hash import UnpairedSurrogateError, fill_value_hash
 from product.fill_manifest import FILL_MANIFEST_SCHEMA_VERSION, validate_fill_manifest, value_hash
 from product.fill_observation import observation_fingerprint, structure_fingerprint, unsupported_causes
+from product.job_identity import job_identity
 from product.representation_transforms import TransformError, apply_transform
 
 PLAN_SCHEMA = "fill-plan.v1"
@@ -215,6 +216,14 @@ def build_plan(*, observation: Mapping[str, Any], binding: Mapping[str, Any], ap
     if unsupported:
         return PlanResult(None, unsupported=unsupported)
     entry = catalogue_entry
+    # The page must be the approved apply target (spec §8.3): same canonical
+    # key as the 6D-A binding (product.job_identity canonicalization).
+    observed_target = job_identity({"source_url": observation["context"]["canonical_url"]}).canonical_url_key
+    if binding["apply_target"]["canonical_url"] != observed_target:
+        return PlanResult(None, deltas=[DeltaSpec(
+            "TARGET_CHANGE", None, None, True, "The application page is not the approved apply target",
+            {"canonical_url": observed_target, "approved_canonical_url": binding["apply_target"]["canonical_url"],
+             "origin": observation["context"]["origin"], "tenant_key": observation["context"]["tenant_key"]})])
     fields = {f["answer_key"]: f for f in binding["fields"]}
     bound_docs = {d["kind"]: d for d in binding["documents"]}
     documents = {k: v for k, v in documents.items() if k in bound_docs}

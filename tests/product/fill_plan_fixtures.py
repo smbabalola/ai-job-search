@@ -43,7 +43,8 @@ def binding(extra_fields=(), *, omit=()):
         "schema_version": "application-approval-binding.v1", "account_id": "account_local",
         "application_workspace_id": "ws_1",
         "job": {"identity_key": "source:x", "identity_strength": "SOURCE_RECORD", "job_posting_content_id": "jp"},
-        "apply_target": {"canonical_url": "https://boards.example-ats.test/acme/jobs/123", "provenance": "discovery_verified"},
+        "apply_target": {"canonical_url": "url:https://boards.example-ats.test/acme/jobs/123",
+                         "provenance": "discovery_verified"},
         "pack": {"artifact_id": "art_1", "content_hash": "sha256:" + "c" * 64, "schema_version": "application-pack.v2"},
         "documents": [
             {"kind": "cover_letter", "document_version_id": "docv_cl", "sha256": DOC_SHA["cover_letter"], "byte_length": 900,

@@ -253,3 +253,16 @@ def test_observation_level_unsupported_causes_are_passed_through():
     obs = page()
     obs["context"]["multi_step_indicators"] = ["NEXT_BUTTON"]
     assert "MULTI_STEP" in build(obs=obs).unsupported
+
+
+def test_a_page_that_is_not_the_approved_apply_target_is_a_target_change_delta():
+    obs = page()
+    obs["context"]["canonical_url"] = "https://boards.example-ats.test/acme/jobs/999"
+    [delta] = build(obs=obs).deltas
+    assert delta.kind == "TARGET_CHANGE" and delta.observed["canonical_url"].endswith("/jobs/999")
+
+
+def test_the_target_comparison_uses_the_approval_canonicalization():
+    obs = page()
+    obs["context"]["canonical_url"] = "HTTPS://Boards.Example-ATS.test/acme/jobs/123/"  # same target, other spelling
+    assert build(obs=obs).plan is not None

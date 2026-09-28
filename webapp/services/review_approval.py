@@ -155,6 +155,17 @@ def open_review_delta(conn, *, account_id: str, application_workspace_id: str, k
     its DELTA_OPENED and, for a classification, the predecessor's
     DELTA_RESOLVED {reason: classified}. A retried classification writes
     nothing."""
+    return run_immediate(conn, lambda: open_review_delta_in_transaction(
+        conn, account_id=account_id, application_workspace_id=application_workspace_id, kind=kind,
+        answer_key=answer_key, subject=subject, required=required, question=question, observed=observed,
+        source=source, now=now))
+
+
+def open_review_delta_in_transaction(conn, *, account_id: str, application_workspace_id: str, kind: str,
+                                     answer_key: str | None, subject: str | None, required: bool, question: str,
+                                     observed: dict[str, Any], source: str, now: datetime) -> dict[str, Any]:
+    """open_review_delta's logic inside the CALLER's transaction (6D-B needs a
+    delta and its own audit rows to commit atomically). Behaviour identical."""
     from product.review_contract import FIELD_DELTA_KINDS
     from webapp.persistence.migrations import DELTA_KINDS
     from webapp.persistence.workspaces import get_workspace
@@ -206,7 +217,7 @@ def open_review_delta(conn, *, account_id: str, application_workspace_id: str, k
                                                        "successor_delta_id": delta["id"]},
                             actor="system", now=now)
         return {**delta, "observed": observed or {}}
-    return run_immediate(conn, work)
+    return work()
 
 
 _NON_FIELD_SECTIONS = {"TARGET_CHANGE": lambda o: ["apply_target"],
