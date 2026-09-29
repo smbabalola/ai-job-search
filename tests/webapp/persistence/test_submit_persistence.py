@@ -12,6 +12,9 @@ from webapp.persistence import submit as s
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.fill import CleartextAtRestError
 
+pytestmark = pytest.mark.sqlite_only  # turns SQLite foreign keys off to test row shape alone
+
+
 NOW = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
 ACC = "account_local"
 

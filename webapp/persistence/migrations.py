@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any, Callable
+
 from datetime import datetime, timezone
 import json
 
@@ -86,13 +89,23 @@ def _execute_statements(conn: dbapi.Connection, script: str) -> None:
             conn.execute(statement)
 
 
-def apply_migrations(conn: dbapi.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations ("
-        "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-    )
-    conn.commit()
-    migrations = (
+@dataclass(frozen=True)
+class Migration:
+    """A Bundle 7 migration (spec H5): one body per dialect. A migration is
+    never edited after the task that introduces it has been committed."""
+
+    id: str
+    sqlite: Callable[[Any], None]
+    postgres: Callable[[Any], None]
+    disable_foreign_keys: bool = False
+
+
+# Appended one per introducing task, in spec §23.1 order (022_storage ... 037_purge).
+BUNDLE7_MIGRATIONS: list[Migration] = []
+
+
+def _legacy_migrations():
+    return (
         (SEARCH_WORKSPACES_MIGRATION_ID, _migrate_search_workspaces, True),
         (PROFILE_MANAGER_MIGRATION_ID, _migrate_evidence_profile_manager, False),
         (ACCOUNTS_OWNERSHIP_MIGRATION_ID, _migrate_accounts_ownership, False),
@@ -115,32 +128,63 @@ def apply_migrations(conn: dbapi.Connection) -> None:
         (FILL_MIGRATION_ID, _migrate_fill, False),
         (HUMAN_SUBMIT_MIGRATION_ID, _migrate_human_submit, True),
     )
-    for migration_id, operation, disable_foreign_keys in migrations:
-        if conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE id = ?", (migration_id,)
-        ).fetchone():
-            continue
-        if disable_foreign_keys:
-            conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            operation(conn)
-            conn.execute(
-                "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
-                (migration_id, _now()),
-            )
+
+
+LEGACY_MIGRATION_IDS = (
+    SEARCH_WORKSPACES_MIGRATION_ID, PROFILE_MANAGER_MIGRATION_ID, ACCOUNTS_OWNERSHIP_MIGRATION_ID,
+    APPLICATION_DOCUMENTS_MIGRATION_ID, HANDOFF_SESSIONS_MIGRATION_ID, ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
+    PAIRING_SECRETS_MIGRATION_ID, HANDOFF_SESSION_TOKENS_MIGRATION_ID, HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,
+    POLICY_DECISIONS_MIGRATION_ID, APPLICATION_BLOCKERS_MIGRATION_ID, BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID,
+    SEMANTIC_SUBJECT_KEY_MIGRATION_ID, DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
+    AUTONOMY_CONTRACT_MIGRATION_ID, AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, AUTONOMY_PREPARE_MIGRATION_ID,
+    REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID, HUMAN_SUBMIT_MIGRATION_ID,
+)
+
+
+def _run_migration(conn: dbapi.Connection, migration_id: str, operation, disable_foreign_keys: bool) -> None:
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?", (migration_id,)
+    ).fetchone():
+        return
+    sqlite = conn.dialect == "sqlite"
+    if disable_foreign_keys and sqlite:
+        conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        operation(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            (migration_id, _now()),
+        )
+        if sqlite:
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise dbapi.IntegrityError(
                     f"migration {migration_id} created foreign-key violations: {violations!r}"
                 )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            if disable_foreign_keys:
-                conn.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if disable_foreign_keys and sqlite:
+            conn.execute("PRAGMA foreign_keys = ON")
+
+
+def apply_migrations(conn: dbapi.Connection) -> None:
+    """SQLite runs the legacy chain 001-021; PostgreSQL starts from the
+    baseline (which records those ids). Both then run the Bundle 7 chain."""
+    if conn.dialect == "sqlite":
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        conn.commit()
+        for migration_id, operation, disable_foreign_keys in _legacy_migrations():
+            _run_migration(conn, migration_id, operation, disable_foreign_keys)
+    for migration in BUNDLE7_MIGRATIONS:
+        body = migration.sqlite if conn.dialect == "sqlite" else migration.postgres
+        _run_migration(conn, migration.id, body, migration.disable_foreign_keys)
 
 
 def _migrate_accounts_ownership(conn: dbapi.Connection) -> None:

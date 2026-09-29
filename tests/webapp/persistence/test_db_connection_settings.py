@@ -3,6 +3,10 @@ from __future__ import annotations
 import threading
 
 from webapp.persistence.db import connect, init_db
+import pytest
+
+pytestmark = pytest.mark.sqlite_only  # asserts SQLite WAL and busy-timeout pragmas
+
 
 
 def test_connections_use_wal_and_a_long_busy_timeout(tmp_path):

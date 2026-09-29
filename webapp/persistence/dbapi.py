@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,9 @@ DEFAULT_WRITER_LOCK_TIMEOUT_MS = 10_000
 SLOW_WAIT_SECONDS = 1.0
 _DML = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE"})
 _ALLOWED_PG_PRAGMAS = frozenset({"foreign_keys", "journal_mode", "busy_timeout"})
+# Statements that run under a statement savepoint inside a transaction, so a
+# failure leaves the transaction usable (SQLite's statement-level rollback).
+_STATEMENT_SAVEPOINT_KEYWORDS = _DML | {"CREATE", "ALTER", "DROP", "WITH"}
 
 
 class DatabaseBusy(sqlite3.OperationalError):
@@ -265,14 +268,24 @@ class PgRow(tuple):
         return list(self._names)
 
 
+SYNTHETIC_ROWID = "rowid"
+
+
 def _pg_row_factory(cursor):
+    """Rows as PgRow. The synthetic ``rowid`` identity column (the PostgreSQL
+    stand-in for SQLite's implicit rowid, used only in ORDER BY) is never
+    returned, so ``SELECT *`` yields the same keys on both dialects."""
     description = cursor.description
     if description is None:
         return tuple
-    names = [column.name for column in description]
+    all_names = [column.name for column in description]
+    keep = [i for i, name in enumerate(all_names) if name != SYNTHETIC_ROWID]
+    names = [all_names[i] for i in keep]
     index = {name: i for i, name in enumerate(names)}
     lower = {name.lower(): i for i, name in enumerate(names)}
-    return lambda values: PgRow(values, names, index, lower)
+    if len(keep) == len(all_names):
+        return lambda values: PgRow(values, names, index, lower)
+    return lambda values: PgRow([values[i] for i in keep], names, index, lower)
 
 
 class _Cursor:
@@ -338,6 +351,7 @@ class PgConnection:
         self._conn.adapters.register_loader("numeric", _NumericLoader)
         self._conn.execute(f"SET lock_timeout = '{int(writer_lock_timeout_ms)}ms'")
         self._in_tx = False
+        self._outer_savepoint: str | None = None
         self._writer_hold: tuple[str, float] | None = None
         self.row_factory = None  # accepted for sqlite3 API compatibility; rows are always PgRow
 
@@ -397,6 +411,7 @@ class PgConnection:
             raise _map_pg_error(exc, _call_site()) from exc
         finally:
             self._in_tx = False
+            self._outer_savepoint = None
             self._release_writer()
 
     def commit(self) -> None:
@@ -426,12 +441,31 @@ class PgConnection:
         if keyword == "ROLLBACK" and _normalized_statement(sql) in ("ROLLBACK", "ROLLBACK TRANSACTION"):
             self.rollback()
             return _Cursor()
+        if keyword in ("SAVEPOINT", "RELEASE") or (keyword == "ROLLBACK" and " TO " in _normalized_statement(sql)):
+            return self._savepoint(sql, keyword)
         if keyword == "PRAGMA":
             name = re.match(r"\s*PRAGMA\s+([A-Za-z_]+)", sql, re.IGNORECASE)
             if name and name.group(1).lower() in _ALLOWED_PG_PRAGMAS:
                 return _Cursor()
             raise OperationalError("pragma not supported on postgres")
         return None
+
+    def _savepoint(self, sql: str, keyword: str) -> _Cursor:
+        """SQLite semantics: a SAVEPOINT outside a transaction opens one, and
+        RELEASE of that outermost savepoint commits it."""
+        import psycopg
+
+        name = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", sql)[-1].lower()
+        if keyword == "SAVEPOINT" and not self._in_tx:
+            self._begin(writer=False)
+            self._outer_savepoint = name
+        try:
+            self._conn.execute(sql)
+        except psycopg.Error as exc:
+            raise _map_pg_error(exc, _call_site()) from exc
+        if keyword == "RELEASE" and name == self._outer_savepoint:
+            self.commit()
+        return _Cursor()
 
     def _run(self, runner, sql: str, params, *, savepoint: bool):
         import psycopg
@@ -471,7 +505,7 @@ class PgConnection:
             self._begin(writer=False)
         text, values = self._prepare(sql, params)
         cursor = self._run(lambda s, p: self._conn.execute(s, p), text, values,
-                           savepoint=self._in_tx and keyword != "SELECT")
+                           savepoint=self._in_tx and keyword in _STATEMENT_SAVEPOINT_KEYWORDS)
         return _Cursor(cursor)
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> _Cursor:
@@ -500,12 +534,36 @@ def _writer_lock_timeout(settings: Any, override: int | None) -> int:
     return DEFAULT_WRITER_LOCK_TIMEOUT_MS if value is None else int(value)
 
 
-def connect(target: Any, *, writer_lock_timeout_ms: int | None = None) -> Connection:
-    """target: a Settings object, a postgresql:// URL, or a SQLite file path."""
+# The dual-dialect test harness (tests/conftest.py, ``--db postgres``) maps
+# SQLite file paths used by existing tests to per-path PostgreSQL databases.
+# Production never sets it.
+_sqlite_redirect: Callable[[Path], str | None] | None = None
+
+
+def set_sqlite_redirect(redirect: Callable[[Path], str | None] | None) -> None:
+    global _sqlite_redirect
+    _sqlite_redirect = redirect
+
+
+def resolve(target: Any) -> tuple[str, Any, Any]:
+    """(dialect, location, settings) for a Settings, postgresql:// URL or SQLite path."""
     settings = None
     if hasattr(target, "db_path"):
         settings = target
         target = settings.database_url or settings.db_path
     if isinstance(target, str) and target.startswith("postgresql://"):
-        return PgConnection(target, writer_lock_timeout_ms=_writer_lock_timeout(settings, writer_lock_timeout_ms))
-    return _connect_sqlite(Path(target))
+        return "postgres", target, settings
+    path = Path(target)
+    if _sqlite_redirect is not None:
+        url = _sqlite_redirect(path)
+        if url:
+            return "postgres", url, settings
+    return "sqlite", path, settings
+
+
+def connect(target: Any, *, writer_lock_timeout_ms: int | None = None) -> Connection:
+    """target: a Settings object, a postgresql:// URL, or a SQLite file path."""
+    dialect, location, settings = resolve(target)
+    if dialect == "postgres":
+        return PgConnection(location, writer_lock_timeout_ms=_writer_lock_timeout(settings, writer_lock_timeout_ms))
+    return _connect_sqlite(location)

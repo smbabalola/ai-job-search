@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from webapp.persistence.db import connect, init_db
 import webapp.persistence.migrations as migrations
 from webapp.persistence.migrations import (
@@ -136,6 +138,7 @@ def test_migration_009_is_idempotent(tmp_path):
     conn.close()
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain
 def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     db_path = tmp_path / "upgrade-from-004.sqlite3"
     init_db(db_path)
