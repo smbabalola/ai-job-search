@@ -271,28 +271,19 @@ export class SubmitController {
       } catch {
         continue;  // mid-navigation: look again on the next poll
       }
-      if (signals.success) {
-        await this.event(attemptId, "SIGNAL_OBSERVED", { signal: "success" });
-        return { success: true, failure: false, content: false, cause: null };
-      }
-      if (signals.failure) {
-        await this.event(attemptId, "SIGNAL_OBSERVED", { signal: "failure" });
-        return { success: false, failure: true, content: false, cause: null };
-      }
-      if (signals.challenge && !challenge) {
-        challenge = true;
-        everChallenged = true;
-        this.set("CHALLENGE", null);
-        await this.event(attemptId, "CHALLENGE_DETECTED");
-        deadline = browser.now() + (this.ports.timing?.challengeMs ?? CHALLENGE_HANDOFF_WINDOW_MS);
-      } else if (!signals.challenge && challenge) {
+      // A cleared challenge is revalidated FIRST, before any success or
+      // failure on the same poll is accepted (the page's own callback may
+      // submit the moment the person completes the check).
+      if (challenge && !signals.challenge) {
         challenge = false;
         await this.event(attemptId, "CHALLENGE_CLEARED");
         this.set("SUBMITTING", null);
         // A full fresh revalidation before continuing (spec §12.2): the
         // SUBMIT egress is still exactly the certified one, and the form,
         // if still there, is exactly the authorized one -- by the local
-        // fingerprint AND the server's comparison. Anything else, or an
+        // fingerprint AND the server's comparison. If the form is already
+        // gone, the trusted-edit watcher (polled above for the whole
+        // handoff) is what vouches for the content. Anything else, or an
         // unreachable server, restores TOTAL and stops.
         if (!(await this.ports.egress.verify(egressHash).catch(() => false))) {
           await this.event(attemptId, "EGRESS_VERIFY_FAILED", { stage: "challenge_cleared" });
@@ -308,6 +299,21 @@ export class SubmitController {
             .then((r) => (r as { matches_review?: unknown }).matches_review === true, () => false);
           if (!local || !server) return this.contentChangedStop(auth, attemptId);
         }
+      }
+      if (signals.success) {
+        await this.event(attemptId, "SIGNAL_OBSERVED", { signal: "success" });
+        return { success: true, failure: false, content: false, cause: null };
+      }
+      if (signals.failure) {
+        await this.event(attemptId, "SIGNAL_OBSERVED", { signal: "failure" });
+        return { success: false, failure: true, content: false, cause: null };
+      }
+      if (signals.challenge && !challenge) {
+        challenge = true;
+        everChallenged = true;
+        this.set("CHALLENGE", null);
+        await this.event(attemptId, "CHALLENGE_DETECTED");
+        deadline = browser.now() + (this.ports.timing?.challengeMs ?? CHALLENGE_HANDOFF_WINDOW_MS);
       }
     }
     return { success: false, failure: false, content: false, cause: everChallenged ? "CHALLENGE_TIMEOUT" : "NO_SIGNAL" };

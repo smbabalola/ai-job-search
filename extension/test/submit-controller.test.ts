@@ -355,3 +355,22 @@ describe("revalidation after a challenge (6E-A condition: full fresh observation
     expect(w.calls.filter((c) => c === "verifyEgress")).toHaveLength(2);
   });
 });
+
+describe("a challenge that clears and succeeds in the same poll (browser finding)", () => {
+  it("records CHALLENGE_CLEARED and re-verifies the egress before accepting the success", async () => {
+    const w = world({ signals: [{}, { challenge: true }, { success: true, rootPresent: false }] });
+    const { view } = await run(w);
+    const at = (c: string) => w.calls.indexOf(c);
+    expect(at("event:CHALLENGE_CLEARED")).toBeGreaterThan(-1);
+    expect(at("event:CHALLENGE_CLEARED")).toBeLessThan(at("event:SIGNAL_OBSERVED"));
+    expect(w.calls.filter((c) => c === "verifyEgress")).toHaveLength(2);
+    expect(view.phase).toBe("SUBMITTED");
+  });
+
+  it("a changed egress at that moment still stops the attempt instead of accepting the success", async () => {
+    const w = world({ signals: [{}, { challenge: true }, { success: true, rootPresent: false }],
+                      verifyEgressAfterClick: false });
+    await run(w);
+    expect(w.results[0]).toMatchObject({ success_observed: false, cause: "QUARANTINE_CHANGED" });
+  });
+});
