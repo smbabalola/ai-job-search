@@ -66,7 +66,7 @@ Bundle 7 turns a working single-user engine (prepare → review → fill → hum
 |---|---|
 | H1 | Two deployment modes, set by `JOBSEARCH_DEPLOYMENT` ∈ {`local`, `hosted`} (default `local`). **local** is today's behavior: one configured account, no login, SQLite, filesystem stores. It refuses to start unless bound to a loopback host. **hosted** needs PostgreSQL, the object store, `JOBSEARCH_SECRET_KEY`, an `https` `JOBSEARCH_PUBLIC_ORIGIN`, pinned extension IDs and selected billing/email adapters. It refuses to start on SQLite, the filesystem profile store, or any missing or invalid setting. |
 | H2 | PostgreSQL (≥ 15; tested on local 18.1) through psycopg 3, behind one connection adapter (`webapp/persistence/dbapi.py`) with a sqlite3-shaped API. The ~430 existing `conn.execute` call sites keep their SQL written with `?` placeholders. The adapter translates placeholders, escapes literal `%`, maps rows (index access and key access) and maps errors to a shared `dbapi.IntegrityError` / `dbapi.OperationalError`. |
-| H3 | Transaction semantics are kept exactly. Every `BEGIN IMMEDIATE` block (31 sites) gets, on PostgreSQL, `BEGIN ISOLATION LEVEL REPEATABLE READ` plus a transaction-scoped global writer advisory lock. That reproduces SQLite's single-writer guarantee. Other transactions run at REPEATABLE READ. A serialization failure raises `dbapi.DatabaseBusy`: HTTP maps it to 503 with `Retry-After`, and workers retry it. A per-account lock is a recorded later scalability item. |
+| H3 | Transaction semantics are kept exactly. Every `BEGIN IMMEDIATE` block (31 sites) gets, on PostgreSQL, `BEGIN ISOLATION LEVEL REPEATABLE READ` plus a transaction-scoped global writer advisory lock. That reproduces SQLite's single-writer guarantee. Other transactions run at REPEATABLE READ. A serialization failure raises `dbapi.DatabaseBusy`: HTTP maps it to 503 with `Retry-After`, and workers retry it. A per-account lock is a recorded later scalability item. **Transitional (user ruling 2026-09-29):** this lock is a compatibility mechanism that preserves correctness, not the permanent concurrency model. Its full contract is in §10.7. |
 | H4 | Timestamps stay ISO-8601 UTC `TEXT` in both dialects. Autoincrement `seq` columns become `BIGINT GENERATED ALWAYS AS IDENTITY`. Append-only `RAISE(ABORT)` triggers become PL/pgSQL trigger functions with the same messages. Nothing in the domain SQL changes type. |
 | H5 | Migrations: the SQLite chain `001`–`021` stays as it is, for dev databases. PostgreSQL starts from `pg/0001_baseline.sql`, which equals the post-`021` schema. Every Bundle 7 migration (`022`+) is written once with a `sqlite` body and a `postgres` body in one module. The schema-parity test (§10.3) fails on any structural difference between dialects. |
 | H6 | Document bytes go through an `ObjectStore` port (`put`/`get`/`delete`/`exists`, integrity-verified), with `LocalFsObjectStore` for local mode and tests, and `S3CompatibleObjectStore` for hosted. Keys are tenant-prefixed: `accounts/{account_id}/documents/sha256/{aa}/{digest}.{ext}`. Content is never deduplicated across tenants. |
@@ -459,6 +459,33 @@ A pytest module:
 3. substitutes A's ids into the path and body while authenticated as B.
 
 It asserts 404/403 with no A data in the response body and no writes to A's rows (a row-hash snapshot is taken before and after). Routes without id parameters are covered by B's own data only. New routes are covered automatically. Per-route opt-outs need a reason string, and the test fails if more than 5 exist.
+
+### 10.7 Transitional writer lock (user ruling 2026-09-29)
+
+The PostgreSQL global writer lock (H3) exists only to preserve the single-writer semantics that the existing `BEGIN IMMEDIATE` blocks depend on. It isn't the intended permanent concurrency model. The later hardening step replaces it with per-invariant locking (per-account locks, row locks, constraints) without changing behavior. The tests below pin the invariants so that the replacement can be checked.
+
+- **Scope.**
+  - The lock is taken only where a code path executes `BEGIN IMMEDIATE`, meaning the 31 sites present at `b042e0e`.
+  - A committed allowlist (`webapp/persistence/writer_lock_sites.py`: module → the expected count of `BEGIN IMMEDIATE` literals) is enforced by a lint test. Adding a new site fails the lint unless the allowlist changes in the same commit, with a one-line justification naming the single-writer invariant it protects.
+  - Bundle 7 code doesn't add sites for convenience. New invariants use `lock_account`, row locks, or constraints.
+  - The lock is transaction-scoped (`pg_advisory_xact_lock`) and released at commit or rollback. It's never held across a network call to an AI, billing or email provider. A lint over the allowlisted modules checks that no provider call sits inside the transaction.
+- **Bounded acquisition.** Each lock statement runs under `SET LOCAL lock_timeout = '<JOBSEARCH_WRITER_LOCK_TIMEOUT_MS>ms'` (default 10000 ms, allowed range 1000–30000). `lock_account` is bounded the same way.
+- **Deterministic failure.**
+  - A timeout (SQLSTATE `55P03`), a serialization failure (`40001`) or a deadlock (`40P01`) rolls back the transaction and raises `dbapi.DatabaseBusy(reason="writer_lock_timeout" | "serialization" | "deadlock", site=...)`.
+  - HTTP returns 503 `DATABASE_BUSY` with `Retry-After: 2`.
+  - Workers retry through the normal job backoff.
+  - Nothing is committed partially, and no caller retries silently inside a request.
+- **Visibility.**
+  - Every acquisition records its wait and hold time per call site (a site tag derived from the calling module and function). These go to the §20.6 metrics.
+  - A wait over 1000 ms logs a `writer_lock_slow` warning with the site and the wait.
+  - Timeouts log `writer_lock_timeout`.
+  - The admin dashboard shows lock timeouts over 24 h and the top 5 sites by total wait.
+- **Tests.**
+  - Two connections: the second waits until the first commits (the invariant).
+  - With `lock_timeout` 1000 ms and a holder that doesn't release, the waiter raises `DatabaseBusy("writer_lock_timeout")` within 1000–3000 ms and nothing is written.
+  - The metrics and slow-log fire.
+  - The allowlist lint.
+  - The protected invariants are proven concurrently on PostgreSQL: one grant consumption; one click dispatch per authorization; one active fill run per workspace; lease exclusivity; an approval not superseded twice.
 
 ## 11. Plans, capability matrix and entitlements (7D core)
 
@@ -1018,7 +1045,8 @@ The 6B file sentinel `AUTONOMY_HALT` keeps working in local mode. In hosted mode
   - outbox by status;
   - webhook lag;
   - AI calls and cost by provider;
-  - `dbapi.DatabaseBusy` count.
+  - `dbapi.DatabaseBusy` count;
+  - the writer-lock metrics of §10.7 (`db_writer_lock_wait_seconds`, `db_writer_lock_hold_seconds`, `db_writer_lock_timeouts_total`, each labelled by call site).
 - **Logging:** structured JSON lines (`webapp/observability.py`) with `request_id` (the `X-Request-ID` inbound if it's a valid UUID, else generated; echoed in the response), route, account_id (not email), duration, and outcome. Redaction covers the `authorization`, `cookie`, `set-cookie`, `password`, `token`, `code`, `refresh_token` and `access_token` keys, recursively.
 - **`ErrorReporter` port:** unhandled exceptions → log plus the reporter; the user gets a generic 500 page with the request id.
 
@@ -1307,7 +1335,7 @@ The phases run in order; within a phase, tasks run in order. One logical commit 
 3. DP-1…DP-10 resolved, and `release_readiness` passes.
 4. A real payment adapter and a real email adapter contract-tested against the vendors' test modes.
 5. Hosted threat-model sign-off recorded, and a penetration-style review of §8.4 done.
-6. At least one adapter `LIVE_CERTIFIED` for submit, with live evidence, to make hosted submit available. Otherwise the commercial journey launches with submit disabled, and that is an explicit launch decision.
+6. **Hard gate (user ruling 2026-09-29): at least one ATS adapter is `LIVE_CERTIFIED` for submit, with live evidence,** and the §27.2-8 journey is completed through that live submission path. The adapter need not be Greenhouse, which stays fixture-certified until separately live-certified. If Bundle 7 and the release pass are otherwise complete but no adapter is live-certified, the hosted product may be declared *technically/deployment ready* with submission disabled. That state **does not satisfy the commercial-release gate** and must not be called the commercial release.
 7. The extension published with a production origin and store id.
 8. A brand-new external person completes sign up → pay → onboard → CVs → rules → capture → prepare → review → fill → submit on the hosted service with no developer help, no Python, no environment variables and no API key.
 

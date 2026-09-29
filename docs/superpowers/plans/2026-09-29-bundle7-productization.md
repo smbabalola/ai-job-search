@@ -34,6 +34,8 @@
   - Extension: `npm --prefix extension test -- <pattern>` and `npm --prefix extension run build`.
 - **Test scope (user instruction):** run each task's focused tests plus, at the end of each phase, the smoke set in spec §25.2. **Never run the full historical suite during Bundle 7.** That's the final release pass.
 - **Memory:** run browser tests one file at a time. If commit headroom drops below 3 GB, pause and report.
+- **Transitional writer lock (spec §10.7):** only the allowlisted `BEGIN IMMEDIATE` sites take it. The timeout is `JOBSEARCH_WRITER_LOCK_TIMEOUT_MS` (default 10000, range 1000–30000). New Bundle 7 code never adds a `BEGIN IMMEDIATE`; it uses `lock_account`, row locks or constraints.
+- **Commercial gate (spec §27.2-6):** it is hard. Deployment-ready without a live-certified adapter is **not** the commercial release.
 - **Technical constants (verbatim from the spec):**
   - **Sessions:** customer idle 7 d, absolute 30 d; staff idle 30 min, absolute 8 h.
   - **Email tokens:** VERIFY 48 h, RESET 1 h, EMAIL_CHANGE 24 h.
@@ -176,6 +178,8 @@ def connect(target: "Settings | Path | str") -> Connection
 def translate_placeholders(sql: str) -> str   # '?'→'%s' outside quotes/comments; '%'→'%%'
 def lock_account(conn: Connection, account_id: str) -> None
 WRITER_LOCK_KEY: int = 0x4A53_0001
+WRITER_LOCK_SITES: Mapping[str, int]   # webapp/persistence/writer_lock_sites.py — module → count of BEGIN IMMEDIATE literals (spec §10.7)
+class DatabaseBusy(OperationalError): reason: Literal['writer_lock_timeout','serialization','deadlock','sqlite_locked']; site: str
 ```
 - The SQLite implementation subclasses `sqlite3.IntegrityError` into the dbapi hierarchy with a wrapper: `class IntegrityError(sqlite3.IntegrityError)`. The SQLite path raises it by re-raising inside `execute`, so `except sqlite3.IntegrityError` in untouched code still works during the transition.
 - On PostgreSQL:
@@ -194,7 +198,10 @@ WRITER_LOCK_KEY: int = 0x4A53_0001
   - row access in every form;
   - a duplicate primary key raises `dbapi.IntegrityError`, which is also `isinstance` of `sqlite3.IntegrityError` on SQLite;
   - `BEGIN IMMEDIATE` on two PostgreSQL connections: the second blocks until the first commits (thread plus event, 2 s bound);
-  - two REPEATABLE READ transactions updating the same row → one raises `DatabaseBusy`;
+  - two REPEATABLE READ transactions updating the same row → one raises `DatabaseBusy(reason="serialization")`;
+  - **writer-lock bound (spec §10.7):** with `writer_lock_timeout_ms=1000` and a holder that never releases, the waiter raises `DatabaseBusy(reason="writer_lock_timeout")` in 1000–3000 ms, rolls back and writes nothing;
+  - wait/hold samples are recorded per site in an in-process `LOCK_STATS` (Task 29 exports them), and a wait over 1000 ms emits a `writer_lock_slow` log record;
+  - the lint `tests/test_writer_lock_sites.py`: the per-module counts of `BEGIN IMMEDIATE` literals equal `WRITER_LOCK_SITES` exactly, and no allowlisted transaction block contains a call to an attribute named `propose`, `send`, `create_checkout`, `fetch_subscription` or `extract` (AST scan between the BEGIN and the next commit/rollback in the same function);
   - `RETURNING` works on both.
 - [ ] `test_portable_sql_lint.py` AST-scans string constants in `webapp/**/*.py` (excluding `persistence/migrations.py`, `persistence/db.py`, `persistence/pg/`) for:
   - `INSERT OR`, `json_extract`, `json_each`, `strftime(`, `julianday(`, `datetime('now'`;
@@ -1021,6 +1028,7 @@ def request_export(conn, scope, *, now) -> str; def build_export(conn, *, export
 
 **Steps:**
 - [ ] Tests:
+  - the writer-lock metrics `db_writer_lock_wait_seconds`, `db_writer_lock_hold_seconds` and `db_writer_lock_timeouts_total` (by site) are present in `/metrics`, and the admin dashboard shows the 24 h timeouts and the top 5 sites by wait;
   - `/ready` is 200 when everything is fine; 503 listing `database`, `migrations`, `object_store`, `catalog`, `email_provider`, `secret_key` individually when each is broken (monkeypatched probes);
   - no secret values in the body;
   - `/metrics` → 404 when the token is unset, 401 with the wrong bearer, and 200 with the §20.6 metric names present;
@@ -1069,7 +1077,7 @@ def request_export(conn, scope, *, now) -> str; def build_export(conn, *, export
 - Modify: `README.md`, `SETUP.md` (the two modes; local stays the developer path), `CHANGELOG.md`.
 
 **Steps:**
-- [ ] Test: with the production catalog and retention files plus no adapters, the tool exits 1 and lists every DP-1…DP-10 item; with the dev files plus the fake adapters in local mode, it exits 1 only with "not hosted"-class findings; each check has a stable id.
+- [ ] Test: with the production catalog and retention files plus no adapters, the tool exits 1 and lists every DP-1…DP-10 item. With every DP resolved but no `LIVE_CERTIFIED` submit adapter, it exits 1 with the finding `COMMERCIAL_GATE_NO_LIVE_SUBMIT_ADAPTER` and reports `deployment_ready: true, commercial_release: false` (spec §27.2-6); with the dev files plus the fake adapters in local mode, it exits 1 only with "not hosted"-class findings; each check has a stable id.
 - [ ] Run §27.1 criteria 1–8 as the Bundle 7 exit check: the journey suites, the structural tests (parity, lint, registry, route classes, isolation, never-gated, gate call sites, canary), the hosted-config refusal tests, the extension hosted-build test, the smoke set, and the readiness tool. **Not** the full historical suite.
 - [ ] Commit `docs(release): release-readiness tool, hosted runbooks and decision-point register`.
 
