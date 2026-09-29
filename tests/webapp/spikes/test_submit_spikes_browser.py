@@ -152,6 +152,8 @@ def test_s_e1_allow_is_tab_scoped_so_the_service_worker_stays_blocked(context, r
     assert recorder.requests == [], recorder.requests
 
 
+@pytest.mark.skip(reason="retired: production dropped declarativeNetRequestFeedback (S-E2 fallback, "
+                         "docs/superpowers/notes/2026-09-29-6e-a-spike-results.md)")
 def test_s_e2_matched_rules_report_the_allow_rule(context, recorder):
     page = _open(context, "react_xhr.html")
     worker = extension_worker(context, HOOK_BUILD)

@@ -38,7 +38,8 @@ def test_happy_path_through_the_submit_review_page_with_a_double_click(submit_ha
     assert h.recorder.probes() == {"submit:acme/123", "confirm:acme/123"}
     [attempt] = h.attempts()
     result = sp.get_submission_result(h.w.conn, attempt["id"])["result"]
-    assert result["state"] == "CONFIRMED_SUCCESS" and 9201 in result["matched_rule_ids"]
+    assert result["state"] == "CONFIRMED_SUCCESS"
+    assert (result["matched_rule_ids"], result["matched_rules_available"]) == ([], False)
     events = [e["event"] for e in sp.submit_events(h.w.conn, sp.authorizations_for_application(h.w.conn, h.w.ws)[0]["id"])]
     assert events[:2] == ["EGRESS_INSTALLED", "CLICK_PERFORMED"] and "TOTAL_RESTORED" in events
     # a second authorization of the same filled run is refused (duplicate prevention)

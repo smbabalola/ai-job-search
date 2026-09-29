@@ -48,7 +48,6 @@ interface World {
   restored: boolean;
   detected: string[];
   siblings: boolean;
-  matched: { available: boolean; ids: number[] };
   preClickBodies: Record<string, unknown>[];
   serverMatches: boolean;        // the server's revalidation of a CHALLENGE_CLEARED observation
   verifyEgressAfterClick: boolean;
@@ -61,7 +60,7 @@ function world(overrides: Partial<World> = {}): World {
     calls: [], store: new Map(), signals: [{ success: true, rootPresent: false }], observations: [OBS], results: [],
     preClick: async () => ({ attempt_id: "att_1" }), dispatch: true, verifyTotal: true, verifyEgress: true,
     controlFound: true, clickResult: "CLICKED", contentChangedAt: null, restored: true, detected: [], siblings: true,
-    matched: { available: true, ids: [9201] }, preClickBodies: [], serverMatches: true, verifyEgressAfterClick: true,
+    preClickBodies: [], serverMatches: true, verifyEgressAfterClick: true,
     ports: undefined as unknown as SubmitPorts, ...overrides,
   };
   const log = (c: string) => { w.calls.push(c); };
@@ -110,7 +109,6 @@ function world(overrides: Partial<World> = {}): World {
         return w.calls.includes("clickSubmit") ? w.verifyEgressAfterClick : w.verifyEgress;
       },
       async restoreTotal() { log("restoreTotal"); return w.restored; },
-      async matched() { log("matched"); return w.matched; },
     },
     browser: {
       async siblingsContained() { return w.siblings; },
@@ -139,14 +137,15 @@ describe("SubmitController (6E-A spec §10)", () => {
     expect(view.phase).toBe("SUBMITTED");
     expect(w.calls.filter((c) => !c.startsWith("event:") && c !== "observe")).toEqual([
       "watchContent", "verifyTotal", "preClick", "store.set:DISPATCHING", "dispatch", "store.set:DISPATCHED_ACK",
-      "install", "verifyEgress", "store.set:CLICKED", "clickSubmit", "restoreTotal", "matched",
+      "install", "verifyEgress", "store.set:CLICKED", "clickSubmit", "restoreTotal",
       "observation:POST_SUBMIT", "result", "store.remove"]);
     const verification = w.preClickBodies[0].verification as Record<string, unknown>;
     expect(verification).toEqual({ executor_instance_id: "ex_1", browser_session_id: "b1", execution_tab_id: 1,
       canonical_url: OBS.context.canonical_url, observation_fingerprint: await observationFingerprint(OBS),
       submit_control_fingerprint: CONTROL, ruleset_hash: TOTAL, challenge_visible: false });
     expect(w.results[0]).toMatchObject({ click_performed: true, egress_ever_installed: true,
-      total_restored_verified: true, success_observed: true, content_changed: false, matched_rule_ids: [9201] });
+      total_restored_verified: true, success_observed: true, content_changed: false,
+      matched_rule_ids: [], matched_rules_available: false });
     expect(w.calls).toContain("event:CLICK_PERFORMED");
     expect(w.calls).toContain("event:TOTAL_RESTORED");
   });

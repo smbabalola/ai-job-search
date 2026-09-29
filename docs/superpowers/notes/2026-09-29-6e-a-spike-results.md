@@ -27,4 +27,4 @@ An empty match list therefore proves nothing. The spec §21 S-E2 fallback applie
 - §11.2 rule 5, and the matched-rule branch of rule 1, never fire.
 - Such outcomes are `SUBMISSION_AMBIGUOUS`, and the user resolves them.
 
-The `declarativeNetRequestFeedback` permission is **kept**. Matched ids stay in `submission-result.v1` as informational evidence for the person resolving an unclear attempt, and are never treated as proof. This departs from the fallback's "drop the permission" wording and is recorded as a ruling.
+~~The `declarativeNetRequestFeedback` permission is **kept**.~~ **Superseded (2026-09-29, 6E-A freeze):** the permission is **dropped**, as the §21 fallback specifies. Production never calls `getMatchedRules`. `submission-result.v1` keeps its `matched_rule_ids` / `matched_rules_available` fields for wire stability, but the extension always sends `[]` / `false`. Ambiguity and failure semantics are unchanged, because the server already treated the evidence as inert (`MATCHED_ALLOW_RULES_REPORTED = False`). The S-E2 spike test is skipped as retired.

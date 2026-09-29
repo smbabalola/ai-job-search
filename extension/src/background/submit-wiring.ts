@@ -9,7 +9,7 @@ import { FILL_PAGE_KEY, type FillPageApi } from "../fill/page-api";
 import { verifyRuleset } from "../fill/quarantine";
 import type { PhaseStore } from "../fill/run-controller";
 import { checkSiblingContainment } from "../fill/siblings";
-import { installSubmitEgress, matchedRuleIds, restoreTotal, verifySubmitEgress } from "../submit/egress";
+import { installSubmitEgress, restoreTotal, verifySubmitEgress } from "../submit/egress";
 import { HttpSubmitServer } from "../submit/server";
 import {
   SubmitController, recoverSubmitAfterRestart, type AuthorizationDirective, type SubmitEgressPort,
@@ -75,7 +75,6 @@ function egressPort(tabId: number, employerHost: string): SubmitEgressPort {
     install: async (egress) => (await installSubmitEgress(tabId, employerHost, egress)).rulesetHash,
     verify: (hash) => verifySubmitEgress(hash),
     restoreTotal: (hash) => restoreTotal(hash),
-    matched: (since) => matchedRuleIds(tabId, since),
   };
 }
 

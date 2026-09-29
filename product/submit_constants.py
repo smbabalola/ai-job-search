@@ -22,7 +22,8 @@ DISPATCH_RESULT_TIMEOUT = timedelta(seconds=360)
 # browser acceptance suite showed Chrome drops a tab's record when a
 # main-frame form POST does not commit a navigation (e.g. a 204). An empty
 # list therefore proves nothing: the §21 fallback applies and matched-rule
-# feedback is informational evidence only, never proof of non-submission.
+# feedback is not evidence at all: the extension no longer holds
+# declarativeNetRequestFeedback and always reports none.
 # S-E4: a navigation confirmation page is observable after re-injection.
 MATCHED_ALLOW_RULES_REPORTED = False
 NAVIGATION_SUCCESS_OBSERVABLE = True

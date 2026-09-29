@@ -3,7 +3,7 @@
   "name": "JobSearch Application Handoff",
   "version": "0.1.0",
   "description": "Autofill and document handoff for confirmed JobSearch application packs.",
-  "permissions": ["storage", "activeTab", "scripting", "declarativeNetRequest", "declarativeNetRequestFeedback"],
+  "permissions": ["storage", "activeTab", "scripting", "declarativeNetRequest"],
   "optional_permissions": ["tabs", "webNavigation"],
   "host_permissions": ["http://127.0.0.1:8420/*"],
   "background": {

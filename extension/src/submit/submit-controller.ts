@@ -11,8 +11,10 @@
 //   8. bounded watch for certified signals; a challenge is handed to the
 //      human (never touched); an edit or a changed re-observation restores
 //      TOTAL immediately
-//   9. TOTAL restored and verified -> matched-rule evidence -> the server
-//      decides the result.
+//   9. TOTAL restored and verified -> the server decides the result.
+//      No matched-rule feedback is read (the extension has no
+//      declarativeNetRequestFeedback permission): matched_rule_ids is always
+//      empty and matched_rules_available always false (spike S-E2 fallback).
 // A restarted worker never clicks again: recoverSubmitAfterRestart restores
 // TOTAL and reports what it knows.
 
@@ -20,11 +22,14 @@ import type { ObservationV1 } from "../fill/observation-types";
 import type { PhaseStore } from "../fill/run-controller";
 import type { ResolvedEgress } from "./certification";
 import {
-  CHALLENGE_HANDOFF_WINDOW_MS, MATCHED_ALLOW_RULES_REPORTED, SUBMIT_RESULT_POLL_MS, SUBMIT_RESULT_WINDOW_MS,
+  CHALLENGE_HANDOFF_WINDOW_MS, SUBMIT_RESULT_POLL_MS, SUBMIT_RESULT_WINDOW_MS,
 } from "./constants";
 import { observationFingerprint } from "./fingerprint";
 import { SubmitServerError, type SubmitServer } from "./server";
 import type { Signals } from "./signals";
+
+// submission-result.v1 keeps the matched-rule fields; they carry no evidence.
+const NO_MATCHED_RULES: number[] = [];
 
 export interface AuthorizationDirective {
   authorization_id: string;
@@ -55,7 +60,6 @@ export interface SubmitEgressPort {
   install(egress: ResolvedEgress[]): Promise<string>;
   verify(egressHash: string): Promise<boolean>;
   restoreTotal(totalHash: string): Promise<boolean>;
-  matched(sinceMs: number): Promise<{ available: boolean; ids: number[] }>;
 }
 
 export interface SubmitBrowserPort {
@@ -341,7 +345,6 @@ export class SubmitController {
     const { server, page, egress, store } = this.ports;
     const restored = await egress.restoreTotal(auth.expected.ruleset_hash).catch(() => false);
     await this.event(record.attemptId, restored ? "TOTAL_RESTORED" : "TOTAL_RESTORE_FAILED");
-    const matched = await egress.matched(record.dispatchedAt).catch(() => ({ available: false, ids: [] as number[] }));
     try {
       await server.observation(this.ctx.runId, "POST_SUBMIT", await page.observe(), record.attemptId);
     } catch {
@@ -350,7 +353,7 @@ export class SubmitController {
     const evidence = {
       click_performed: clickPerformed, egress_ever_installed: true, total_restored_verified: restored,
       success_observed: outcome.success, failure_observed: outcome.failure, content_changed: outcome.content,
-      matched_rule_ids: matched.ids, matched_rules_available: matched.available && MATCHED_ALLOW_RULES_REPORTED,
+      matched_rule_ids: NO_MATCHED_RULES, matched_rules_available: false,
       cause: outcome.cause,
     };
     let state = "SUBMISSION_AMBIGUOUS";
@@ -377,14 +380,13 @@ export async function recoverSubmitAfterRestart(store: PhaseStore,
     const server = makeServer(record.sessionId, record.sessionToken);
     const egress = egressFor(record.tabId);
     const restored = await egress.restoreTotal(record.totalHash).catch(() => false);
-    const matched = await egress.matched(record.dispatchedAt).catch(() => ({ available: false, ids: [] as number[] }));
     await server.event(record.runId, record.attemptId, "EXECUTOR_RESTARTED", { phase: record.phase })
       .catch(() => undefined);
     await server.result(record.runId, record.attemptId, {
       click_performed: record.phase === "CLICKED" ? "UNKNOWN" : false,
       egress_ever_installed: record.phase !== "DISPATCHING", total_restored_verified: restored,
       success_observed: false, failure_observed: false, content_changed: false,
-      matched_rule_ids: matched.ids, matched_rules_available: matched.available && MATCHED_ALLOW_RULES_REPORTED,
+      matched_rule_ids: NO_MATCHED_RULES, matched_rules_available: false,
       cause: "EXECUTOR_RESTARTED",
     }).catch(() => undefined);
     await store.remove(key);

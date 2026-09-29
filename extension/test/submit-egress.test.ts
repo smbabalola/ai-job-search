@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { GREENHOUSE_SUBMIT, resolveEgress } from "../src/submit/certification";
 import {
-  SUBMIT_ALLOW_PRIORITY, SUBMIT_ALLOW_RULE_BASE, buildSubmitEgressRules, installSubmitEgress, matchedRuleIds,
+  SUBMIT_ALLOW_PRIORITY, SUBMIT_ALLOW_RULE_BASE, buildSubmitEgressRules, installSubmitEgress,
   restoreTotal, verifySubmitEgress,
 } from "../src/submit/egress";
 import { buildTotalRules, canonicalRulesetHash, installRuleset, type RulesApi } from "../src/fill/quarantine";
@@ -96,13 +96,5 @@ describe("SUBMIT egress (6E-A spec §9.4)", () => {
     expect(await restoreTotal(totalHash, api)).toBe(true);
     expect(api.session.map((r) => r.id).sort()).toEqual([9111, 9121]);
     expect(await restoreTotal("sha256:" + "0".repeat(64), api)).toBe(false);
-  });
-
-  it("matched-rule evidence reports availability and the matched ids", async () => {
-    const ok = await matchedRuleIds(TAB, 0, { getMatchedRules: async () => ({
-      rulesMatchedInfo: [{ rule: { ruleId: 9201 }, tabId: TAB, timeStamp: 5 }] }) });
-    expect(ok).toEqual({ available: true, ids: [9201] });
-    const failed = await matchedRuleIds(TAB, 0, { getMatchedRules: async () => { throw new Error("quota"); } });
-    expect(failed).toEqual({ available: false, ids: [] });
   });
 });

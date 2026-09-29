@@ -66,7 +66,7 @@ Principle, carried forward from 6D: **the executor acts only on a closed, approv
 | E17 | Migration `021_human_submit` is atomic and adds new append-only tables. It rebuilds `submission_intents` only to add the source `HUMAN_AUTHORIZED`, preserving every row, index and FK. No 6D-A or 6D-B table changes. |
 | E18 | Every volatile value (ids, timestamps) is excluded from `review_hash`. A fresh observation of an unchanged page reproduces the hash exactly. |
 | E19 | On `CONFIRMED_SUCCESS`, the existing workflow "applied" status change is recorded and linked to the attempt's intent. There is never a second live intent. |
-| E20 | Manifest: add the `declarativeNetRequestFeedback` permission, subject to spike S-E2's decided fallback (§21). `host_permissions` are unchanged. |
+| E20 | Manifest: add the `declarativeNetRequestFeedback` permission, subject to spike S-E2's decided fallback (§21). `host_permissions` are unchanged. **Resolved: fallback applied; the permission is not requested (see spike-results note).** |
 
 ## 4. Threat model
 

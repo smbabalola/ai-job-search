@@ -58,19 +58,3 @@ export async function restoreTotal(totalHash: string, api: RulesApi = chromeApi(
   await api.updateSessionRules({ removeRuleIds: [...SUBMIT_ALLOW_RULE_IDS] });
   return verifyRuleset(totalHash, api);
 }
-
-export interface FeedbackApi {
-  getMatchedRules(filter: { tabId: number; minTimeStamp?: number }):
-    Promise<{ rulesMatchedInfo: { rule: { ruleId: number }; tabId: number; timeStamp: number }[] }>;
-}
-
-export async function matchedRuleIds(tabId: number, since: number,
-                                     api: FeedbackApi = chrome.declarativeNetRequest as unknown as FeedbackApi,
-): Promise<{ available: boolean; ids: number[] }> {
-  try {
-    const out = await api.getMatchedRules({ tabId, minTimeStamp: since });
-    return { available: true, ids: [...new Set(out.rulesMatchedInfo.map((m) => m.rule.ruleId))].sort((a, b) => a - b) };
-  } catch {
-    return { available: false, ids: [] };
-  }
-}
