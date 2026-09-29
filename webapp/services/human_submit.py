@@ -15,6 +15,14 @@ from datetime import datetime
 from typing import Any
 
 from product.autonomy_contract import AuthorityKind, parse_utc
+from product.submit_certification import submit_certified
+from product.submit_constants import MATCHED_ALLOW_RULES_REPORTED
+from product.submit_result import (
+    ResultEvidence, build_submission_result, determine_submit_result, submission_result_hash,
+)
+from webapp.persistence.autonomy_ledger import link_intent_workflow_event
+from webapp.persistence.migrations import SUBMIT_EVENTS
+from webapp.persistence.workflow import record_status_change
 from webapp.config import Settings
 from webapp.persistence import fill as f
 from webapp.persistence import submit as sp
@@ -28,7 +36,10 @@ from webapp.services.submit_review import (
 )
 
 __all__ = ["SubmitRefused", "authorize", "cancel_authorization", "cancel_attempt", "human_pre_click_commit",
-           "human_record_click_dispatched"]
+           "human_record_click_dispatched", "record_submit_event", "report_result", "resolve",
+           "submission_status"]
+
+E1_RULE_ID = 9201  # SUBMIT_ALLOW_RULE_BASE + index of E1_SUBMIT in the certified egress
 
 _CONTEXT_KEYS = ("executor_instance_id", "browser_session_id", "execution_tab_id")
 
@@ -234,3 +245,170 @@ def human_record_click_dispatched(conn, *, settings: Settings, attempt_id: str, 
             return False
         return a.record_click_dispatched_in_transaction(conn, attempt_id=attempt_id, now=now)
     return run_immediate(conn, work)
+
+
+# ---- evidence, results, resolution, status (spec §11, §15, §16.2) --------------------------
+
+def record_submit_event(conn, *, attempt_id: str, event: str, detail: dict[str, Any] | None,
+                        now: datetime) -> dict[str, Any]:
+    """Executor evidence during an attempt (closed vocabulary, append-only)."""
+    if event not in SUBMIT_EVENTS or event in ("RESULT_REPORTED", "PRE_CLICK_REFUSED", "CHALLENGE_BEFORE_SUBMIT",
+                                               "CANCELLED_BEFORE_DISPATCH"):
+        raise SubmitRefused("unknown_event")
+
+    def work() -> dict[str, Any]:
+        attempt = a._attempt(conn, attempt_id)
+        auth = _authorization_for_attempt(conn, attempt)
+        return sp.append_submit_event(conn, authorization_id=auth["id"], attempt_id=attempt_id, event=event,
+                                      detail=detail, now=now)
+    return run_immediate(conn, work)
+
+
+def _attempt_events(conn, authorization_id: str, attempt_id: str) -> list[dict[str, Any]]:
+    return [e for e in sp.submit_events(conn, authorization_id) if e["attempt_id"] in (attempt_id, None)]
+
+
+def _result_evidence(evidence: dict[str, Any], events: list[dict[str, Any]]) -> ResultEvidence:
+    """The extension's report, with every ADVERSE fact also taken from the
+    recorded events (a report can only make the outcome less favourable)."""
+    kinds = [e["event"] for e in events]
+    installed = bool(evidence.get("egress_ever_installed")) or "EGRESS_INSTALLED" in kinds
+    restored = bool(evidence.get("total_restored_verified")) and "TOTAL_RESTORE_FAILED" not in kinds
+    if installed and "TOTAL_RESTORED" not in kinds and not evidence.get("total_restored_verified"):
+        restored = False
+    click = evidence.get("click_performed")
+    if click not in (True, False, "UNKNOWN"):
+        click = "UNKNOWN"
+    if click is False and "CLICK_PERFORMED" in kinds:
+        click = True
+    return ResultEvidence(
+        click_performed=click, egress_ever_installed=installed, total_restored_verified=restored,
+        success_observed=bool(evidence.get("success_observed")),
+        failure_observed=bool(evidence.get("failure_observed")),
+        content_changed=bool(evidence.get("content_changed")) or "CONTENT_CHANGED_DURING_ATTEMPT" in kinds,
+        matched_rule_ids=tuple(int(i) for i in evidence.get("matched_rule_ids") or ()),
+        matched_rules_available=bool(evidence.get("matched_rules_available")) and MATCHED_ALLOW_RULES_REPORTED,
+        cause=evidence.get("cause"))
+
+
+def _record_applied(conn, *, attempt: dict[str, Any], auth: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """E19: the tracker's 'applied' status for this exact pack, linked to the
+    attempt's intent. The tracker's own preconditions may refuse (e.g. the
+    workspace is no longer 'drafted'); the submission result stands either
+    way and records whether the tracker was updated."""
+    grant = get_grant(conn, attempt["grant_id"])
+    conn.execute("SAVEPOINT human_submit_applied")
+    try:
+        event = record_status_change(conn, workspace_id=auth["application_workspace_id"], new_status="applied",
+                                     effective_date=now.date().isoformat(),
+                                     note="Submitted via the extension (human-authorized)",
+                                     submitted_pack_artifact_id=grant["binding"].get("pack_artifact_id"),
+                                     commit=False, account_id=auth["account_id"])
+    except ValueError as exc:
+        conn.execute("ROLLBACK TO SAVEPOINT human_submit_applied")
+        conn.execute("RELEASE SAVEPOINT human_submit_applied")
+        return {"workflow_applied": False, "workflow_reason": str(exc)[:200]}
+    conn.execute("RELEASE SAVEPOINT human_submit_applied")
+    link_intent_workflow_event(conn, intent_id=attempt["intent_id"], workflow_event_id=event["id"], now=now)
+    return {"workflow_applied": True, "workflow_event_id": event["id"]}
+
+
+def _observation_fingerprints(conn, run_id: str) -> dict[str, Any]:
+    out = {}
+    for phase, key in (("PRE_SUBMIT", "pre_submit_fingerprint"), ("CHALLENGE_CLEARED", "challenge_cleared_fingerprint"),
+                       ("POST_SUBMIT", "post_submit_fingerprint")):
+        row = sp.latest_submit_observation(conn, run_id, phase)
+        if row is not None:
+            out[key] = row["observation_fingerprint"]
+    return out
+
+
+def report_result(conn, *, settings: Settings, attempt_id: str, evidence: dict[str, Any],
+                  now: datetime) -> dict[str, Any]:
+    """Spec §11.2/§15 (E8): the server decides the result from the reported
+    evidence and its own recorded events, in one transaction with the
+    attempt event, the intent transition, the tracker update and the
+    submission-result.v1 record."""
+    def work() -> dict[str, Any]:
+        attempt = a._attempt(conn, attempt_id)
+        auth = _authorization_for_attempt(conn, attempt)
+        if attempt_state(conn, attempt_id) != "CLICK_DISPATCHED" or sp.get_submission_result(conn, attempt_id):
+            raise SubmitRefused("result_already_recorded")
+        events = _attempt_events(conn, auth["id"], attempt_id)
+        e = _result_evidence(evidence, events)
+        review = auth["review"]
+        cert = submit_certified(review["target"]["adapter_id"], review["target"]["adapter_version"])
+        state, proven, reason = determine_submit_result(e, cert, E1_RULE_ID)
+        extra = _record_applied(conn, attempt=attempt, auth=auth, now=now) if state == "CONFIRMED_SUCCESS" else {}
+        result = build_submission_result(
+            attempt_id=attempt_id, authorization_id=auth["id"], grant_id=attempt["grant_id"],
+            review_hash=auth["review_hash"], fill_run_id=auth["fill_run_id"], state=state,
+            proven_not_submitted=proven, reason=reason, certification_id=cert.certification_id,
+            events=[{"event": x["event"], "at": x["created_at"]} for x in events],
+            observations=_observation_fingerprints(conn, auth["fill_run_id"]),
+            matched_rule_ids=list(e.matched_rule_ids), matched_rules_available=e.matched_rules_available,
+            content_changed=e.content_changed)
+        result_hash = submission_result_hash(result)
+        recorded = a.record_submission_result_in_transaction(
+            conn, attempt_id=attempt_id, state=state, source="SERVER",
+            evidence={"proven_not_submitted": proven, "reason": reason, "result_hash": result_hash, **extra},
+            now=now)
+        sp.insert_submission_result(conn, attempt_id=attempt_id, result=result, result_hash=result_hash, now=now)
+        sp.append_submit_event(conn, authorization_id=auth["id"], attempt_id=attempt_id, event="RESULT_REPORTED",
+                               detail={"state": recorded, "reason": reason}, now=now)
+        return {"state": recorded, "proven_not_submitted": proven, "reason": reason, "result_hash": result_hash}
+    return run_immediate(conn, work)
+
+
+def resolve(conn, *, account_id: str, attempt_id: str, submitted: bool, actor: str, now: datetime) -> str:
+    """The user's answer for an ambiguous attempt (§16.1)."""
+    def work() -> str:
+        attempt = a._attempt(conn, attempt_id)
+        auth = _authorization_for_attempt(conn, attempt)
+        if auth["account_id"] != account_id:
+            raise SubmitRefused("not_found")
+        if attempt_state(conn, attempt_id) != "SUBMISSION_AMBIGUOUS":
+            raise SubmitRefused("not_ambiguous")
+        state = a.resolve_ambiguous_in_transaction(conn, attempt_id=attempt_id, submitted=submitted, actor=actor,
+                                                   now=now)
+        if submitted:
+            _record_applied(conn, attempt=attempt, auth=auth, now=now)
+        return state
+    try:
+        return run_immediate(conn, work)
+    except LookupError as exc:
+        raise SubmitRefused("not_found") from exc
+
+
+_STATUS = {"AUTHORIZED": "SUBMITTING", "CLICK_DISPATCHED": "SUBMITTING", "CONFIRMED_SUCCESS": "SUBMITTED",
+           "SUBMISSION_AMBIGUOUS": "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED": "SUBMISSION_FAILED"}
+
+
+def submission_status(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                      now: datetime) -> dict[str, Any]:
+    """§16.2: NOT_READY | SUBMIT_READY | SUBMITTING | CHALLENGE_WAITING |
+    SUBMITTED | SUBMISSION_UNCLEAR | SUBMISSION_FAILED. Read-only."""
+    from webapp.services.submit_review import _lease_live, filled_run
+    attempts = sp.attempts_for_application(conn, application_workspace_id)
+    latest = attempts[-1] if attempts else None
+    if latest is not None and latest["state"] in _STATUS:
+        status = _STATUS[latest["state"]]
+        if status == "SUBMITTING":
+            auth = sp.authorization_for_grant(conn, latest["grant_id"])
+            kinds = [e["event"] for e in sp.submit_events(conn, auth["id"])
+                     if e["event"] in ("CHALLENGE_DETECTED", "CHALLENGE_CLEARED")]
+            if kinds and kinds[-1] == "CHALLENGE_DETECTED":
+                status = "CHALLENGE_WAITING"
+        return {"status": status, "attempt_id": latest["id"], "reason": None}
+    run = filled_run(conn, application_workspace_id)
+    if run is None or run["account_id"] != account_id:
+        return {"status": "NOT_READY", "attempt_id": None, "reason": "no_filled_run"}
+    auth = sp.authorization_for_run(conn, run["id"])
+    if auth is not None:
+        grant = get_grant(conn, auth["grant_id"])
+        if grant["status"] == "ISSUED" and parse_utc(grant["expires_at"]) > now:
+            return {"status": "SUBMITTING", "attempt_id": None, "reason": None}
+        return {"status": "NOT_READY", "attempt_id": None, "reason": "authorization_used"}
+    if not _lease_live(conn, run["id"], now):
+        return {"status": "NOT_READY", "attempt_id": None, "reason": "lease_expired"}
+    return {"status": "SUBMIT_READY", "attempt_id": None, "reason": None}

@@ -432,31 +432,40 @@ def record_submission_result(conn, *, attempt_id: str, state: str, source: str, 
     if state not in ("CONFIRMED_SUCCESS", "SUBMISSION_AMBIGUOUS", "SUBMISSION_FAILED"):
         raise ValueError(state)
 
-    def work() -> str:
-        attempt = _attempt(conn, attempt_id)
-        recorded = state
-        if state == "SUBMISSION_FAILED" and evidence.get("proven_not_submitted") is not True:
-            recorded = "SUBMISSION_AMBIGUOUS"  # spec §10.4: anything short of proof is ambiguous
-        append_attempt_event(conn, attempt_id=attempt_id, state=recorded, source=source, evidence=evidence, now=now)
-        if recorded == "CONFIRMED_SUCCESS":
-            _confirm(conn, attempt, now)
-        elif recorded == "SUBMISSION_FAILED":
-            _release(conn, attempt, now)
-        return recorded
-    return run_immediate(conn, work)
+    return run_immediate(conn, lambda: record_submission_result_in_transaction(
+        conn, attempt_id=attempt_id, state=state, source=source, evidence=evidence, now=now))
+
+
+def record_submission_result_in_transaction(conn, *, attempt_id: str, state: str, source: str,
+                                            evidence: dict[str, Any], now: datetime) -> str:
+    if state not in ("CONFIRMED_SUCCESS", "SUBMISSION_AMBIGUOUS", "SUBMISSION_FAILED"):
+        raise ValueError(state)
+    attempt = _attempt(conn, attempt_id)
+    recorded = state
+    if state == "SUBMISSION_FAILED" and evidence.get("proven_not_submitted") is not True:
+        recorded = "SUBMISSION_AMBIGUOUS"  # spec §10.4: anything short of proof is ambiguous
+    append_attempt_event(conn, attempt_id=attempt_id, state=recorded, source=source, evidence=evidence, now=now)
+    if recorded == "CONFIRMED_SUCCESS":
+        _confirm(conn, attempt, now)
+    elif recorded == "SUBMISSION_FAILED":
+        _release(conn, attempt, now)
+    return recorded
 
 
 def resolve_ambiguous(conn, *, attempt_id: str, submitted: bool, actor: str, now: datetime) -> str:
-    def work() -> str:
-        attempt = _attempt(conn, attempt_id)
-        if attempt_state(conn, attempt_id) != "SUBMISSION_AMBIGUOUS":
-            raise ValueError("only an ambiguous attempt can be resolved by the user")
-        state = "CONFIRMED_SUCCESS" if submitted else "SUBMISSION_FAILED"
-        append_attempt_event(conn, attempt_id=attempt_id, state=state, source="USER",
-                             evidence={"attested_by": actor}, now=now)
-        (_confirm if submitted else _release)(conn, attempt, now)
-        return state
-    return run_immediate(conn, work)
+    return run_immediate(conn, lambda: resolve_ambiguous_in_transaction(
+        conn, attempt_id=attempt_id, submitted=submitted, actor=actor, now=now))
+
+
+def resolve_ambiguous_in_transaction(conn, *, attempt_id: str, submitted: bool, actor: str, now: datetime) -> str:
+    attempt = _attempt(conn, attempt_id)
+    if attempt_state(conn, attempt_id) != "SUBMISSION_AMBIGUOUS":
+        raise ValueError("only an ambiguous attempt can be resolved by the user")
+    state = "CONFIRMED_SUCCESS" if submitted else "SUBMISSION_FAILED"
+    append_attempt_event(conn, attempt_id=attempt_id, state=state, source="USER",
+                         evidence={"attested_by": actor}, now=now)
+    (_confirm if submitted else _release)(conn, attempt, now)
+    return state
 
 
 # ---- Bundle 6D-A Task 11 (spec §12 G2): no public SUBMIT authority ----------------

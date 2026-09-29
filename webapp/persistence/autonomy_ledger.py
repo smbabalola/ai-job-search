@@ -404,6 +404,13 @@ def record_human_intent(conn, *, workspace_id: str, account_id: str, source: str
                         source=source, state="CONFIRMED", workflow_event_id=workflow_event_id, now=now)
 
 
+def link_intent_workflow_event(conn, *, intent_id: str, workflow_event_id: str, now: datetime) -> None:
+    """6E-A §14/E19: the tracker's 'applied' event for a human-authorized
+    submission is linked to that submission's own (only) live intent."""
+    conn.execute("UPDATE submission_intents SET workflow_event_id = ?, updated_at = ? "
+                 "WHERE id = ? AND workflow_event_id IS NULL", (workflow_event_id, to_utc_iso(now), intent_id))
+
+
 # ---- attempts --------------------------------------------------------------
 
 ATTEMPT_TRANSITIONS: dict[str | None, set[str]] = {
