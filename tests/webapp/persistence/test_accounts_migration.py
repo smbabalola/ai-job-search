@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import json
 import sqlite3
 
@@ -210,7 +213,7 @@ def test_post_002_upgrade_backfills_default_owner_without_data_loss(tmp_path):
         "SELECT COUNT(*) FROM application_workspace_origins"
     ).fetchone()[0] == 1
     assert {
-        row["id"] for row in conn.execute("SELECT id FROM schema_migrations")
+        row["id"] for row in conn.execute("SELECT id FROM schema_migrations WHERE id < '022'")
     } == {
         "001_search_workspaces",
         "002_evidence_profile_manager",
@@ -315,7 +318,7 @@ def test_failed_accounts_migration_rolls_back_and_preserves_prior_history(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'"
     ).fetchone()[0] == 0
     assert {
-        row["id"] for row in conn.execute("SELECT id FROM schema_migrations")
+        row["id"] for row in conn.execute("SELECT id FROM schema_migrations WHERE id < '022'")
     } == {"001_search_workspaces", "002_evidence_profile_manager"}
     assert conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0] == 2
     assert conn.execute("PRAGMA table_info(workspaces)").fetchall()[-1][1] != "account_id"

@@ -105,12 +105,12 @@ def profile_page(
     if not return_to.startswith("/workspaces/"):
         return_to = ""
     view = build_profile_view_model(
-        conn, profile_root=scope.profile_root, account_id=scope.account_id
+        conn, profile_root=scope.profile_sources(conn), account_id=scope.account_id
     )
     manager = None
     if not view["setup_required"]:
         manager = get_profile_manager(
-            conn, root=scope.profile_root, account_id=scope.account_id
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id
         )
     return request.app.state.templates.TemplateResponse(
         request, "profile.html", {

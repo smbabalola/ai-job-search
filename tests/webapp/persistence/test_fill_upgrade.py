@@ -9,6 +9,9 @@ The upgrade test skips only when 8b28c57 is genuinely absent from the clone
 archive or upgrade fails, still fails the test."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import io
 import os
 import sqlite3
@@ -70,7 +73,7 @@ SEED = textwrap.dedent("""
 
 
 def _migrations(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def _schema(c):
@@ -138,8 +141,10 @@ def test_a_6da_database_upgrades_to_020_with_6da_rows_and_triggers_unchanged(bas
     # No table DDL changed, except 6E-A's declared 021 rebuild of
     # submission_intents, which only adds the HUMAN_AUTHORIZED source.
     rebuilt = "submission_intents"
-    assert {k: v for k, v in tables_after.items() if k in tables_before and k != rebuilt} == \
-        {k: v for k, v in tables_before.items() if k != rebuilt}
+    # Bundle 7's 022_storage rebuilds user_profile_versions (per-account versions).
+    unchanged = lambda k: k != rebuilt and k != "user_profile_versions"  # noqa: E731
+    assert {k: v for k, v in tables_after.items() if k in tables_before and unchanged(k)} == \
+        {k: v for k, v in tables_before.items() if unchanged(k)}
     assert tables_after[rebuilt].replace('"submission_intents"', "submission_intents").replace(
         ", 'HUMAN_AUTHORIZED'", "") == tables_before[rebuilt]
     new_tables = set(tables_after) - set(tables_before)

@@ -22,6 +22,17 @@ class OwnedResourceNotFound(LookupError):
 class AccountScope:
     account_id: str
     profile_root: Path
+    # Bundle 7 (spec H7): where this account's profile sources live. None
+    # means the filesystem root above (local mode, pre-Bundle-7 behaviour).
+    profile_store: Any = None
+
+    def profile_sources(self, conn: dbapi.Connection):
+        """This account's profile sources, bound to ``conn``."""
+        from webapp.storage.profile_sources import FilesystemProfileSources
+
+        if self.profile_store is None:
+            return FilesystemProfileSources(self.profile_root)
+        return self.profile_store.for_account(conn, self.account_id)
 
     def require_search_workspace(
         self, conn: dbapi.Connection, search_workspace_id: str

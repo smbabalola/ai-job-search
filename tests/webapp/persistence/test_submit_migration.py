@@ -3,6 +3,9 @@ closed vocabularies, and submission_intents rebuilt only to accept the
 HUMAN_AUTHORIZED source -- rows, the live-intent index and FKs preserved."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import sqlite3
 from datetime import datetime, timezone
 
@@ -25,7 +28,7 @@ def conn(tmp_path):
 
 
 def _ids(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def test_fresh_database_has_21_migrations_ending_020_021_and_rerun_is_a_noop(tmp_path, conn):

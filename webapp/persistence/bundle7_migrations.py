@@ -1,0 +1,133 @@
+"""Bundle 7 migrations (spec §23.1): one per introducing task, each with a
+SQLite and a PostgreSQL body. A migration is never edited once committed."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class Migration:
+    id: str
+    sqlite: Callable[[Any], None]
+    postgres: Callable[[Any], None]
+    disable_foreign_keys: bool = False
+
+
+def _statements(conn, script: str) -> None:
+    for statement in script.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def sqlite_append_only(conn, table: str) -> None:
+    message = f"{table} is append-only audit history"
+    for event in ("UPDATE", "DELETE"):
+        conn.execute(
+            f"CREATE TRIGGER {table}_append_only_{event.lower()} BEFORE {event} ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{message}'); END"
+        )
+
+
+def postgres_append_only(conn, table: str) -> None:
+    message = f"{table} is append-only audit history"
+    for event in ("UPDATE", "DELETE"):
+        conn.execute(
+            f'CREATE TRIGGER "{table}_append_only_{event.lower()}" BEFORE {event} ON "{table}" '
+            f"FOR EACH ROW EXECUTE FUNCTION jobsearch_raise('{message}')"
+        )
+
+
+# ---- 022_storage (Task 4): profile sources in the database; per-account
+# user-profile versions (no cross-tenant content dedupe, spec H6) ----------
+
+_PROFILE_SOURCE_REVISIONS_COLUMNS = """
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    source_path TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    content TEXT,
+    sha256 TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (account_id, source_path, revision),
+    CHECK ((content IS NULL) = (sha256 IS NULL))
+"""
+
+
+def _version_accounts(conn) -> dict[str, str]:
+    """version id -> owning account, from every table that references a version."""
+    owners: dict[str, set[str]] = {}
+    queries = (
+        "SELECT h.version_id AS v, s.account_id AS a FROM search_workspace_user_profile_history h "
+        "JOIN search_workspaces s ON s.id = h.search_workspace_id",
+        "SELECT h.previous_version_id AS v, s.account_id AS a FROM search_workspace_user_profile_history h "
+        "JOIN search_workspaces s ON s.id = h.search_workspace_id WHERE h.previous_version_id IS NOT NULL",
+        "SELECT p.current_version_id AS v, s.account_id AS a FROM search_workspace_user_profiles p "
+        "JOIN search_workspaces s ON s.id = p.search_workspace_id",
+        "SELECT r.user_profile_version_id AS v, s.account_id AS a FROM discovery_runs r "
+        "JOIN search_workspaces s ON s.id = r.search_workspace_id",
+        "SELECT version_id AS v, 'account_local' AS a FROM current_user_profile",
+    )
+    for query in queries:
+        for row in conn.execute(query).fetchall():
+            owners.setdefault(row["v"], set()).add(row["a"])
+    result: dict[str, str] = {}
+    for version_id, accounts in owners.items():
+        if len(accounts) > 1:
+            raise RuntimeError(
+                f"user profile version {version_id} is shared by accounts {sorted(accounts)}; "
+                "022_storage cannot assign it to one owner")
+        result[version_id] = next(iter(accounts))
+    return result
+
+
+def _backfill_version_accounts(conn) -> None:
+    owners = _version_accounts(conn)
+    for row in conn.execute("SELECT id FROM user_profile_versions").fetchall():
+        conn.execute("UPDATE user_profile_versions SET account_id = ? WHERE id = ?",
+                     (owners.get(row["id"], "account_local"), row["id"]))
+
+
+def _storage_sqlite(conn) -> None:
+    conn.execute(f"CREATE TABLE profile_source_revisions (seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                 f"{_PROFILE_SOURCE_REVISIONS_COLUMNS})")
+    sqlite_append_only(conn, "profile_source_revisions")
+    owners = _version_accounts(conn)
+    conn.execute("""
+        CREATE TABLE user_profile_versions_022 (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            UNIQUE (account_id, content_id)
+        )""")
+    for row in conn.execute("SELECT id, content_id, payload_json, created_at FROM user_profile_versions").fetchall():
+        conn.execute(
+            "INSERT INTO user_profile_versions_022 (id, content_id, payload_json, created_at, account_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row["id"], row["content_id"], row["payload_json"], row["created_at"],
+             owners.get(row["id"], "account_local")))
+    conn.execute("DROP TABLE user_profile_versions")
+    conn.execute("ALTER TABLE user_profile_versions_022 RENAME TO user_profile_versions")
+
+
+def _storage_postgres(conn) -> None:
+    conn.execute(f"CREATE TABLE profile_source_revisions (seq BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,"
+                 f"{_PROFILE_SOURCE_REVISIONS_COLUMNS.replace('revision INTEGER', 'revision BIGINT')})")
+    postgres_append_only(conn, "profile_source_revisions")
+    conn.execute("ALTER TABLE user_profile_versions ADD COLUMN account_id TEXT")
+    _backfill_version_accounts(conn)
+    _statements(conn, """
+        ALTER TABLE user_profile_versions ALTER COLUMN account_id SET NOT NULL;
+        ALTER TABLE user_profile_versions DROP CONSTRAINT user_profile_versions_content_id_key;
+        ALTER TABLE user_profile_versions ADD CONSTRAINT user_profile_versions_account_content_key
+            UNIQUE (account_id, content_id);
+        ALTER TABLE user_profile_versions ADD CONSTRAINT fk_user_profile_versions_account
+            FOREIGN KEY (account_id) REFERENCES accounts (id)
+    """)
+
+
+BUNDLE7_MIGRATIONS: list[Migration] = [
+    Migration("022_storage", sqlite=_storage_sqlite, postgres=_storage_postgres, disable_foreign_keys=True),
+]

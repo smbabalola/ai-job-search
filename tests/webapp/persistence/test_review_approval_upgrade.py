@@ -4,6 +4,9 @@ migrations, and a pre-6D database built by the real master@fc316ee code, with
 answer, upgrades through 019 with every approved answer byte-identical."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import io
 import os
 import sqlite3
@@ -63,7 +66,7 @@ SEED = textwrap.dedent("""
 
 
 def _migrations(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def _schema(c):
@@ -104,7 +107,7 @@ def pre_6d_db(tmp_path):
 def test_pre_6d_database_upgrades_through_019(pre_6d_db):
     db, ws = pre_6d_db
     c = sqlite3.connect(db)
-    migrations_before = [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    migrations_before = [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
     answers_before = [tuple(r) for r in c.execute("SELECT * FROM approved_answers ORDER BY seq")]
     triggers_before = _objects_on(c, "approved_answers", "trigger")
     indexes_before = _objects_on(c, "approved_answers", "index")

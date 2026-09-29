@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Request
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID, get_account
 from webapp.persistence.db import connect
 from webapp.services.ownership import AccountScope, account_profile_root
+from webapp.storage.profile_sources import profile_source_store_from_settings
 from webapp.persistence import dbapi
 
 
@@ -47,4 +48,5 @@ def get_account_scope(
         profile_root=account_profile_root(
             request.app.state.settings.profile_root, account_id
         ),
+        profile_store=profile_source_store_from_settings(request.app.state.settings),
     )

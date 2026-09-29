@@ -2,6 +2,9 @@
 vocabularies, run concurrency keys, and 6D-A left byte-identical."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import sqlite3
 
 import pytest
@@ -23,7 +26,7 @@ def conn(tmp_path):
 
 
 def _ids(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def _sixda_schema(c):

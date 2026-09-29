@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
-
 from datetime import datetime, timezone
 import json
 
@@ -89,19 +86,9 @@ def _execute_statements(conn: dbapi.Connection, script: str) -> None:
             conn.execute(statement)
 
 
-@dataclass(frozen=True)
-class Migration:
-    """A Bundle 7 migration (spec H5): one body per dialect. A migration is
-    never edited after the task that introduces it has been committed."""
-
-    id: str
-    sqlite: Callable[[Any], None]
-    postgres: Callable[[Any], None]
-    disable_foreign_keys: bool = False
-
-
-# Appended one per introducing task, in spec §23.1 order (022_storage ... 037_purge).
-BUNDLE7_MIGRATIONS: list[Migration] = []
+# Bundle 7 migrations (Migration dataclass and the ordered list) live in
+# webapp/persistence/bundle7_migrations.py.
+from webapp.persistence.bundle7_migrations import BUNDLE7_MIGRATIONS, Migration  # noqa: E402,F401
 
 
 def _legacy_migrations():

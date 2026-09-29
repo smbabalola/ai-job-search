@@ -1,9 +1,6 @@
 """Safe first-run creation/import of the canonical candidate profile source."""
 from __future__ import annotations
 
-import os
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -43,11 +40,12 @@ def profile_snapshot_is_ready(profile_artifact: dict[str, Any] | None) -> bool:
     )
 
 
-def profile_source_is_unconfigured(root: str | Path) -> bool:
-    target = Path(root).resolve() / CANDIDATE_PROFILE_PATH
-    if not target.is_file():
+def profile_source_is_unconfigured(root: Any) -> bool:
+    from webapp.storage.profile_sources import as_profile_sources
+
+    text = as_profile_sources(root).read(CANDIDATE_PROFILE_PATH.as_posix())
+    if text is None:
         return True
-    text = target.read_text(encoding="utf-8")
     return any(marker in text for marker in SETUP_MARKERS)
 
 
@@ -111,34 +109,36 @@ def import_profile_markdown(
     conn: dbapi.Connection, *, root: str | Path, markdown: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
-    root_path = Path(root).resolve()
-    if not profile_source_is_unconfigured(root_path):
+    from webapp.storage.profile_sources import as_profile_sources
+
+    handle = as_profile_sources(root)
+    if not profile_source_is_unconfigured(handle):
         raise PipelineError(
             "profile setup is only available while the canonical candidate profile is unconfigured"
         )
     _validate_markdown(markdown)
     sources = included_profile_sources(conn, account_id=account_id)
-    _validate_prospective_snapshot(root_path, markdown, sources)
+    _validate_prospective_snapshot(handle, markdown, sources)
 
-    target = root_path / CANDIDATE_PROFILE_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    previous = target.read_bytes() if target.exists() else None
-    _atomic_write(target, markdown)
-    try:
-        artifact = refresh_profile(
-            conn, root=str(root_path), account_id=account_id
-        )
-    except Exception:
+    target = CANDIDATE_PROFILE_PATH.as_posix()
+    previous = handle.read(target)
+
+    def restore() -> None:
+        conn.rollback()
         if previous is None:
-            target.unlink(missing_ok=True)
+            handle.delete(target)
         else:
-            _atomic_write_bytes(target, previous)
+            handle.write(target, previous)
+        conn.commit()
+
+    handle.write(target, markdown)
+    try:
+        artifact = refresh_profile(conn, root=handle, account_id=account_id)
+    except Exception:
+        restore()
         raise
     if not profile_snapshot_is_ready(artifact):
-        if previous is None:
-            target.unlink(missing_ok=True)
-        else:
-            _atomic_write_bytes(target, previous)
+        restore()
         raise PipelineError("profile setup did not create a usable evidence snapshot")
     return artifact
 
@@ -155,57 +155,31 @@ def _validate_markdown(markdown: str) -> None:
 
 
 def _validate_prospective_snapshot(
-    root: Path, markdown: str, included_sources: tuple[str, ...] = SOURCE_PATHS
+    root: Any, markdown: str, included_sources: tuple[str, ...] = SOURCE_PATHS
 ) -> None:
-    with tempfile.TemporaryDirectory(prefix="profile-setup-") as temp_dir:
-        validation_root = Path(temp_dir)
-        for relative in included_sources:
-            destination = validation_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if Path(relative) == CANDIDATE_PROFILE_PATH:
-                destination.write_text(markdown, encoding="utf-8")
-            else:
-                source = root / relative
-                if not source.is_file():
-                    raise PipelineError(f"required candidate source not found: {relative}")
-                shutil.copyfile(source, destination)
-        try:
-            snapshot = build_snapshot(
-                validation_root, included_sources=included_sources
-            )
-        except Exception as exc:
-            raise PipelineError(f"candidate profile import is invalid: {exc}") from exc
-        candidate_claims = [
-            claim for claim in snapshot["claims"]
-            if claim["source"]["file"] == CANDIDATE_PROFILE_PATH.as_posix()
-        ]
-        if not any(
-            claim["category"] == "identity"
-            and claim["field"] == "name"
-            and not claim["placeholder"]
-            for claim in candidate_claims
-        ):
-            raise PipelineError("candidate profile must contain an explicit non-placeholder name")
+    from product.profile_snapshot import OverlaySourceReader
+    from webapp.storage.profile_sources import as_profile_sources
 
-
-def _atomic_write(target: Path, text: str) -> None:
-    _atomic_write_bytes(target, text.encode("utf-8"))
-
-
-def _atomic_write_bytes(target: Path, content: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    reader = OverlaySourceReader(as_profile_sources(root).reader(),
+                                 {CANDIDATE_PROFILE_PATH.as_posix(): markdown})
+    for relative in included_sources:
+        if reader.read(relative) is None:
+            raise PipelineError(f"required candidate source not found: {relative}")
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_name, target)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+        snapshot = build_snapshot(reader, included_sources=included_sources)
+    except Exception as exc:
+        raise PipelineError(f"candidate profile import is invalid: {exc}") from exc
+    candidate_claims = [
+        claim for claim in snapshot["claims"]
+        if claim["source"]["file"] == CANDIDATE_PROFILE_PATH.as_posix()
+    ]
+    if not any(
+        claim["category"] == "identity"
+        and claim["field"] == "name"
+        and not claim["placeholder"]
+        for claim in candidate_claims
+    ):
+        raise PipelineError("candidate profile must contain an explicit non-placeholder name")
 
 
 def _one_line(value: Any, *, required: bool = False) -> str:

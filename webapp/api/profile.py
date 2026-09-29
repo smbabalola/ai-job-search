@@ -87,7 +87,7 @@ def get_manager(
 ):
     try:
         return get_profile_manager(
-            conn, root=scope.profile_root, account_id=scope.account_id
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id
         )
     except ProfileManagerError as exc:
         raise _manager_error(exc) from exc
@@ -101,7 +101,7 @@ def post_profile_entry(
 ):
     try:
         return create_profile_entry(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             expected_revision=body.expected_revision,
             kind=body.kind, fields=body.fields,
         )
@@ -117,7 +117,7 @@ def put_profile_entry(
 ):
     try:
         return update_profile_entry(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             expected_revision=body.expected_revision, entry_id=entry_id,
             kind=body.kind, fields=body.fields,
         )
@@ -133,7 +133,7 @@ def remove_profile_entry(
 ):
     try:
         return delete_profile_entry(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             expected_revision=body.expected_revision, entry_id=entry_id,
         )
     except ProfileManagerError as exc:
@@ -148,7 +148,7 @@ def put_profile_source(
 ):
     try:
         return update_profile_source(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             expected_revision=body.expected_revision,
             source_path=source_path, included=body.included,
         )
@@ -164,7 +164,7 @@ def post_profile_refresh(
 ):
     try:
         return {"profile": refresh_profile(
-            conn, root=str(scope.profile_root), account_id=scope.account_id
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id
         )}
     except PipelineError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -178,7 +178,7 @@ def post_basic_profile_setup(
 ):
     try:
         artifact = setup_basic_profile(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             data=body.model_dump(),
         )
         return {"profile": artifact}
@@ -194,7 +194,7 @@ def post_profile_import(
 ):
     try:
         artifact = import_profile_markdown(
-            conn, root=scope.profile_root, account_id=scope.account_id,
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id,
             markdown=body.markdown,
         )
         return {"profile": artifact}

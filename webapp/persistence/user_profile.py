@@ -76,19 +76,23 @@ def save_user_profile(
             )
     if current is not None and current["content_id"] == content_id:
         return current
+    # Versions are per account: identical preferences in two accounts are two
+    # rows (no cross-tenant content dedupe, Bundle 7 spec H6).
     existing = conn.execute(
-        "SELECT * FROM user_profile_versions WHERE content_id = ?", (content_id,)
+        "SELECT * FROM user_profile_versions WHERE account_id = ? AND content_id = ?",
+        (account_id, content_id),
     ).fetchone()
     if existing is None:
         version_id = f"usrprof_{uuid.uuid4().hex[:20]}"
         conn.execute(
             "INSERT INTO user_profile_versions "
-            "(id, content_id, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            "(id, content_id, payload_json, created_at, account_id) VALUES (?, ?, ?, ?, ?)",
             (
                 version_id,
                 content_id,
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
                 _now(),
+                account_id,
             ),
         )
     else:

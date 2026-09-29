@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import sqlite3
 
 import pytest
@@ -225,7 +228,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
 
     assert [
         row["id"]
-        for row in conn.execute("SELECT id FROM schema_migrations ORDER BY id")
+        for row in conn.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY id")
     ] == [
         "001_search_workspaces",
         "002_evidence_profile_manager",

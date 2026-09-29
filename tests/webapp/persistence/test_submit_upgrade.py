@@ -10,6 +10,9 @@ The upgrade test skips only when efc6577 is genuinely absent from the clone
 archive or upgrade fails, still fails the test."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import io
 import os
 import sqlite3
@@ -62,7 +65,7 @@ SEED = textwrap.dedent("""
 
 
 def _migrations(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def _rows(c, table):

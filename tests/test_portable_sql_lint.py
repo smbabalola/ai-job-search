@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "webapp"
 EXCLUDED = {
     ROOT / "persistence" / "migrations.py",
+    ROOT / "persistence" / "bundle7_migrations.py",  # per-dialect migration bodies
     ROOT / "persistence" / "db.py",
     ROOT / "persistence" / "dbapi.py",
 }

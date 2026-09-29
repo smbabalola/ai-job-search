@@ -142,7 +142,7 @@ def generate_application_documents(
         for kind in ("cv", "cover_letter"):
             file = rendered.file(kind)
             validate_docx_package(file.content, original_filename=file.filename)
-            blob = store.publish(file.content)
+            blob = store.publish(file.content, account_id=account_id)
             row = _document_row(document_id=version_ids[kind], workspace_id=workspace_id, account_id=account_id, kind=kind, origin="ai_generated", filename=file.filename, blob=blob, generation_id=generation_id)
             rows.append(row)
             documents[kind] = {"document_version_id": row["id"], "original_filename": row["original_filename"], "byte_length": row["byte_length"], "sha256": row["sha256"]}
@@ -190,7 +190,7 @@ def _generate_application_documents_cv_v2(
         cv_bytes = render_cv_document(cv_document_model)
         cv_filename = f"{stem}_CV.docx"
         validate_docx_package(cv_bytes, original_filename=cv_filename)
-        cv_blob = store.publish(cv_bytes)
+        cv_blob = store.publish(cv_bytes, account_id=account_id)
         cv_row = _document_row(
             document_id=version_ids["cv"], workspace_id=workspace_id, account_id=account_id, kind="cv",
             origin="ai_generated", filename=cv_filename, blob=cv_blob, generation_id=generation_id,
@@ -204,7 +204,7 @@ def _generate_application_documents_cv_v2(
         cover_letter_bytes = render_cover_letter_document(basis)
         cover_letter_filename = f"{stem}_Cover_Letter.docx"
         validate_docx_package(cover_letter_bytes, original_filename=cover_letter_filename)
-        cover_letter_blob = store.publish(cover_letter_bytes)
+        cover_letter_blob = store.publish(cover_letter_bytes, account_id=account_id)
         cover_letter_row = _document_row(
             document_id=version_ids["cover_letter"], workspace_id=workspace_id, account_id=account_id,
             kind="cover_letter", origin="ai_generated", filename=cover_letter_filename,
@@ -246,13 +246,13 @@ def _generate_application_documents_cv_v2(
         raise
 
 
-def store_upload_blob(*, kind: str, filename: str, content: bytes, documents_root: Path) -> dict[str, Any]:
+def store_upload_blob(*, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
     """Validate an upload and publish its content-addressed blob. No DB writes:
     an orphaned blob after a later rollback is harmless."""
     if kind not in DOCUMENT_KINDS:
         raise PipelineError("invalid application document kind")
     metadata = validate_docx_package(content, original_filename=filename)
-    blob = DocumentBlobStore(documents_root).publish(content)
+    blob = DocumentBlobStore(documents_root).publish(content, account_id=account_id)
     assert metadata.byte_length == blob["byte_length"] and metadata.sha256 == blob["sha256"]
     return blob
 
@@ -266,7 +266,7 @@ def record_uploaded_version(conn: dbapi.Connection, workspace_id: str, *, kind: 
 
 
 def upload_application_document(conn: dbapi.Connection, workspace_id: str, *, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
-    blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=documents_root)
+    blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=documents_root, account_id=account_id)
     try:
         conn.execute("BEGIN IMMEDIATE")
         created = record_uploaded_version(conn, workspace_id, kind=kind, filename=filename, blob=blob,

@@ -29,7 +29,9 @@ from webapp.persistence.profile_sources import (
     set_supplemental_source_included,
 )
 from webapp.persistence.workspaces import ensure_profile_workspace
-from webapp.services.profile_setup import _atomic_write_bytes, profile_snapshot_is_ready
+from product.profile_snapshot import OverlaySourceReader
+from webapp.services.profile_setup import profile_snapshot_is_ready
+from webapp.storage.profile_sources import FilesystemProfileSources, as_profile_sources
 from webapp.persistence import dbapi
 
 
@@ -83,17 +85,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _profile_path(root: str | Path) -> Path:
-    return Path(root).resolve() / CANDIDATE_SOURCE
-
-
-def _revision(root: str | Path, sources: list[dict[str, Any]]) -> str:
-    root_path = Path(root).resolve()
+def _revision(root: Any, sources: list[dict[str, Any]]) -> str:
+    """The profile-level optimistic-concurrency token: settings + content digests."""
+    handle = as_profile_sources(root)
     inputs = []
     for source in sources:
-        path = root_path / source["source_path"]
-        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-        inputs.append((source["source_path"], source["included"], digest))
+        inputs.append((source["source_path"], source["included"], handle.digest(source["source_path"])))
     encoded = json.dumps(inputs, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return "profile-revision-" + hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -303,10 +300,10 @@ def get_profile_manager(
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
-        path = _profile_path(root)
-        if not path.is_file():
+        text = as_profile_sources(root).reader().read(CANDIDATE_SOURCE)
+        if text is None:
             raise ProfileManagerError("canonical candidate profile source was not found")
-        entries = parse_candidate_entries(path.read_text(encoding="utf-8"))
+        entries = parse_candidate_entries(text)
         _assign_entry_ids(conn, entries, account_id=account_id)
         conn.commit()
         sources = list_profile_source_settings(conn, account_id=account_id)
@@ -450,42 +447,25 @@ def _build_prospective_snapshot(
     *,
     account_id: str,
 ) -> dict[str, Any]:
-    import shutil
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="profile-manager-") as temp_dir:
-        validation_root = Path(temp_dir)
-        root_path = Path(root).resolve()
-        selected_sources = included_profile_sources(
-            conn, account_id=account_id
+    selected_sources = included_profile_sources(conn, account_id=account_id)
+    reader = OverlaySourceReader(as_profile_sources(root).reader(), {CANDIDATE_SOURCE: markdown})
+    try:
+        snapshot = build_snapshot(reader, included_sources=selected_sources)
+    except FileNotFoundError as exc:
+        raise ProfileManagerError(str(exc)) from exc
+    candidate_has_name = any(
+        claim.get("source", {}).get("file") == CANDIDATE_SOURCE
+        and claim.get("category") == "identity"
+        and claim.get("field") == "name"
+        and not claim.get("placeholder", False)
+        for claim in snapshot.get("claims", [])
+    )
+    if not candidate_has_name or not profile_snapshot_is_ready({"payload": snapshot}):
+        raise ProfileManagerError(
+            "profile mutation would leave the Evidence Profile without an explicit, "
+            "non-conflicted candidate name"
         )
-        for relative in selected_sources:
-            destination = validation_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if relative == CANDIDATE_SOURCE:
-                destination.write_text(markdown, encoding="utf-8")
-            else:
-                source = root_path / relative
-                if not source.is_file():
-                    raise ProfileManagerError(f"required candidate source not found: {relative}")
-                shutil.copyfile(source, destination)
-        snapshot = build_snapshot(
-            validation_root,
-            included_sources=selected_sources,
-        )
-        candidate_has_name = any(
-            claim.get("source", {}).get("file") == CANDIDATE_SOURCE
-            and claim.get("category") == "identity"
-            and claim.get("field") == "name"
-            and not claim.get("placeholder", False)
-            for claim in snapshot.get("claims", [])
-        )
-        if not candidate_has_name or not profile_snapshot_is_ready({"payload": snapshot}):
-            raise ProfileManagerError(
-                "profile mutation would leave the Evidence Profile without an explicit, "
-                "non-conflicted candidate name"
-            )
-        return snapshot
+    return snapshot
 
 
 def _persist_mutation(
@@ -493,8 +473,10 @@ def _persist_mutation(
     operation: Any, account_id: str,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
-        path = _profile_path(root)
-        previous = path.read_bytes()
+        handle = as_profile_sources(root)
+        previous = handle.read(CANDIDATE_SOURCE)
+        if previous is None:
+            raise ProfileManagerError("canonical candidate profile source was not found")
         wrote_source = False
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -504,7 +486,7 @@ def _persist_mutation(
                     "Your Evidence Profile changed after this page was opened. "
                     "Reload it before saving this change."
                 )
-            markdown = previous.decode("utf-8")
+            markdown = previous
             entries = parse_candidate_entries(markdown)
             _assign_entry_ids(conn, entries, account_id=account_id)
             prospective, source_changed = operation(markdown, entries)
@@ -514,7 +496,7 @@ def _persist_mutation(
                 conn, root, prospective, account_id=account_id
             )
             if source_changed:
-                _atomic_write_bytes(path, prospective.encode("utf-8"))
+                handle.write(CANDIDATE_SOURCE, prospective)
                 wrote_source = True
             profile_workspace = ensure_profile_workspace(
                 conn, account_id=account_id, commit=False
@@ -528,9 +510,9 @@ def _persist_mutation(
             _assign_entry_ids(conn, new_entries, account_id=account_id)
             conn.commit()
         except Exception:
-            conn.rollback()
-            if wrote_source:
-                _atomic_write_bytes(path, previous)
+            conn.rollback()  # also discards a database-backed source revision
+            if wrote_source and isinstance(handle, FilesystemProfileSources):
+                handle.write(CANDIDATE_SOURCE, previous)
             raise
         manager = get_profile_manager(conn, root=root, account_id=account_id)
         return {"profile": artifact, "manager": manager}
