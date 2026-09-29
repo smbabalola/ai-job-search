@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>6D-B spike: Vue-controlled form</title></head>
+<body>
+<!-- Spike fixture (6D-B Task 1, S1/S3). Every control is v-model bound; a
+     write Vue does not register is reverted by the next render
+     (window.__forceRender). -->
+<div id="root">
+  <form id="application_form" @submit.prevent>
+    <label for="q_text">Notice period</label>
+    <input id="q_text" type="text" v-model="text">
+    <label for="q_select">Country</label>
+    <select id="q_select" v-model="choice">
+      <option value="">Choose</option><option value="GB">United Kingdom</option><option value="DK">Denmark</option>
+    </select>
+    <label><input id="q_checkbox" type="checkbox" v-model="agree">Relocate</label>
+    <label><input id="q_radio_yes" type="radio" name="q_radio" value="yes" v-model="radio">Yes</label>
+    <label><input id="q_radio_no" type="radio" name="q_radio" value="no" v-model="radio">No</label>
+    <label for="q_file">Resume/CV</label>
+    <input id="q_file" type="file" @change="onFile">
+    <span hidden>{{ tick }}</span>
+  </form>
+  <pre id="state">{{ JSON.stringify({ text, choice, agree, radio, file }) }}</pre>
+</div>
+<script src="vendor/vue-3.4.38.global.prod.js"></script>
+<script>
+  Vue.createApp({
+    data: () => ({ text: "", choice: "", agree: false, radio: "", file: null, tick: 0 }),
+    mounted() { window.__forceRender = () => { this.tick += 1; this.$forceUpdate(); }; },
+    methods: {
+      onFile(e) {
+        const f = e.target.files[0];
+        this.file = f ? { name: f.name, size: f.size, type: f.type } : null;
+      },
+    },
+  }).mount("#root");
+</script>
+</body>
+</html>

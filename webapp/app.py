@@ -19,6 +19,8 @@ from webapp.api.application_documents import router as application_documents_rou
 from webapp.api.cv_generation_v2 import router as cv_generation_v2_router
 from webapp.api.discovery import router as discovery_router
 from webapp.api.handoff import router as handoff_router
+from webapp.api.fill_app import router as fill_app_router
+from webapp.api.fill_extension import router as fill_extension_router
 from webapp.api.onboarding import router as onboarding_router
 from webapp.api.review import router as review_router
 from webapp.api.search_workspaces import router as search_workspaces_router
@@ -103,6 +105,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(status_router)
     app.include_router(autonomy_router)
     app.include_router(review_approval_router)
+    app.include_router(fill_extension_router)
+    app.include_router(fill_app_router)
     app.include_router(applications_router)
     app.include_router(review_pages_router)
     app.include_router(views_router)

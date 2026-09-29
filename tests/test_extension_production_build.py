@@ -59,14 +59,15 @@ def test_production_build_contains_loopback_content_bridge_bundle():
     assert bridge_runtime.stat().st_size > 0
 
 
-def test_production_build_contains_attachment_runner_bundle():
-    # Dynamically injected via chrome.scripting.executeScript (world:
-    # "MAIN"), never declared in manifest.json's content_scripts — same
-    # pattern as content/index.js itself, which is also never listed
-    # there.
-    runner = BUILD_ROOT / "attachment-runner" / "index.js"
-    assert runner.is_file()
-    assert runner.stat().st_size > 0
+def test_production_build_retired_the_legacy_attachment_runner_and_ships_the_fill_page_bundle():
+    # 6D-B Task 14: the Phase 3 MAIN-world attachment runner is retired; the
+    # only employer-page writer is the ISOLATED-world fill page bundle,
+    # injected on demand (never a static content script).
+    assert not (BUILD_ROOT / "attachment-runner").exists()
+    page = BUILD_ROOT / "fill-page" / "index.js"
+    assert page.is_file() and page.stat().st_size > 0
+    manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert not [cs for cs in manifest.get("content_scripts", []) if "fill-page/index.js" in cs.get("js", [])]
 
 
 def test_loopback_content_bridge_adds_no_new_host_permission():
@@ -84,3 +85,14 @@ def test_loopback_content_bridge_adds_no_new_host_permission():
     ]
     assert len(bridge_scripts) == 1
     assert bridge_scripts[0]["matches"] == ["http://127.0.0.1:8420/*"]
+
+
+def test_production_build_has_no_test_hook_or_spike_artifact():
+    # 6D-B Task 16: the FILL_TEST_HOOKS variant builds to its own directory;
+    # the production bundle carries no hook and no spike artifact.
+    background = (BUILD_ROOT / "background" / "index.js").read_text(encoding="utf-8")
+    assert "__fillTest" not in background and "startFill(" not in background
+    assert not [p for p in BUILD_ROOT.rglob("*") if "spike" in p.name.lower() or "test-hooks" in str(p)]
+    manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["optional_permissions"] == ["tabs", "webNavigation"]
+    assert manifest["host_permissions"] == ["http://127.0.0.1:8420/*"]

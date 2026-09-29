@@ -1,6 +1,10 @@
 """Bundle 6D-A Task 11 step 1: pin the Phase 3 human handoff lifecycle before
 the SUBMIT guard, so the guard provably does not affect it. The human (not
-JobSearch) submits; JobSearch records the user's own confirmation."""
+JobSearch) submits; JobSearch records the user's own confirmation.
+
+6D-B Task 14: the Phase 3 autofill writer is retired. Pairing, sessions, the
+exact pinned documents and confirm-submission stay; the candidate snapshot
+projection route is gone."""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -9,6 +13,7 @@ from webapp.app import create_app
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
+from tests.webapp.api.test_handoff_routes import _RENDERABLE_PACK_PAYLOAD
 from tests.webapp.test_handoff_browser_smoke import _live_server_settings
 
 
@@ -19,7 +24,7 @@ def test_human_handoff_lifecycle_is_unchanged(tmp_path):
         ensure_profile_workspace(conn)
         workspace = create_workspace(conn, company="Acme", title="Engineer")
         artifact = save_artifact(conn, workspace_id=workspace["id"], artifact_type="application_pack",
-                                 payload={"schema_version": "application-pack.v1"})
+                                 payload=_RENDERABLE_PACK_PAYLOAD)
         conn.close()
 
         one_time = client.post("/api/handoff/pairing/generate").json()["one_time_secret"]
@@ -40,6 +45,11 @@ def test_human_handoff_lifecycle_is_unchanged(tmp_path):
                       "event_payload": {"value": value}, "normalized_field_type": field_name,
                       "page_field_key": f"generic:{field_name}"})
             assert response.status_code == 201
+        document = client.get(f"/api/handoff/sessions/{session_id}/documents/cv", headers=headers)
+        assert document.status_code == 200 and document.content
+        retired = client.post(f"/api/handoff/sessions/{session_id}/snapshot", headers=headers,
+                              json={"normalized_field_types": ["name"]})
+        assert retired.status_code == 404  # the snapshot projection route is gone
         confirmed = client.post(f"/api/handoff/sessions/{session_id}/confirm-submission", headers=headers,
                                 json={"mark_workflow_applied": False})
         assert confirmed.status_code == 201

@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>6D-B reset fixture: document-owned socket</title></head>
+<body><form id="application_form"><input id="q" name="q"></form>
+<script>
+  // A document-owned socket opened on every load; it sends a heartbeat.
+  const ws = new WebSocket(`ws://${location.hostname}:8421/ws/doc_socket`);
+  ws.addEventListener("open", () => setInterval(() => ws.readyState === 1 && ws.send("beat"), 100));
+  window.__wsOpenedAt = Date.now();
+</script></body></html>

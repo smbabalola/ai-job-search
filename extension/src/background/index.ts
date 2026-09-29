@@ -12,17 +12,31 @@ import {
 } from "./session-orchestration";
 import { SessionSequenceStore } from "./session-sequence-store";
 import { SessionRegistry } from "./session-registry";
-import { buildCandidateSnapshotFromProjection } from "./snapshot-projection";
-import { fetchExactPackDocument, buildAttachmentEventPayload } from "./attachment";
-import { INJECTED_SNAPSHOT_KEY } from "../content/snapshot-source";
-import { INJECTED_PROBE_RESULT_KEY, readInjectedProbeResult } from "../content/probe-source";
-import {
-  ATTACHMENT_REQUEST_KEY, ATTACHMENT_RESULT_KEY, readInjectedAttachmentResult,
-  type AttachmentRequest,
-} from "../content/attachment-source";
-import type { ProbeResult } from "../content/probe";
 import type { ContentScriptMessage } from "../content/messages";
-import type { CandidateSnapshot } from "../adapters/types";
+
+import * as fillQuarantine from "../fill/quarantine";
+import { checkSiblingContainment } from "../fill/siblings";
+import {
+  detectCertifiedAdapter, fillPermissionsGranted, fillViewFor, registerFillListeners, routeFillDetection,
+  startFillRun,
+} from "./fill-wiring";
+
+// 6D-B Task 2 test hook: compiled only into the FILL_TEST_HOOKS build
+// (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
+// whole branch is removed at build time.
+if (__FILL_TEST_HOOKS__) {
+  // The browser acceptance suite starts runs here: automated Chrome cannot
+  // click the toolbar action (the user gesture behind activeTab).
+  (globalThis as unknown as Record<string, unknown>).__fillTest = {
+    ...fillQuarantine, checkSiblingContainment,
+    startFill: (tabId: number, sessionId: string, sessionToken: string, adapterId: string) => {
+      const pending = startFillRun(tabId, { sessionId, sessionToken }, adapterId);
+      void pending.catch(() => undefined);
+      return true;
+    },
+    fillView: (tabId: number) => fillViewFor(tabId),
+  };
+}
 
 const BASE_URL = "http://127.0.0.1:8420";
 
@@ -82,249 +96,36 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   sessionRegistry.releaseTab(tabId);
 });
 
-// Runs the content bundle once with no snapshot present — content/index.ts's
-// else-branch detects this and runs probePage() (detect/scan/classify only:
-// no DOM writes, no candidate data, no handoff events), storing the result
-// on globalThis under INJECTED_PROBE_RESULT_KEY. A second, tiny executeScript
-// call reads that value back synchronously, mirroring the existing
-// snapshot-source.ts globalThis-bridge pattern rather than a
-// chrome.runtime.sendMessage round trip.
-async function probeTab(tabId: number): Promise<ProbeResult | null> {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content/index.js"],
-  });
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (key: string) => (globalThis as unknown as Record<string, unknown>)[key],
-    args: [INJECTED_PROBE_RESULT_KEY],
-  });
-  return readInjectedProbeResult({ [INJECTED_PROBE_RESULT_KEY]: result });
-}
+// 6D-B safe FILL: tab close, opener-created tabs, and restart recovery (a
+// run is never resumed after the worker restarts).
+registerFillListeners();
 
-// Injects attachment-runner.js — a separate MAIN-world bundle (needed
-// because a real File write to <input type="file"> via DataTransfer is
-// only observed by the page's own scripts when it happens in that same
-// world, unlike every other content script in this extension, which
-// runs ISOLATED) — with the request payload pre-written to globalThis,
-// then reads the result back the same globalThis-bridge way probeTab
-// does.
-async function attachInTab(
-  tabId: number, request: AttachmentRequest,
-): Promise<import("../content/attachment-dom").AttachmentAttemptResult> {
-  await chrome.scripting.executeScript({
-    target: { tabId }, world: "MAIN",
-    func: (key: string, value: unknown) => {
-      (globalThis as unknown as Record<string, unknown>)[key] = value;
-    },
-    args: [ATTACHMENT_REQUEST_KEY, request],
-  });
-  await chrome.scripting.executeScript({
-    target: { tabId }, world: "MAIN",
-    files: ["attachment-runner/index.js"],
-  });
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId }, world: "MAIN",
-    func: (key: string) => (globalThis as unknown as Record<string, unknown>)[key],
-    args: [ATTACHMENT_RESULT_KEY],
-  });
-  return readInjectedAttachmentResult({ [ATTACHMENT_RESULT_KEY]: result }) ?? {
-    outcome: "write_failed", pageFieldKey: null,
-  };
-}
-
-// Fetches both documents and attempts to attach each one against a
-// file-upload target the probed adapter has POSITIVELY identified for
-// that kind — never a guessed/generic file input, and never a widened
-// ATS host permission to search more broadly for one. A missing
-// compatible target is an honest, expected non-success outcome, not a
-// failure to search harder. Documents are re-fetched fresh right before
-// this call (never cached/reused bytes from earlier in the session).
-// Every outcome (success, no-target, write failure, fetch failure) is
-// reported via the existing session-token event path — never silently
-// dropped, and never reported as success when it was not. This never
-// submits the application: only file-input population + outcome
-// events, no form submission of any kind.
-async function attachDocuments(
-  tabId: number, session: BoundSession, adapterId: string,
-): Promise<void> {
-  const router = await sessionRegistry.ensureRouterForSession(session.sessionId);
-
-  for (const kind of ["cv", "cover_letter"] as const) {
-    let outcome: "selected" | "no_compatible_target" | "write_failed" | "fetch_failed";
-    let pageFieldKey: string | null = null;
-    let sha256 = "";
-    let filename = "";
-    let mimeType = "";
-    let byteLength = 0;
-
-    try {
-      const doc = await fetchExactPackDocument(BASE_URL, session.sessionId, session.sessionToken, kind);
-      sha256 = doc.sha256;
-      filename = doc.filename;
-      mimeType = doc.mimeType;
-      byteLength = doc.byteLength;
-
-      const attemptResult = await attachInTab(tabId, {
-        adapterId, kind, filename: doc.filename, mimeType: doc.mimeType,
-        fileBytes: Array.from(new Uint8Array(doc.bytes)),
-      });
-      outcome = attemptResult.outcome;
-      pageFieldKey = attemptResult.pageFieldKey;
-    } catch (err) {
-      console.warn(`[JobSearch Handoff] failed to fetch/attach ${kind}`, err);
-      outcome = "fetch_failed";
-    }
-
-    const payload = {
-      ...buildAttachmentEventPayload(
-        { kind, filename, mimeType, sha256, byteLength, bytes: new ArrayBuffer(0) },
-        session.packArtifactId, "application-pack-renderer.v0",
-        // buildAttachmentEventPayload's own outcome vocabulary
-        // ("selected" | "upload_confirmed_by_adapter" | "rejected" |
-        // "unknown") is preserved unchanged; this event's OWN eventType
-        // (attachment_<outcome> below) and attempt_outcome field carry
-        // the more granular real result honestly, never upgrading a
-        // non-success to "selected".
-        outcome === "selected" ? "selected" : "unknown",
-      ),
-      attempt_outcome: outcome,
-    };
-    await router.routeEvent(`attachment_${outcome}`, payload, pageFieldKey);
-    // Flush after each background-originated attachment event is routed
-    // -- not merely durably enqueued -- so it reaches the server as soon
-    // as a valid session token is available, per the same trigger
-    // contract as content-script events below.
-    void eventQueue.flush().catch((err) => {
-      console.warn("[JobSearch Handoff] event flush failed", err);
-    });
-  }
-
-  await persistSequenceForSession(session.sessionId, router.clientSequence);
-}
-
-export async function runAutofillOnTab(tabId: number): Promise<void> {
+// 6D-B: starts a quarantined, plan-bound FILL run on the user-activated tab.
+// Same pending-context and handoff-session binding as the handoff flow; only
+// a certified adapter version (greenhouse@2 / lever@2) may run.
+export async function startSafeFillOnTab(tabId: number): Promise<void> {
   const pendingContext = await pendingContextStore.peek();
   if (!pendingContext) {
-    console.warn(
-      "[JobSearch Handoff] no pending handoff context; click 'Apply with extension' " +
-      "on the workspace page first, then click this toolbar icon on the resulting tab.",
-    );
+    console.warn("[JobSearch Handoff] no pending handoff context; open the job from JobSearch first.");
     return;
   }
-
   const tab = await chrome.tabs.get(tabId);
   if (!isActiveTabOnPendingTarget(tab.url, pendingContext)) {
-    // Wrong tab/domain is a recoverable, retry-able state — the pending
-    // context is deliberately left intact so the user can navigate to
-    // the intended page and click the toolbar icon again.
-    console.warn(
-      "[JobSearch Handoff] active tab does not match the pending handoff target; " +
-      "navigate to the intended application page first.",
-    );
+    console.warn("[JobSearch Handoff] active tab does not match the pending handoff target.");
     return;
   }
-
-  const targetDomain = new URL(pendingContext.targetUrl).hostname;
-
-  let probeResult: ProbeResult | null;
-  try {
-    probeResult = await probeTab(tabId);
-  } catch (err) {
-    // Injection legitimately fails on restricted URLs (chrome://, the Web
-    // Store, the built-in PDF viewer, etc.) — recoverable, pending context
-    // stays intact.
-    console.warn("[JobSearch Handoff] probe injection failed", err);
+  const adapter = await detectCertifiedAdapter(tabId).catch(() => null);
+  if (!adapter) {
+    console.warn("[JobSearch Handoff] no certified adapter for this page; safe FILL is not available here.");
     return;
   }
-  if (!probeResult) {
-    // No adapter detected the page at all (the generic adapter's own
-    // detect() only requires a single input/textarea to exist, so this
-    // means the page has no form present yet, e.g. still loading) —
-    // recoverable, pending context stays intact for a retry.
-    console.warn("[JobSearch Handoff] no ATS adapter detected this page; nothing to apply to yet");
-    return;
-  }
-
-  let session: BoundSession;
-  try {
-    session = await associateHandoffSession(
-      pendingContext, targetDomain,
-      { atsAdapterId: probeResult.atsAdapterId, atsAdapterVersion: probeResult.atsAdapterVersion },
-      serverClient,
-    );
-  } catch (err) {
-    // A recoverable discovery/start failure must not clear the pending
-    // context — the user can retry the toolbar click without having to
-    // re-click "Apply with extension" on the workspace page.
-    console.warn("[JobSearch Handoff] failed to establish handoff session", err);
-    return;
-  }
-
-  // Only clear the pending context once a session has been successfully
-  // bound to the intended workspace/pack/domain — never before.
+  const session = await associateHandoffSession(
+    pendingContext, new URL(pendingContext.targetUrl).hostname,
+    { atsAdapterId: adapter.adapterId, atsAdapterVersion: adapter.adapterVersion }, serverClient,
+  );
   await pendingContextStore.clear();
   sessionRegistry.bindTab(tabId, session);
-  await sessionRegistry.ensureRouterForSession(session.sessionId);
-  // A valid session token is now available for this session (bindTab
-  // just registered it in SessionRegistry's tokenBySessionId map), so any
-  // event durably queued earlier for this same session -- e.g. from
-  // before a service-worker restart -- can now retry delivery.
-  void eventQueue.flush().catch((err) => {
-    console.warn("[JobSearch Handoff] event flush failed", err);
-  });
-
-  let snapshot: CandidateSnapshot;
-  try {
-    // Requests ONLY the normalized field types the probe found this page
-    // actually needs — never the full candidate profile (design spec
-    // Section 7 / this bundle's own invariant).
-    const projection = await serverClient.fetchSessionSnapshot(
-      session.sessionId, probeResult.normalizedFieldTypes, session.sessionToken,
-    );
-    snapshot = buildCandidateSnapshotFromProjection(projection);
-  } catch (err) {
-    console.warn("[JobSearch Handoff] failed to fetch candidate snapshot projection", err);
-    return;
-  }
-
-  // Injection legitimately fails on restricted URLs (chrome://, the Web
-  // Store, the built-in PDF viewer, etc.) — catch so one failed click
-  // doesn't surface as an unhandled promise rejection.
-  try {
-    // Both calls deliberately omit `world`, which defaults to "ISOLATED" —
-    // NOT "MAIN". The content-script bundle calls chrome.runtime.sendMessage
-    // (content/index.ts), and chrome.* APIs do not exist in the MAIN world
-    // (that's the whole point of the isolated world: page scripts can never
-    // reach extension messaging, per spec section 17's "unreachable from
-    // page scripts" requirement and this plan's own Global Constraints).
-    // Both executeScript calls share the same isolated-world globalThis for
-    // this tab, so the snapshot written by the first call is still visible
-    // to the second call's injected bundle via INJECTED_SNAPSHOT_KEY.
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (key: string, value: unknown) => {
-        (globalThis as unknown as Record<string, unknown>)[key] = value;
-      },
-      args: [INJECTED_SNAPSHOT_KEY, snapshot],
-    });
-
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content/index.js"],
-    });
-  } catch (err) {
-    console.warn("[JobSearch Handoff] injection failed", err);
-    return;
-  }
-
-  // Attachment happens only after autofill injection has been attempted
-  // — never before, and never as a precondition for autofill. A failed
-  // or missing attachment target never blocks or reverses the autofill
-  // that already happened. This never submits the application: only
-  // file-input population + outcome events, no form submission of any
-  // kind (design spec / Task 11 — "Do not auto-submit the application").
-  await attachDocuments(tabId, session, probeResult.atsAdapterId);
+  await startFillRun(tabId, session, adapter.adapterId);
 }
 
 // Cheap defensive guard: chrome.runtime.onMessage fires for messages from
@@ -363,14 +164,19 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true; // keep the message channel open for the async sendResponse above
   }
 
-  if (
-    typeof message === "object" && message !== null &&
-    (message as { type?: unknown }).type === "popup_run_autofill" &&
-    typeof (message as { tabId?: unknown }).tabId === "number"
-  ) {
-    void runAutofillOnTab((message as { tabId: number }).tabId).catch(
-      (err) => console.warn("[JobSearch Handoff] autofill failed", err),
-    );
+  const typed = typeof message === "object" && message !== null ? message as { type?: unknown; tabId?: unknown } : null;
+  if (typed?.type === "popup_start_fill" && typeof typed.tabId === "number") {
+    void startSafeFillOnTab(typed.tabId).catch((err) => console.warn("[JobSearch Handoff] safe FILL failed", err));
+    return;
+  }
+  if (typed?.type === "fill_state" && typeof typed.tabId === "number" && !sender.tab) {
+    const tabId = typed.tabId;
+    void fillPermissionsGranted().then((permissionsGranted) => sendResponse({ view: fillViewFor(tabId),
+      permissionsGranted }));
+    return true;
+  }
+  if (typed?.type === "fill_detection") {
+    routeFillDetection(message as { runId?: unknown; kind?: unknown; detail?: unknown }, sender);
     return;
   }
 

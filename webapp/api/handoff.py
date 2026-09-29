@@ -33,7 +33,6 @@ from webapp.services.handoff import (
     fetch_session_document,
     generate_pairing_secret,
     mint_session_token,
-    project_session_snapshot,
     record_handoff_event,
     replay_handoff_session,
     resolve_account_scope_from_extension_credential,
@@ -75,15 +74,6 @@ class RecordEventBody(StrictBody):
 class ConfirmSubmissionBody(StrictBody):
     mark_workflow_applied: bool = False
     effective_date: str | None = None
-
-
-class SnapshotProjectionBody(StrictBody):
-    # Normalized field types only — never an arbitrary candidate JSON
-    # path. The server's closed mapping (project_session_snapshot) is
-    # what decides which paths this list can ever select from; this
-    # field is purely a filter over that mapping (design spec Section
-    # 7.1).
-    normalized_field_types: list[str]
 
 
 def get_extension_scope(
@@ -201,28 +191,6 @@ def post_resume_session(
     return {"session_token": token}
 
 
-@router.post("/sessions/{session_id}/snapshot")
-def post_session_snapshot(
-    session_id: str, body: SnapshotProjectionBody,
-    scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
-):
-    # workspace_id/pack_artifact_id are never accepted as request
-    # parameters — both come from the resolved SessionScope, which is
-    # itself resolved entirely from the presented session token. A token
-    # for session A can never be used to fetch session B's projection,
-    # even for the same account (design spec Section 7.1).
-    if scope.handoff_session_id != session_id:
-        raise _translate(HandoffSessionNotFound(f"handoff session {session_id!r} not found"))
-    try:
-        snapshot = project_session_snapshot(
-            conn, scope, normalized_field_types=body.normalized_field_types,
-        )
-    except HandoffError as exc:
-        raise _translate(exc) from exc
-    return {"snapshot": snapshot}
-
-
 @router.get("/sessions/{session_id}/documents/{kind}")
 def get_session_document(
     session_id: str, kind: str,
@@ -233,7 +201,7 @@ def get_session_document(
     # No workspace_id/pack_artifact_id request parameter exists on this
     # route at all — both are derived entirely from the resolved
     # SessionScope (itself resolved entirely from the presented session
-    # token), exactly like post_session_snapshot above. A token for
+    # token), exactly like every session-scoped route here. A token for
     # session A can never be used to fetch session B's document, and the
     # session's pinned pack_artifact_id is always used explicitly, so a
     # newer Application Pack confirmed for the same workspace after this

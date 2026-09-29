@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Fill plan · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Safe filling</p><h1>Confirm the fill plan</h1>
+  <p>{{ workspace.title }} — {{ workspace.company }}</p>
+  {% if fill_status.label %}<p data-fill-status="{{ fill_status.status }}"><strong>{{ fill_status.label }}</strong></p>{% endif %}
+  <p data-copy>Filling does not submit. The page is quarantined while it is filled, and it cannot send anything.
+    Submission is a later, separate step.</p></div></section>
+
+{% if not plan %}
+<section class="panel" data-fill-section="no-observation">
+  <p>Open the employer's application page from JobSearch and start safe filling with the extension. The form is
+    observed first; its plan appears here for you to confirm.</p>
+</section>
+{% elif plan.state == "APPROVAL_NOT_EFFECTIVE" %}
+<section class="panel" data-fill-section="not-approved">
+  <p>This application is not approved for filling. <a href="/workspaces/{{ ws }}/review">Review and approve it</a> first.</p>
+</section>
+{% else %}
+{% if plan.unsupported %}<section class="panel" data-fill-section="unsupported">
+  <p>This form can't be filled safely: {{ plan.unsupported | join(", ") }}.</p></section>{% endif %}
+{% if plan.pending_delta_kinds %}<section class="panel" data-fill-section="deltas">
+  <p>The form asks something your approval does not cover ({{ plan.pending_delta_kinds | join(", ") }}).
+    <a href="/workspaces/{{ ws }}/review">Review the new questions</a>.</p></section>{% endif %}
+{% if plan.stop %}<section class="panel" data-fill-section="stop">
+  <p>The page already holds a different value ({{ plan.stop[0] }}). Clear it on the employer page and observe again.</p></section>{% endif %}
+
+{% if plan.needs_review %}<section class="panel" data-fill-section="needs-review">
+  <div class="panel-heading"><h2>Fields that need you</h2></div>
+  {% for row in plan.needs_review %}<article class="evidence-row" data-needs-review="{{ row.page_field_key }}"><div>
+    <strong>{{ row.question }}</strong> · {{ row.control_kind }}
+    <form data-fill-action="map" data-key="{{ row.page_field_key }}">
+      <select name="answer_key">{% for c in row.candidates %}<option value="{{ c }}">{{ c }}</option>{% endfor %}</select>
+      <button class="button secondary" type="submit">Use this approved answer</button>
+    </form>
+    <button class="button secondary" type="button" data-fill-action="new-question" data-key="{{ row.page_field_key }}">It is a new question</button>
+  </div></article>{% endfor %}
+</section>{% endif %}
+
+{% if plan.rows %}<section class="panel" data-fill-section="rows">
+  <div class="panel-heading"><h2>What will be put on the page</h2></div>
+  {% for row in plan.rows %}<article class="evidence-row" data-fill-row="{{ row.page_field_key }}" data-action-kind="{{ row.action_kind }}"><div>
+    <strong>{{ row.question }}</strong> · {{ row.control_kind }} · {{ row.action_kind | replace("_", " ") | lower }}
+    {% if row.mapping_basis %} · {{ row.mapping_basis | replace("_", " ") | lower }}{% endif %}<br>
+    {% if row.action_kind == "WRITE" %}<span data-rendered-value>{{ row.rendered_value }}</span>
+    {% elif row.action_kind == "ATTACH_LOCAL" %}{{ row.document.filename }} · <code>{{ row.document.sha256 }}</code>
+    {% elif row.action_kind == "OMIT" %}left blank (approved)
+    {% else %}not part of the application ({{ row.proof.kind | replace("_", " ") | lower }}{% if row.proof.rule %} <code>{{ row.proof.rule }}</code>{% endif %})
+    {% endif %}
+  </div></article>{% endfor %}
+</section>{% endif %}
+
+<section class="panel" data-fill-section="actions">
+  <p data-fill-refusal hidden></p>
+  {% if plan.state == "PLAN_PROPOSED" and plan.confirmed %}
+  <p data-fill-confirmed>You confirmed this plan (<code>{{ plan.displayed_plan_hash }}</code>).</p>
+  {% elif plan.state == "PLAN_PROPOSED" %}
+  <button class="button" type="button" data-fill-action="confirm" data-displayed-plan-hash="{{ plan.displayed_plan_hash }}">Confirm fill plan</button>
+  {% endif %}
+</section>
+{% endif %}
+<script>
+(function () {
+  const base = "/api/workspaces/{{ ws }}/fill-plan";
+  const observationId = {{ observation_id | tojson }};
+  const refusal = document.querySelector("[data-fill-refusal]");
+  async function send(path, body) {
+    const r = await fetch(base + path, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    if (!r.ok) {
+      const b = await r.json().catch(function () { return {}; });
+      if (refusal) { refusal.textContent = "Refused: " + (b.detail || r.status) + ". Reload to see the current plan."; refusal.hidden = false; }
+      return;
+    }
+    window.location.reload();
+  }
+  document.querySelectorAll("[data-fill-action]").forEach(function (el) {
+    const action = el.dataset.fillAction;
+    el.addEventListener(el.tagName === "FORM" ? "submit" : "click", function (event) {
+      event.preventDefault();
+      if (action === "confirm") { send("/confirm", {observation_id: observationId, displayed_plan_hash: el.dataset.displayedPlanHash}); }
+      else if (action === "map") { send("/mappings", {observation_id: observationId, page_field_key: el.dataset.key,
+        answer_key: el.elements.answer_key.value, choice: "MAP"}); }
+      else if (action === "new-question") { send("/mappings", {observation_id: observationId, page_field_key: el.dataset.key,
+        answer_key: null, choice: "NEW_QUESTION"}); }
+    });
+  });
+})();
+</script>
+{% endblock %}

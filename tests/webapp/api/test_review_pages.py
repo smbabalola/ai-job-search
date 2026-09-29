@@ -11,6 +11,7 @@ from tests.webapp.services.review_fixtures import NOW, V2_ACCOUNT, docx_bytes, v
 
 COPY = "Filling does not submit. Submission will ask you separately."
 ALLOWED_ACTIONS = {"save", "approve", "revoke", "acknowledge", "answer", "omit", "replace", "select",
+                   "confirm-classification",
                    "approve-selected", "preview", "use-answer", "use-new-draft"}
 
 

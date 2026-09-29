@@ -20,7 +20,8 @@ def conn(tmp_path):
 
 def test_migration_is_recorded_and_rerun_is_a_noop(tmp_path, conn):
     ids = [r[0] for r in conn.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
-    assert ids[-1] == REVIEW_APPROVAL_MIGRATION_ID
+    # 019 is applied, immediately followed by 6D-B's 020_fill.
+    assert ids[ids.index(REVIEW_APPROVAL_MIGRATION_ID) + 1:] == ["020_fill"]
     init_db(tmp_path / "db.sqlite3")
     assert [r[0] for r in conn.execute("SELECT id FROM schema_migrations ORDER BY rowid")] == ids
 

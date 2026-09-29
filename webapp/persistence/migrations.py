@@ -47,6 +47,13 @@ DELTA_KINDS = (
     "NEW_QUESTION", "CHANGED_QUESTION", "NEW_UPLOAD", "DECLARATION", "TARGET_CHANGE", "TRANSFORM_FAILURE",
     "OMIT_FIELD_REQUIRED", "DOCUMENT_CONVERSION",
 )
+FILL_MIGRATION_ID = "020_fill"
+FILL_APPEND_ONLY_TABLES = (
+    "fill_observations", "fill_plans", "fill_plan_mapping_choices", "fill_plan_confirmations",
+    "delta_classification_proposals", "delta_classification_confirmations", "fill_runs", "fill_run_events",
+    "fill_run_grant_bindings", "fill_action_events", "fill_quarantine_events", "fill_detection_events",
+    "fill_results",
+)
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -95,6 +102,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, _migrate_autonomy_human_intent_backfill, False),
         (AUTONOMY_PREPARE_MIGRATION_ID, _migrate_autonomy_prepare, False),
         (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, True),
+        (FILL_MIGRATION_ID, _migrate_fill, False),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1761,3 +1769,201 @@ def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -
     if problems:
         raise RuntimeError(f"019 approved_answers rebuild broke foreign keys: {problems}")
 #---END2
+
+
+# ---- Bundle 6D-B: FILL (020) ----
+
+def _migrate_fill(conn: sqlite3.Connection) -> None:
+    """Spec §19. Append-only evidence tables (UPDATE/DELETE raise), closed
+    vocabularies from product.fill_vocab, and two mutable operational
+    tables (leases and the active-run concurrency keys). No 6D-A table,
+    CHECK or trigger is touched."""
+    from product import fill_vocab as v
+    run_events = v.sql_in(v.RUN_EVENTS)
+    reasons = v.sql_in(v.STOP_REASONS)
+    _execute_statements(conn, f"""
+        CREATE TABLE fill_runs (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            handoff_session_id TEXT NOT NULL,
+            executor_instance_id TEXT NOT NULL,
+            browser_session_id TEXT NOT NULL,
+            execution_tab_id INTEGER NOT NULL,
+            timing_version TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_runs_ws ON fill_runs(application_workspace_id, seq);
+
+        CREATE TABLE fill_run_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            event TEXT NOT NULL CHECK (event IN ({run_events})),
+            reason TEXT CHECK (reason IS NULL OR reason IN ({reasons})),
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_run_events_run ON fill_run_events(fill_run_id, seq);
+
+        CREATE TABLE fill_observations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            fill_run_id TEXT REFERENCES fill_runs(id),
+            phase TEXT NOT NULL CHECK (phase IN ({v.sql_in(v.OBSERVATION_PHASES)})),
+            action_index INTEGER,
+            structure_fingerprint TEXT NOT NULL,
+            observation_fingerprint TEXT NOT NULL,
+            observation_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_observations_run ON fill_observations(fill_run_id, seq);
+
+        CREATE TABLE fill_plans (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            plan_hash TEXT NOT NULL UNIQUE,
+            approval_id TEXT NOT NULL REFERENCES application_approvals(id),
+            approval_binding_hash TEXT NOT NULL,
+            observation_id TEXT NOT NULL REFERENCES fill_observations(id),
+            plan_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE fill_plan_mapping_choices (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            observation_id TEXT NOT NULL REFERENCES fill_observations(id),
+            page_field_key TEXT NOT NULL,
+            field_fingerprint TEXT NOT NULL,
+            answer_key TEXT,
+            choice TEXT NOT NULL CHECK (choice IN ({v.sql_in(v.MAPPING_CHOICES)})),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_mapping_choices_obs ON fill_plan_mapping_choices(observation_id, seq);
+
+        CREATE TABLE fill_plan_confirmations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            plan_hash TEXT NOT NULL REFERENCES fill_plans(plan_hash),
+            approval_id TEXT NOT NULL REFERENCES application_approvals(id),
+            approval_binding_hash TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_plan_confirmations ON fill_plan_confirmations(plan_hash, approval_id);
+
+        CREATE TABLE delta_classification_proposals (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            delta_id TEXT NOT NULL REFERENCES review_deltas(id),
+            subject TEXT NOT NULL,
+            basis TEXT NOT NULL CHECK (basis IN ({v.sql_in(v.PROPOSAL_BASES)})),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_classification_proposals_delta ON delta_classification_proposals(delta_id, seq);
+
+        CREATE TABLE delta_classification_confirmations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            delta_id TEXT NOT NULL UNIQUE REFERENCES review_deltas(id),
+            proposal_id TEXT NOT NULL REFERENCES delta_classification_proposals(id),
+            subject TEXT NOT NULL,
+            successor_delta_id TEXT NOT NULL REFERENCES review_deltas(id),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE fill_run_grant_bindings (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL UNIQUE REFERENCES fill_runs(id),
+            grant_id TEXT NOT NULL REFERENCES autonomy_grants(id),
+            approval_id TEXT NOT NULL REFERENCES application_approvals(id),
+            approval_binding_hash TEXT NOT NULL,
+            plan_hash TEXT NOT NULL REFERENCES fill_plans(plan_hash),
+            structure_fingerprint TEXT NOT NULL,
+            observation_fingerprint TEXT NOT NULL,
+            ruleset_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE fill_action_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            action_index INTEGER NOT NULL CHECK (action_index >= 0),
+            event TEXT NOT NULL CHECK (event IN ({v.sql_in(v.ACTION_EVENTS)})),
+            outcome TEXT CHECK (outcome IS NULL OR outcome IN ({v.sql_in(v.ACTION_OUTCOMES)})),
+            envelope_id TEXT,
+            readback_hash TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL,
+            CHECK ((event = 'OUTCOME') = (outcome IS NOT NULL))
+        );
+        CREATE INDEX idx_fill_action_events_run ON fill_action_events(fill_run_id, action_index, seq);
+        CREATE UNIQUE INDEX uq_fill_action_one_outcome ON fill_action_events(fill_run_id, action_index)
+            WHERE event = 'OUTCOME';
+        CREATE UNIQUE INDEX uq_fill_action_one_envelope ON fill_action_events(fill_run_id, action_index)
+            WHERE event = 'ENVELOPE_ISSUED';
+
+        CREATE TABLE fill_quarantine_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            phase TEXT NOT NULL CHECK (phase IN ({v.sql_in(v.QUARANTINE_PHASES)})),
+            ruleset_hash TEXT,
+            action_index INTEGER,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_quarantine_events_run ON fill_quarantine_events(fill_run_id, seq);
+
+        CREATE TABLE fill_detection_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            kind TEXT NOT NULL CHECK (kind IN ({v.sql_in(v.DETECTION_KINDS)})),
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_fill_detection_events_run ON fill_detection_events(fill_run_id, seq);
+
+        CREATE TABLE fill_results (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            fill_run_id TEXT NOT NULL UNIQUE REFERENCES fill_runs(id),
+            result_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE fill_run_leases (
+            fill_run_id TEXT PRIMARY KEY REFERENCES fill_runs(id),
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE active_fill_runs (
+            application_workspace_id TEXT PRIMARY KEY,
+            fill_run_id TEXT NOT NULL UNIQUE,
+            context_key TEXT NOT NULL UNIQUE
+        );
+    """)
+    for table in FILL_APPEND_ONLY_TABLES:
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
+                         f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")

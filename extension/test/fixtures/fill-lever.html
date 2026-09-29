@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Acme (lever@2 observer fixture)</title></head>
+<body>
+<form class="application-form" id="application_form" method="post" action="/submit">
+  <input type="hidden" name="_csrf" value="csrf-1">
+  <div><label for="name">Full name</label><input id="name" name="name" type="text" required></div>
+  <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div><label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" accept=".pdf,.docx"></div>
+  <button type="submit" id="btn-submit">Submit application</button>
+</form>
+</body></html>

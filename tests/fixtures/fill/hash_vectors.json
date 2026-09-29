@@ -1,0 +1,280 @@
+{
+  "schema": "fill-hash-vectors",
+  "schema_version": "v1",
+  "generated_by": "tools/gen_fill_hash_vectors.py",
+  "hash_function": "product.fill_hash.fill_value_hash",
+  "vectors": [
+    {
+      "name": "ascii_simple",
+      "category": "ascii",
+      "input": "1 month",
+      "expected": "sha256:11cc3c4e99dca6fedee076954100df3f9b8a2c9c775202986bcfc53acddc0530"
+    },
+    {
+      "name": "ascii_sentence",
+      "category": "ascii",
+      "input": "Hello, world. 42 applications.",
+      "expected": "sha256:e13f9e437f45219be6abd9eb6322e07f0542e2787e3aa15587ab7037f6e30f44"
+    },
+    {
+      "name": "empty",
+      "category": "empty",
+      "input": "",
+      "expected": "sha256:3a1a3dc09742dabe01ffeb889a77ddd4bcd0a405cad3e281084b93140e247fff"
+    },
+    {
+      "name": "leading_space",
+      "category": "whitespace",
+      "input": "  leading",
+      "expected": "sha256:71d3a71e58e74a346b88a39b23b07ca395fac060ec5c3195de5cae3ffc16f780"
+    },
+    {
+      "name": "trailing_space",
+      "category": "whitespace",
+      "input": "trailing  ",
+      "expected": "sha256:d5b73b5205f101f07a613e42ce847907409e3cd56d7d79004d8bdc94baf8d9a7"
+    },
+    {
+      "name": "internal_spaces",
+      "category": "whitespace",
+      "input": "internal   spaces",
+      "expected": "sha256:6b28a22f55a9320a927814f75361dbc067c8ce10d7a11374484d34f667bf57c9"
+    },
+    {
+      "name": "nbsp",
+      "category": "whitespace",
+      "input": "a\u00a0b",
+      "expected": "sha256:1941b474db458e99bbc7efc3f046616ebbf2417024bc0adf8b908f227dfe2cfb"
+    },
+    {
+      "name": "tab",
+      "category": "tab_newline",
+      "input": "a\tb",
+      "expected": "sha256:2894469280ce588137a8ec3ca182dc2a4437ee1693335bd9853042770c027cc1"
+    },
+    {
+      "name": "multiline_lf",
+      "category": "tab_newline",
+      "input": "multi\nline\ntext",
+      "expected": "sha256:67bec2479971010d0acfa28efa8e3490b587c27d8fa6347cf3ce0d9fb9f5f7d7"
+    },
+    {
+      "name": "emoji",
+      "category": "emoji",
+      "input": "\u2705 done \ud83d\ude80",
+      "expected": "sha256:c795c8c202f9dc91aa9ac53e907e4d09705acb19ad0b5a7991842d118b83acdd"
+    },
+    {
+      "name": "emoji_zwj",
+      "category": "emoji",
+      "input": "\ud83d\udc69\u200d\ud83d\udcbb and \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67",
+      "expected": "sha256:d8717b132ce8bc1f6044ca989eeecbcb958e07300139cf89ea48e81a9924925d"
+    },
+    {
+      "name": "rtl_arabic",
+      "category": "rtl",
+      "input": "\u0645\u0631\u062d\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645",
+      "expected": "sha256:3ea978f5855012c8bd02bc572df99019022433a6d0dc6273128771f643d94b11"
+    },
+    {
+      "name": "rtl_hebrew_mixed",
+      "category": "rtl",
+      "input": "\u05e9\u05dc\u05d5\u05dd world 123",
+      "expected": "sha256:ef2158802a637c4d129d6bbb8e65453c1d7a760eb7e2dde66108f4c54e53255d"
+    },
+    {
+      "name": "combining_stack",
+      "category": "combining",
+      "input": "e\u0301\u0302",
+      "expected": "sha256:478f9ea1c791fae4a9e48cdb37e032e997b8d9b12d19c2abadf3d2fd2457e245"
+    },
+    {
+      "name": "combining_order",
+      "category": "combining",
+      "input": "a\u0328\u0301",
+      "expected": "sha256:bcdeb320574f05c5e65ab112efe58eecc7cdd003167fb9111fec80acd5b482fd"
+    },
+    {
+      "name": "nfc_precomposed",
+      "category": "nfc_equivalence",
+      "input": "Caf\u00e9",
+      "expected": "sha256:a777ee0c0ae9ea38a833c8f2f79c149744ed55152f54a9310e5c74e587d95b5d"
+    },
+    {
+      "name": "nfd_decomposed",
+      "category": "nfc_equivalence",
+      "input": "Cafe\u0301",
+      "expected": "sha256:a777ee0c0ae9ea38a833c8f2f79c149744ed55152f54a9310e5c74e587d95b5d"
+    },
+    {
+      "name": "a_ring_precomposed",
+      "category": "nfc_equivalence",
+      "input": "\u00c5",
+      "expected": "sha256:ed6c3729a0000414663d394031542a3a641f762e4562d4c076aa962ce1eb2d9f"
+    },
+    {
+      "name": "a_ring_decomposed",
+      "category": "nfc_equivalence",
+      "input": "A\u030a",
+      "expected": "sha256:ed6c3729a0000414663d394031542a3a641f762e4562d4c076aa962ce1eb2d9f"
+    },
+    {
+      "name": "angstrom_sign",
+      "category": "nfc_equivalence",
+      "input": "\u212b",
+      "expected": "sha256:ed6c3729a0000414663d394031542a3a641f762e4562d4c076aa962ce1eb2d9f"
+    },
+    {
+      "name": "newline_crlf",
+      "category": "crlf",
+      "input": "line1\r\nline2",
+      "expected": "sha256:e8d9255c0aff4e104f97b2f003dd563b69761bcdeee3d8797c5d214ad7fb5c58"
+    },
+    {
+      "name": "newline_lone_cr",
+      "category": "lone_cr",
+      "input": "line1\rline2",
+      "expected": "sha256:e8d9255c0aff4e104f97b2f003dd563b69761bcdeee3d8797c5d214ad7fb5c58"
+    },
+    {
+      "name": "newline_lf",
+      "category": "lf",
+      "input": "line1\nline2",
+      "expected": "sha256:e8d9255c0aff4e104f97b2f003dd563b69761bcdeee3d8797c5d214ad7fb5c58"
+    },
+    {
+      "name": "mixed_newlines",
+      "category": "crlf",
+      "input": "a\r\n\rb\n",
+      "expected": "sha256:cec45e7f7e88551a7818846d67162e5e511f49521296dbea6ca241ab0ef810fb"
+    },
+    {
+      "name": "mixed_newlines_lf",
+      "category": "lf",
+      "input": "a\n\nb\n",
+      "expected": "sha256:cec45e7f7e88551a7818846d67162e5e511f49521296dbea6ca241ab0ef810fb"
+    },
+    {
+      "name": "long_10000",
+      "category": "long",
+      "input": "Lorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\nLorem ipsum \u00e9t\u00e9 \u4e2d\u6587 \u00e7a va\n",
+      "expected": "sha256:b41ee300a81f3a9323d786c11d74b1f734f749567fa43e6d5b32b58714f5a986"
+    },
+    {
+      "name": "double_quotes",
+      "category": "quotes",
+      "input": "He said \"hi\"",
+      "expected": "sha256:49cddc4ac0430e125ffc94094c089cc56871d68a08a419a5b9a7180d0cd16fa3"
+    },
+    {
+      "name": "single_quote",
+      "category": "quotes",
+      "input": "it's",
+      "expected": "sha256:daa6921037d3886fe0aabb2a17219d21948efed709f91afb58f7afa117d9f8ff"
+    },
+    {
+      "name": "backslashes",
+      "category": "backslash",
+      "input": "C:\\path\\to\\cv.docx",
+      "expected": "sha256:14472f31cbd4fcc07f9f57902e52478c506a42eb91fb9cae03d294bdafe15493"
+    },
+    {
+      "name": "escape_lookalike",
+      "category": "backslash",
+      "input": "\\u0041 is not A",
+      "expected": "sha256:eaae8a7e056cba6a0d2d5ed4b362b1ef56bb9cae948dfd9e19f35fb4a052aa0c"
+    },
+    {
+      "name": "line_separator",
+      "category": "line_separator",
+      "input": "a\u2028b",
+      "expected": "sha256:6f056489f86e7282603cfa748ffc9c3d87636e1f2ac562755471c4f1f9dfa5fd"
+    },
+    {
+      "name": "paragraph_separator",
+      "category": "line_separator",
+      "input": "a\u2029b",
+      "expected": "sha256:3c6b79fa875dc6d5b50dffa65f1e0b9b0d40c1a5e6b73d81d65adac9335e8048"
+    },
+    {
+      "name": "nul",
+      "category": "json_hostile",
+      "input": "a\u0000b",
+      "expected": "sha256:0e601fdef315e414d0ff763d9d180d9d4f47d649732e891632aa7816a94dc4bd"
+    },
+    {
+      "name": "unit_separator",
+      "category": "json_hostile",
+      "input": "\u001f",
+      "expected": "sha256:e1da19b5c6e98d0aa966a358d85756bcfcc4704ca6239154b7ba38261c61b54a"
+    },
+    {
+      "name": "delete",
+      "category": "json_hostile",
+      "input": "\u007f",
+      "expected": "sha256:bd08cac18a9de31b74c6a1e850931d0a53cb5b0e062ea4580d20932494f0c819"
+    },
+    {
+      "name": "backspace_formfeed",
+      "category": "json_hostile",
+      "input": "\b\f",
+      "expected": "sha256:f1c800788455e748e61e8b1e0c8f4a671c5d4ee805578d6119dd7aec35297b8e"
+    },
+    {
+      "name": "script_close",
+      "category": "json_hostile",
+      "input": "</script><!--",
+      "expected": "sha256:9ce5f7aad4039ee156f0a61d1a54e59e8c7b3fe6f7992a585d26808e50377635"
+    },
+    {
+      "name": "bom",
+      "category": "json_hostile",
+      "input": "\ufeffBOM",
+      "expected": "sha256:fe53262c077cf60e42aa3dfbf92982bc0154cbec1cd1572f4d6d30bbefce4322"
+    },
+    {
+      "name": "astral_math",
+      "category": "json_hostile",
+      "input": "\ud835\udc00\ud835\udc01",
+      "expected": "sha256:959d57d0d8d96f92ac4cda7ed87bd2bbb575624f88cd73878ad7b01b9267175e"
+    },
+    {
+      "name": "max_bmp",
+      "category": "json_hostile",
+      "input": "\uffff",
+      "expected": "sha256:864e8fdb2a3db0cdc857a6dfe7d3d4ce3a076aa78a2e72ca6427cd9582fe3719"
+    },
+    {
+      "name": "lone_high_surrogate",
+      "category": "unpaired_surrogate",
+      "input": "\ud800",
+      "error": "unpaired_surrogate"
+    },
+    {
+      "name": "lone_low_surrogate_inside",
+      "category": "unpaired_surrogate",
+      "input": "a\udc00b",
+      "error": "unpaired_surrogate"
+    }
+  ],
+  "equivalence_groups": [
+    [
+      "nfc_precomposed",
+      "nfd_decomposed"
+    ],
+    [
+      "a_ring_precomposed",
+      "a_ring_decomposed",
+      "angstrom_sign"
+    ],
+    [
+      "newline_crlf",
+      "newline_lone_cr",
+      "newline_lf"
+    ],
+    [
+      "mixed_newlines",
+      "mixed_newlines_lf"
+    ]
+  ]
+}

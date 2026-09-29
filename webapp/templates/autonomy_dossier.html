@@ -34,6 +34,13 @@
   {% else %}<p>No approvals yet.</p>{% endfor %}
   {% if dossier.approvals.events %}<ol>{% for e in dossier.approvals.events %}<li>{{ e.event }} · {{ e.actor }}{% if e.binding_hash %} · <code>{{ e.binding_hash }}</code>{% endif %}</li>{% endfor %}</ol>{% endif %}
 </section>
+<section class="panel" data-dossier-section="fill"><div class="panel-heading"><h2>Filling</h2></div>
+  {% if dossier.fill.status and dossier.fill.status.label %}<p data-fill-status="{{ dossier.fill.status.status }}">{{ dossier.fill.status.label }}</p>{% endif %}
+  {% for run in dossier.fill.runs %}<article class="evidence-row" data-fill-run="{{ run.id }}"><div>
+    <code>{{ run.id }}</code> · {{ run.created_at }} · {{ run.state }}{% if run.reason %} ({{ run.reason }}){% endif %}
+    {% if run.result_hash %} · result <code>{{ run.result_hash }}</code>{% endif %}
+  </div></article>{% else %}<p>No fill runs yet.</p>{% endfor %}
+</section>
 <section class="panel" data-dossier-section="attempt-history"><div class="panel-heading"><h2>Attempt history (observational)</h2></div>
   <p>A record of what ran; it never decides what runs next.</p>
   {% for a in dossier.attempt_history_observational %}<article class="evidence-row"><div>

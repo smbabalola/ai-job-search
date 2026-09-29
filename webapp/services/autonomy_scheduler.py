@@ -191,6 +191,8 @@ def _sweeps(conn, settings: Settings, now: datetime, meter) -> dict[str, Any]:
         for row in conn.execute("SELECT id FROM accounts").fetchall())
     from webapp.services.review_approval import reconcile_approvals  # 6D-A: reduce-only audit sweep
     out["review_invalidations"] = reconcile_approvals(conn, settings=settings, now=now)
+    from webapp.services.fill_runs import reap_expired_leases  # 6D-B: reduce-only lease sweep
+    out["fill_leases_reaped"] = reap_expired_leases(conn, now=now)
     return out
 
 

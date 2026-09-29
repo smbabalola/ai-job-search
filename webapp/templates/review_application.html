@@ -67,6 +67,17 @@
       {% if not f.required %}<button class="button secondary" type="button" data-review-action="omit" data-key="{{ f.answer_key }}">Leave blank</button>{% endif %}
     </div></article>{% else %}<p>No questions are known for this application yet.</p>{% endfor %}
 </section>
+{% if classification_proposals %}<section class="panel" data-review-section="classification">
+  <div class="panel-heading"><h2>New questions: what do they ask?</h2></div>
+  <p>Confirming a meaning only says what the question asks. You still answer it separately above.</p>
+  {% for c in classification_proposals %}<article class="evidence-row" data-classification="{{ c.delta_id }}"><div>
+    <strong>{{ c.question }}</strong>{% if c.required %} (required){% endif %}<br>
+    {% if c.proposal %}Suggested meaning: <code>{{ c.proposal.subject }}</code> ({{ c.proposal.basis | lower }} suggestion)
+    <button class="button secondary" type="button" data-review-action="confirm-classification" data-delta="{{ c.delta_id }}"
+      data-proposal="{{ c.proposal.id }}" data-subject="{{ c.proposal.subject }}">Confirm meaning</button>
+    {% else %}No suggested meaning; answer it as a one-off question.{% endif %}
+  </div></article>{% endfor %}
+</section>{% endif %}
 <section class="panel" data-review-section="warnings">
   <div class="panel-heading"><h2>Warnings</h2></div>
   {% for w in r.warnings %}<p data-warning-level="{{ w.level }}"><strong>{{ w.level }}</strong> {{ w.message }}
@@ -95,6 +106,9 @@
       if (action === "approve") { send("/approve", json({displayed_binding_hash: el.dataset.displayedBindingHash})); }
       else if (action === "revoke") { send("/revoke"); }
       else if (action === "save") { send("/save"); }
+      // Confirms only what the question means (R7); it never answers it.
+      else if (action === "confirm-classification") { send("/deltas/" + encodeURIComponent(el.dataset.delta) + "/classification/confirm",
+        json({displayed_proposal_id: el.dataset.proposal, subject: el.dataset.subject})); }
       else if (action === "acknowledge") { send("/warnings/ack", json({warning_key: el.dataset.key})); }
       else if (action === "omit") { send("/fields/" + encodeURIComponent(el.dataset.key) + "/disposition", json({disposition: "OMIT"})); }
       else if (action === "use-answer") { send("/fields/" + encodeURIComponent(el.dataset.key) + "/disposition", json({disposition: "ANSWER"})); }

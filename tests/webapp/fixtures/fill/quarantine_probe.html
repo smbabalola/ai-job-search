@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>6D-B S2 quarantine probes</title></head>
+<body>
+<!-- Each probe tries one way of sending data to /record/<probe> on the
+     recording server; a blocked request never arrives there. Probes are
+     invoked from the test through window.__probe[name](). -->
+<iframe name="sink" id="sink" title="sink"></iframe>
+<form id="post_form" method="post" action="/record/form_post" target="sink"><input name="q" value="x"></form>
+<script>
+  const swReady = navigator.serviceWorker.register("sw.js").then(() => navigator.serviceWorker.ready);
+  window.__swReady = swReady.then(() => true);
+  window.__probe = {
+    form_post() { document.getElementById("post_form").submit(); },
+    fetch_post() { fetch("/record/fetch_post", { method: "POST", body: "x" }).catch(() => {}); },
+    xhr_put() { const x = new XMLHttpRequest(); x.open("PUT", "/record/xhr_put"); x.send("x"); },
+    beacon() { navigator.sendBeacon("/record/beacon", "x"); },
+    websocket() { try { new WebSocket(`ws://${location.hostname}:8421/ws/probe`); } catch (e) {} },
+    fetch_get() { fetch("/record/fetch_get").catch(() => {}); },
+    image_get() { new Image().src = "/record/image_get?data=x"; },
+    script_get() { const s = document.createElement("script"); s.src = "/record/script_get.js"; document.head.append(s); },
+    style_get() { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/record/style_get"; document.head.append(l); },
+    frame_get() { document.getElementById("sink").src = "/record/frame_get"; },
+    push_state_then_frame_get() {
+      history.pushState({}, "", "/moved-by-pushstate");
+      document.getElementById("sink").src = "/record/frame_get_after_pushstate";
+    },
+    sw_fetch() { navigator.serviceWorker.controller
+      ? navigator.serviceWorker.controller.postMessage("probe")
+      : swReady.then((r) => r.active.postMessage("probe")); },
+    webtransport() {
+      window.__wtResult = "pending";
+      try {
+        const wt = new WebTransport(`https://127.0.0.1:4433/record/webtransport`);
+        wt.ready.then(() => { window.__wtResult = "ready"; }, (e) => { window.__wtResult = String(e && e.message || e); });
+      } catch (e) { window.__wtResult = "threw:" + String(e); }
+    },
+  };
+</script>
+</body>
+</html>

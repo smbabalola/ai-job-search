@@ -159,7 +159,27 @@ def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_work
         state.update(next=step.step.value if step.step else step.kind, reason=step.reason or None)
     dossier["current_state_derived"] = state
     dossier["approvals"] = _approvals_section(conn, ws)
+    dossier["fill"] = _fill_section(conn, settings=settings, account_id=account_id, ws=ws)
     return dossier
+
+
+def _fill_section(conn, *, settings, account_id: str, ws: str) -> dict[str, Any]:
+    """6D-B: fill status and the run history (identity, state, stop reason,
+    result hash; evidence only, no cleartext)."""
+    from datetime import datetime, timezone
+    from webapp.persistence import fill as f
+    from webapp.services.fill_results import fill_summary
+    runs = []
+    for run in reversed([r for r in f.runs_for_application(conn, ws) if r["account_id"] == account_id]):
+        last = f.run_state(conn, run["id"])
+        result = f.get_result(conn, run["id"])
+        runs.append({"id": run["id"], "created_at": run["created_at"], "state": last["event"] if last else None,
+                     "reason": last["reason"] if last else None,
+                     "result_hash": result["result_hash"] if result else None,
+                     "execution_tab_id": run["execution_tab_id"], "timing_version": run["timing_version"]})
+    status = fill_summary(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                          now=datetime.now(timezone.utc)) if settings is not None else None
+    return {"status": status, "runs": runs}
 
 
 def _approvals_section(conn, ws: str) -> dict[str, Any]:

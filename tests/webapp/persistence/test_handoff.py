@@ -21,6 +21,8 @@ from webapp.persistence.migrations import (
     AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
     AUTONOMY_PREPARE_MIGRATION_ID,
     REVIEW_APPROVAL_MIGRATION_ID,
+    FILL_MIGRATION_ID,
+    FILL_APPEND_ONLY_TABLES,
 )
 
 
@@ -170,6 +172,9 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     # simulated "upgrade from 004" DB has none of the schema added after 004.
     # All these tables are empty here, so FK-enforced drops succeed regardless
     # of order (SQLite only blocks a DROP TABLE when a referencing row exists).
+    # Bundle 6D-B (020): its tables reference 6D-A's, so drop them first.
+    for fill_table in (*FILL_APPEND_ONLY_TABLES, "fill_run_leases", "active_fill_runs"):
+        conn.execute(f"DROP TABLE {fill_table}")
     for autonomy_table in (
         "application_approvals", "application_review_events", "review_deltas",
         "application_field_dispositions",
@@ -187,7 +192,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     ):
         conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -204,6 +209,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID,
             AUTONOMY_PREPARE_MIGRATION_ID,
             REVIEW_APPROVAL_MIGRATION_ID,
+            FILL_MIGRATION_ID,
         ),
     )
     conn.commit()

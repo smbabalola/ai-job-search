@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme — Backend Engineer (certified greenhouse@2 fixture)</title></head>
+<body>
+<!-- A React-rendered, single-page Greenhouse-style application form: the
+     fixture the greenhouse@2 certification (framework "react") is proved on.
+     No WebRTC, SharedWorker or service worker (network_model contained). -->
+<div id="root"></div>
+<script src="vendor/react-18.3.1.production.min.js"></script>
+<script src="vendor/react-dom-18.3.1.production.min.js"></script>
+<script>
+  const h = React.createElement;
+  function Field({ id, label, type = "text", required = false, value, onChange }) {
+    return h("div", { className: "field" },
+      h("label", { htmlFor: id }, label + (required ? " *" : "")),
+      h("input", { id, name: id, type, required, value, onChange: (e) => onChange(e.target.value) }));
+  }
+  function App() {
+    const [s, set] = React.useState({ full_name: "", email: "", phone: "", location: "", notice: "", relocate: "" });
+    const [files, setFiles] = React.useState({ resume: null, cover_letter: null });
+    window.__formState = { ...s, files };
+    const bind = (key) => (value) => set((prev) => ({ ...prev, [key]: value }));
+    const onFile = (key) => (e) => { const f = e.target.files[0];
+      setFiles((prev) => ({ ...prev, [key]: f ? { name: f.name, size: f.size } : null })); };
+    return h("form", { id: "application_form", method: "post", action: "/record/greenhouse_submit",
+                       onSubmit: (e) => e.preventDefault() },
+      h("input", { type: "hidden", name: "authenticity_token", value: "fixture-token" }),
+      h(Field, { id: "full_name", label: "Full name", required: true, value: s.full_name, onChange: bind("full_name") }),
+      h(Field, { id: "email", label: "Email", type: "email", required: true, value: s.email, onChange: bind("email") }),
+      h(Field, { id: "phone", label: "Phone", type: "tel", value: s.phone, onChange: bind("phone") }),
+      h(Field, { id: "location", label: "Location (City)", value: s.location, onChange: bind("location") }),
+      h(Field, { id: "notice", label: "What is your notice period?", required: true, value: s.notice,
+                 onChange: bind("notice") }),
+      h("div", { className: "field" },
+        h("label", { htmlFor: "relocate" }, "Are you willing to relocate?"),
+        h("select", { id: "relocate", name: "relocate", value: s.relocate, onChange: (e) => bind("relocate")(e.target.value) },
+          h("option", { value: "" }, "Select"), h("option", { value: "Yes" }, "Yes"), h("option", { value: "No" }, "No"))),
+      h("div", { className: "field" }, h("label", { htmlFor: "resume" }, "Resume/CV"),
+        h("input", { id: "resume", name: "resume", type: "file", accept: ".pdf,.doc,.docx", onChange: onFile("resume") })),
+      h("div", { className: "field" }, h("label", { htmlFor: "cover_letter" }, "Cover Letter"),
+        h("input", { id: "cover_letter", name: "cover_letter", type: "file", accept: ".pdf,.doc,.docx",
+                     onChange: onFile("cover_letter") })),
+      h("button", { type: "submit", id: "submit_app" }, "Submit application"));
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>
