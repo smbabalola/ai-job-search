@@ -68,6 +68,8 @@ export interface FillPorts {
   store: PhaseStore;
   timers?: Timers;
   timing?: { heartbeatMs?: number; mountTimeoutMs?: number; pollMs?: number };
+  // 6E-A (spec E12): every heartbeat response, for the submit directives.
+  onBeat?: (beat: Awaited<ReturnType<FillServer["heartbeat"]>>) => void;
 }
 
 export interface RunContext {
@@ -173,6 +175,7 @@ export class FillRunController {
     const ms = this.ports.timing?.heartbeatMs ?? HEARTBEAT_INTERVAL_MS;
     this.heartbeat = this.timers.setInterval(() => {
       void this.ports.server.heartbeat(this.view.runId!).then((beat) => {
+        this.ports.onBeat?.(beat);
         if (beat.lease_expired) this.stopHeartbeat();
       }).catch(() => this.stopHeartbeat());
     }, ms);

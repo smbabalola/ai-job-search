@@ -48,6 +48,14 @@ export interface IntentResponse { envelope: Envelope | null; stop_reason: string
 
 export interface LocalDocument { bytes: Uint8Array<ArrayBuffer>; filename: string; mediaType: string; sha256: string }
 
+// 6E-A adds the submit directives (spec E12); both are absent before 6E-A.
+export interface HeartbeatResponse {
+  state: string;
+  lease_expired: boolean;
+  reobserve?: { request_id: string } | null;
+  authorization?: import("../submit/submit-controller").AuthorizationDirective | null;
+}
+
 export interface FillServer {
   startRun(identity: { executor_instance_id: string; browser_session_id: string; execution_tab_id: number })
     : Promise<{ id: string }>;
@@ -59,7 +67,7 @@ export interface FillServer {
   outcome(runId: string, index: number, body: { envelope_id: string | null; outcome: Outcome;
     readback_hash: string | null; post_observation: ObservationV1 }): Promise<StepResult>;
   unknown(runId: string, index: number): Promise<StepResult>;
-  heartbeat(runId: string): Promise<{ state: string; lease_expired: boolean }>;
+  heartbeat(runId: string): Promise<HeartbeatResponse>;
   detection(runId: string, kind: string, detail: Record<string, unknown>): Promise<StepResult>;
   final(runId: string, observation: ObservationV1): Promise<StepResult>;
   stop(runId: string, reason: string, detail: Record<string, unknown>): Promise<StepResult>;
@@ -126,7 +134,7 @@ export class HttpFillServer implements FillServer {
   }
 
   heartbeat(runId: string) {
-    return this.call<{ state: string; lease_expired: boolean }>("POST", `/runs/${runId}/heartbeat`);
+    return this.call<HeartbeatResponse>("POST", `/runs/${runId}/heartbeat`);
   }
 
   detection(runId: string, kind: string, detail: Record<string, unknown>) {

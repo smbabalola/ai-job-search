@@ -1,7 +1,8 @@
 import { CredentialStore } from "../background/credential-store";
 import { ServerClient } from "../background/server-client";
 import { attemptPairing } from "./pairing-form";
-import { renderFillView } from "./fill-view";
+import { renderFillView, renderSubmitView } from "./fill-view";
+import type { SubmitView } from "../submit/submit-controller";
 import type { ControllerView } from "../fill/run-controller";
 
 const credentialStore = new CredentialStore();
@@ -17,11 +18,17 @@ async function render(): Promise<void> {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const state = tab?.id === undefined ? null
       : await chrome.runtime.sendMessage({ type: "fill_state", tabId: tab.id })
-        .catch(() => null) as { view: ControllerView | null; permissionsGranted: boolean } | null;
+        .catch(() => null) as { view: ControllerView | null; submitView?: SubmitView | null;
+                                permissionsGranted: boolean } | null;
     app.innerHTML = `
       <p>Paired &#x2713;</p>
+      <div id="submit">${renderSubmitView(state?.submitView ?? null)}</div>
       <div id="fill">${renderFillView(state?.view ?? null, state?.permissionsGranted ?? false)}</div>
     `;
+    document.getElementById("cancel-submit")?.addEventListener("click", async () => {
+      if (tab?.id !== undefined) await chrome.runtime.sendMessage({ type: "submit_cancel", tabId: tab.id });
+      await render();
+    });
     document.getElementById("enable-fill")?.addEventListener("click", async () => {
       // Requested from the popup: a user gesture is required (spec §10.1).
       await chrome.permissions.request({ permissions: ["tabs", "webNavigation"] });

@@ -176,6 +176,8 @@ def human_pre_click_commit(conn, *, settings: Settings, run_id: str, grant_id: s
         run = f.get_run(conn, run_id)
         if any(verification.get(k) != run[k] for k in _CONTEXT_KEYS):
             return refuse("context_mismatch")
+        if verification.get("local_refusal"):  # a proof only the extension can make failed (spec §10 step 1)
+            return refuse(str(verification["local_refusal"]).lower())
         if verification.get("challenge_visible"):
             return refuse("challenge_before_submit", "CHALLENGE_BEFORE_SUBMIT")
         try:

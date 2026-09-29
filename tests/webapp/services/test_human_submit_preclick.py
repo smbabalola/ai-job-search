@@ -162,3 +162,15 @@ def test_cancel_after_dispatch_is_refused(filled_world):
 def test_the_autonomous_pre_click_stays_closed(filled_world):
     with pytest.raises(SubmissionNotAvailable):
         pre_click_commit(filled_world.conn, settings=filled_world.settings, grant_id="any", verification={}, now=NOW)
+
+
+@pytest.mark.parametrize("local", ["DETECTION_OBSERVED", "QUARANTINE_NOT_VERIFIED", "SIBLING_EMPLOYER_CONTEXT_OPEN",
+                                   "SUBMIT_CONTROL_MISSING"])
+def test_a_local_proof_failure_from_the_extension_refuses_and_revokes(filled_world, local):
+    auth = authorized(filled_world)
+    with pytest.raises(hs.SubmitRefused, match=local.lower()):
+        pre_click(filled_world, auth, local_refusal=local)
+    grant = get_grant(filled_world.conn, auth["grant_id"])
+    assert grant["status"] == "REVOKED" and grant["revoked_reason"] == f"pre_click:{local.lower()}"
+    assert [e["event"] for e in sp.submit_events(filled_world.conn, auth["authorization_id"])] == ["PRE_CLICK_REFUSED"]
+    assert intents(filled_world) == []

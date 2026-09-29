@@ -20,6 +20,7 @@ import {
   detectCertifiedAdapter, fillPermissionsGranted, fillViewFor, registerFillListeners, routeFillDetection,
   startFillRun,
 } from "./fill-wiring";
+import { cancelSubmit, submitViewFor } from "./submit-wiring";
 
 // 6D-B Task 2 test hook: compiled only into the FILL_TEST_HOOKS build
 // (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
@@ -172,8 +173,12 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   if (typed?.type === "fill_state" && typeof typed.tabId === "number" && !sender.tab) {
     const tabId = typed.tabId;
     void fillPermissionsGranted().then((permissionsGranted) => sendResponse({ view: fillViewFor(tabId),
-      permissionsGranted }));
+      submitView: submitViewFor(tabId), permissionsGranted }));
     return true;
+  }
+  if (typed?.type === "submit_cancel" && typeof typed.tabId === "number" && !sender.tab) {
+    sendResponse({ cancelled: cancelSubmit(typed.tabId) });
+    return;
   }
   if (typed?.type === "fill_detection") {
     routeFillDetection(message as { runId?: unknown; kind?: unknown; detail?: unknown }, sender);

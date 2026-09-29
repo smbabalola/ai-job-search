@@ -77,6 +77,13 @@ function install(): void {
       return detectSignals(document, cert, { ...context, url: location.href,
         rootPresent: adapterFor(adapterId).applicationRoot(document) !== null });
     },
+    watchSubmitContent(adapterId) {
+      detections?.watchContent(adapterFor(adapterId).applicationRoot(document) ?? document);
+    },
+    contentChanged: () => detections?.contentChanged() ?? false,
+    allowSubmit() {
+      detections?.allowNextSubmit();
+    },
   };
   scope[FILL_PAGE_KEY] = api;
 }

@@ -24,4 +24,7 @@ export interface FillPageApi {
   findSubmitControl(certificationId: string, fingerprint: string): Promise<boolean>;
   clickSubmit(certificationId: string, fingerprint: string): Promise<"CLICKED" | "SUBMIT_CONTROL_MISSING">;
   signals(adapterId: string, certificationId: string, context: { boundUrl: string; confirmationUrl: string }): Signals;
+  watchSubmitContent(adapterId: string): void;
+  contentChanged(): boolean;
+  allowSubmit(): void;
 }
