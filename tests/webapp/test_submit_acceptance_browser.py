@@ -70,15 +70,18 @@ def test_an_employer_validation_error_is_a_proven_failure(submit_harness):
     assert [r[0] for r in released] == ["RELEASED"]
 
 
-def test_a_client_side_block_sends_nothing_and_is_a_proven_failure(submit_harness):
+def test_a_client_side_block_sends_nothing_and_stays_unclear_without_proof(submit_harness):
+    # Nothing left the browser (the recording server proves it), but the
+    # extension cannot prove that: matched-rule feedback is not reliable
+    # evidence of absence, so the honest outcome is SUBMISSION_AMBIGUOUS.
     h = submit_harness("client_block")
     h.filled()
     h.authorize(h.ready())
     status = h.wait_status({"SUBMITTED", "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED"}, timeout=150)
-    assert status["status"] == "SUBMISSION_FAILED"
+    assert status["status"] == "SUBMISSION_UNCLEAR"
     [attempt] = h.attempts()
     result = sp.get_submission_result(h.w.conn, attempt["id"])["result"]
-    assert (result["proven_not_submitted"], result["reason"]) == (True, "NO_SUBMIT_REQUEST_LEFT")
+    assert (result["proven_not_submitted"], result["matched_rules_available"]) == (False, False)
     assert h.submit_posts() == []
 
 
@@ -87,7 +90,10 @@ def test_no_signal_is_ambiguous_and_the_user_resolves_it(submit_harness):
     h.filled()
     h.authorize(h.ready())
     status = h.wait_status({"SUBMITTED", "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED"}, timeout=150)
-    assert status["status"] == "SUBMISSION_UNCLEAR"
+    [attempt] = h.attempts()
+    result = sp.get_submission_result(h.w.conn, attempt["id"])
+    r = result["result"] if result else {}
+    assert status["status"] == "SUBMISSION_UNCLEAR", (r.get("reason"), r.get("matched_rule_ids"), r.get("matched_rules_available"), h.recorder.requests)
     assert h.submit_posts() == [SUBMIT_POST]  # it left; nothing proved the outcome
     r = h.http.post(f"/api/workspaces/{h.w.ws}/submit/attempts/{status['attempt_id']}/resolve",
                     json={"submitted": False})

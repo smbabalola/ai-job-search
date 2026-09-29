@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from product.submit_constants import MATCHED_ALLOW_RULES_REPORTED
 from tests.webapp.services.submit_fixtures import (  # noqa: F401
     NOW, SEC, V2_ACCOUNT, filled_world, grant_world, review_observation, v2_chain,
 )
@@ -94,12 +93,6 @@ def test_an_employer_validation_error_is_a_proven_failure_and_releases_the_inten
         ("SUBMISSION_FAILED", True, "EMPLOYER_VALIDATION_ERROR")
     assert intents(filled_world) == [("HUMAN_AUTHORIZED", "RELEASED")]
     assert status(filled_world)["status"] == "SUBMISSION_FAILED"
-
-
-@pytest.mark.skipif(not MATCHED_ALLOW_RULES_REPORTED, reason="S-E2 fallback")
-def test_no_e1_match_with_feedback_is_a_proven_failure(filled_world):
-    _, attempt = dispatched(filled_world)
-    assert report(filled_world, attempt, matched_rule_ids=[])["reason"] == "NO_SUBMIT_REQUEST_LEFT"
 
 
 def test_nothing_observed_is_ambiguous_and_the_user_resolves_it_both_ways(filled_world):
@@ -198,3 +191,20 @@ def test_the_stored_result_has_no_cleartext(filled_world):
     report(filled_world, attempt, success_observed=True)
     raw = filled_world.conn.execute("SELECT result_json FROM submission_results").fetchone()[0]
     assert "1 month" not in raw and "ada@example.com" not in raw
+
+
+def test_matched_rule_feedback_is_never_proof_that_nothing_left(filled_world):
+    """Browser finding (6E-A Task 16): Chrome drops a tab's matched-rule record
+    when a main-frame form POST does not commit a navigation (e.g. a 204), so
+    an empty match list does not prove the submit request stayed in the
+    browser. Such an outcome is SUBMISSION_AMBIGUOUS, never a proven failure."""
+    _, attempt = dispatched(filled_world)
+    out = report(filled_world, attempt, matched_rule_ids=[], matched_rules_available=True)
+    assert (out["state"], out["proven_not_submitted"]) == ("SUBMISSION_AMBIGUOUS", False)
+
+
+def test_no_click_after_the_egress_opened_is_not_proven_by_matched_rules(filled_world):
+    _, attempt = dispatched(filled_world)
+    out = report(filled_world, attempt, click_performed=False, matched_rule_ids=[], matched_rules_available=True,
+                 cause="SUBMIT_CONTROL_MISSING")
+    assert (out["state"], out["proven_not_submitted"]) == ("SUBMISSION_AMBIGUOUS", False)

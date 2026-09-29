@@ -12,3 +12,19 @@ These were run on fixtures in Playwright's Chromium 131.0.6778.33, with `--headl
 The recording server logged exactly `POST submit:acme/123` then `GET confirm:acme/123`, and nothing else.
 
 The spikes needed no spike bundle. The test-hook build's service worker calls `chrome.declarativeNetRequest` and `chrome.scripting.executeScript({world: "ISOLATED"})` directly, which are the same APIs production uses.
+
+## Acceptance finding (Task 16): S-E2 is not reliable evidence of absence
+
+The browser acceptance run `test_no_signal_is_ambiguous_and_the_user_resolves_it` found a gap:
+- A native main-frame form POST reached the employer (the recording server logged `POST submit:acme/123`).
+- The server answered 204, so no navigation committed.
+- Afterwards, `getMatchedRules({tabId})` returned **no** matches while still reporting itself available.
+
+Chrome evidently drops the tab's matched-rule record when a main-frame request does not commit. The spike's XHR case and the happy path's committed navigation both did report 9201.
+
+An empty match list therefore proves nothing. The spec §21 S-E2 fallback applies:
+- `MATCHED_ALLOW_RULES_REPORTED = False`, in both languages.
+- §11.2 rule 5, and the matched-rule branch of rule 1, never fire.
+- Such outcomes are `SUBMISSION_AMBIGUOUS`, and the user resolves them.
+
+The `declarativeNetRequestFeedback` permission is **kept**. Matched ids stay in `submission-result.v1` as informational evidence for the person resolving an unclear attempt, and are never treated as proof. This departs from the fallback's "drop the permission" wording and is recorded as a ruling.

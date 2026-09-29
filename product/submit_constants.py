@@ -17,8 +17,12 @@ SUBMIT_RESULT_POLL = timedelta(milliseconds=250)
 CHALLENGE_HANDOFF_WINDOW = timedelta(seconds=300)
 DISPATCH_RESULT_TIMEOUT = timedelta(seconds=360)
 
-# Spike outcomes (docs/superpowers/notes/2026-09-29-6e-a-spike-results.md):
-# S-E2 getMatchedRules reports allow-rule matches; S-E4 a navigation
-# confirmation page is observable after re-injection.
-MATCHED_ALLOW_RULES_REPORTED = True
+# Spike outcomes (docs/superpowers/notes/2026-09-29-6e-a-spike-results.md).
+# S-E2: getMatchedRules reports an XHR submit's allow-rule match, but the
+# browser acceptance suite showed Chrome drops a tab's record when a
+# main-frame form POST does not commit a navigation (e.g. a 204). An empty
+# list therefore proves nothing: the §21 fallback applies and matched-rule
+# feedback is informational evidence only, never proof of non-submission.
+# S-E4: a navigation confirmation page is observable after re-injection.
+MATCHED_ALLOW_RULES_REPORTED = False
 NAVIGATION_SUCCESS_OBSERVABLE = True
