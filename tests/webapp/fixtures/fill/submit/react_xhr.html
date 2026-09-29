@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>6E-A spike: React onSubmit XHR</title></head>
+<body>
+<!-- 6E-A S-E1/S-E3b fixture: a React-controlled form whose onSubmit sends an
+     XHR POST to the application path, then swaps in the confirmation. -->
+<div id="root"></div>
+<script src="../vendor/react-18.3.1.production.min.js"></script>
+<script src="../vendor/react-dom-18.3.1.production.min.js"></script>
+<script>
+  const h = React.createElement;
+  function App() {
+    const [name, setName] = React.useState("Ada");
+    const [done, setDone] = React.useState(false);
+    if (done) return h("div", { id: "application_confirmation" }, "Thank you for applying");
+    const onSubmit = (e) => {
+      e.preventDefault();
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/acme/jobs/123");
+      xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+      xhr.onload = () => { if (xhr.status === 200) setDone(true); };
+      xhr.send(JSON.stringify({ first_name: name }));
+    };
+    return h("form", { id: "application_form", onSubmit },
+      h("label", { htmlFor: "first_name" }, "First name"),
+      h("input", { id: "first_name", value: name, onChange: (e) => setName(e.target.value) }),
+      h("button", { type: "submit", id: "submit_app" }, "Submit application"));
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+  window.__probe = {
+    other_post() { fetch("/acme/jobs/999", { method: "POST", body: "x" }).catch(() => {}); },
+    third_party_image() { const img = new Image(); img.src = "http://127.0.0.1:8431/leak.gif?d=1"; },
+  };
+</script>
+</body>
+</html>

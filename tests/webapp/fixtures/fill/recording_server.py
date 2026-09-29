@@ -41,7 +41,7 @@ class Recorder:
 
 def build_app(recorder: Recorder):
     from starlette.applications import Starlette
-    from starlette.responses import Response
+    from starlette.responses import HTMLResponse, RedirectResponse, Response
     from starlette.routing import Mount, Route
     from starlette.staticfiles import StaticFiles
 
@@ -52,8 +52,26 @@ def build_app(recorder: Recorder):
         media = "application/javascript" if probe.endswith(".js") else "text/plain"
         return Response("/* recorded */" if media.endswith("javascript") else "ok", media_type=media)
 
+    async def submit(request):
+        # 6E-A: an employer application endpoint. A native form POST gets
+        # 303 to the confirmation page; an XHR gets 200 JSON.
+        tenant, job = request.path_params["tenant"], request.path_params["job"]
+        await request.body()
+        recorder.hit(request.method, f"submit:{tenant}/{job}")
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return Response('{"ok": true}', media_type="application/json")
+        return RedirectResponse(f"/{tenant}/jobs/{job}/confirmation", status_code=303)
+
+    async def confirmation(request):
+        tenant, job = request.path_params["tenant"], request.path_params["job"]
+        recorder.hit(request.method, f"confirm:{tenant}/{job}")
+        return HTMLResponse('<!doctype html><title>Confirmation</title>'
+                            '<div id="application_confirmation">Thank you for applying</div>')
+
     return Starlette(routes=[
         Route("/record/{probe:path}", record, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]),
+        Route("/{tenant}/jobs/{job}", submit, methods=["POST"]),
+        Route("/{tenant}/jobs/{job}/confirmation", confirmation, methods=["GET"]),
         Mount("/", app=StaticFiles(directory=str(FIXTURES))),
     ])
 
