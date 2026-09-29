@@ -17,6 +17,8 @@ from webapp.persistence import review_approval as ra
 from webapp.persistence.workspaces import get_workspace
 from webapp.services import fill_plans, review_approval
 from webapp.services.fill_results import fill_summary
+from webapp.services import submit_review
+from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
 
 router = APIRouter(tags=["review"])
@@ -94,3 +96,60 @@ def fill_plan_page(workspace_id: str, request: Request, conn: sqlite3.Connection
     return request.app.state.templates.TemplateResponse(request, "fill_plan.html", {
         "ws": workspace_id, "workspace": workspace, "observation_id": observation["id"] if observation else None,
         "plan": view, "fill_status": status})
+
+
+SUBMIT_REASON_WORDS = {
+    "no_filled_run": "Fill the application in the employer tab first.",
+    "lease_expired": "The employer tab is no longer connected. Open the job page again and fill it.",
+    "already_authorized": "This filled version has already been authorized.",
+    "post_fill_change": "The employer page changed after filling. Close that tab and fill again in a fresh one.",
+    "observation_missing": "Couldn't read the employer tab. Keep it open and reload this page.",
+    "observation_stale": "Couldn't read the employer tab. Keep it open and reload this page.",
+    "submit_control_not_unique": "The employer page's submit button couldn't be identified exactly.",
+    "page_changed_since_fill": "The employer page no longer matches what was filled.",
+    "approval_not_effective": "The application's approval is no longer effective.",
+    "plan_mismatch": "The fill plan changed since it was filled.",
+    "adapter_not_submit_certified": "Submission isn't supported for this site.",
+    "adapter_not_live_certified": "Live submission for Greenhouse isn't certified yet.",
+    "human_submit_disabled": "Submission is turned off for this deployment.",
+    "kill_switch": "Automation is halted (kill switch).",
+    "duplicate": "This job has already been submitted, or is being submitted.",
+    "paused": "Automation is paused for this application.",
+    "stale_binding": "Something changed since this review; reload the page.",
+}
+
+
+@router.get("/workspaces/{workspace_id}/submit", response_class=HTMLResponse)
+def submit_review_page(workspace_id: str, request: Request, observed: int = 0,
+                       conn: sqlite3.Connection = Depends(get_conn),
+                       scope: AccountScope = Depends(get_account_scope)):
+    """6E-A Submit Review (spec §16.1). The first load asks the extension for
+    a fresh look at the employer tab and waits for it; the page then renders
+    ONE snapshot and its review hash, which the single "Submit application"
+    act carries. The exact rendered values come from the fill-plan
+    presentation only when its plan hash equals the snapshot's."""
+    workspace = get_workspace(conn, workspace_id, account_id=scope.account_id)
+    if workspace is None or workspace.get("kind") != "job":
+        raise HTTPException(status_code=404, detail="not found")
+    settings = request.app.state.settings
+    now = _now()
+    if not observed:
+        submit_review.request_reobservation(conn, account_id=scope.account_id, application_workspace_id=workspace_id,
+                                            now=now)
+    review = submit_review.current_review(conn, settings=settings, account_id=scope.account_id,
+                                          application_workspace_id=workspace_id, now=now)
+    status = submission_status(conn, settings=settings, account_id=scope.account_id,
+                               application_workspace_id=workspace_id, now=now)
+    rows = []
+    snapshot = review["snapshot"]
+    observation = fill_store.latest_workspace_observation(conn, workspace_id, "INITIAL")
+    if snapshot is not None and observation is not None:
+        view = fill_plans.fill_plan_presentation(conn, settings=settings, account_id=scope.account_id,
+                                                 application_workspace_id=workspace_id,
+                                                 observation_id=observation["id"], now=now)
+        if view.get("displayed_plan_hash") == snapshot["fill"]["plan_hash"]:
+            rows = view["rows"]
+    reasons = [SUBMIT_REASON_WORDS.get(r, r.replace("_", " ")) for r in review["reasons"]]
+    return request.app.state.templates.TemplateResponse(request, "submit_review.html", {
+        "ws": workspace_id, "workspace": workspace, "review": review, "reasons": reasons, "rows": rows,
+        "status": status})

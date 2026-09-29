@@ -41,6 +41,13 @@
     {% if run.result_hash %} · result <code>{{ run.result_hash }}</code>{% endif %}
   </div></article>{% else %}<p>No fill runs yet.</p>{% endfor %}
 </section>
+<section class="panel" data-dossier-section="submission"><div class="panel-heading"><h2>Submission</h2></div>
+  {% if dossier.submission and dossier.submission.status and dossier.submission.status.label %}<p data-submission-status="{{ dossier.submission.status.status }}">{{ dossier.submission.status.label }}</p>{% endif %}
+  {% for a in (dossier.submission.attempts if dossier.submission else []) %}<article class="evidence-row" data-submit-attempt="{{ a.id }}"><div>
+    <code>{{ a.id }}</code> · {{ a.created_at }} · {{ a.state }}{% if a.reason %} ({{ a.reason }}){% endif %}
+    · review <code>{{ a.review_hash }}</code>{% if a.result_hash %} · result <code>{{ a.result_hash }}</code>{% endif %}
+  </div></article>{% else %}<p>No submission attempts.</p>{% endfor %}
+</section>
 <section class="panel" data-dossier-section="attempt-history"><div class="panel-heading"><h2>Attempt history (observational)</h2></div>
   <p>A record of what ran; it never decides what runs next.</p>
   {% for a in dossier.attempt_history_observational %}<article class="evidence-row"><div>

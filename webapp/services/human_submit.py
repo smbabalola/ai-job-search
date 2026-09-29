@@ -382,6 +382,22 @@ def resolve(conn, *, account_id: str, attempt_id: str, submitted: bool, actor: s
         raise SubmitRefused("not_found") from exc
 
 
+SUBMISSION_LABELS = {
+    "SUBMIT_READY": "Ready to submit: open Submit review",
+    "SUBMITTING": "Submitting…",
+    "CHALLENGE_WAITING": "Verification needed on the employer tab",
+    "SUBMITTED": "Submitted (the employer's confirmation was seen)",
+    "SUBMISSION_UNCLEAR": "Submission outcome unclear: record what happened",
+    "SUBMISSION_FAILED": "Not submitted",
+}
+
+
+def _status(status: str, *, attempt_id: str | None = None, authorization_id: str | None = None,
+            reason: str | None = None) -> dict[str, Any]:
+    return {"status": status, "label": SUBMISSION_LABELS.get(status), "attempt_id": attempt_id,
+            "authorization_id": authorization_id, "reason": reason}
+
+
 _STATUS = {"AUTHORIZED": "SUBMITTING", "CLICK_DISPATCHED": "SUBMITTING", "CONFIRMED_SUCCESS": "SUBMITTED",
            "SUBMISSION_AMBIGUOUS": "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED": "SUBMISSION_FAILED"}
 
@@ -395,25 +411,25 @@ def submission_status(conn, *, settings: Settings, account_id: str, application_
     latest = attempts[-1] if attempts else None
     if latest is not None and latest["state"] in _STATUS:
         status = _STATUS[latest["state"]]
+        auth = sp.authorization_for_grant(conn, latest["grant_id"])
         if status == "SUBMITTING":
-            auth = sp.authorization_for_grant(conn, latest["grant_id"])
             kinds = [e["event"] for e in sp.submit_events(conn, auth["id"])
                      if e["event"] in ("CHALLENGE_DETECTED", "CHALLENGE_CLEARED")]
             if kinds and kinds[-1] == "CHALLENGE_DETECTED":
                 status = "CHALLENGE_WAITING"
-        return {"status": status, "attempt_id": latest["id"], "reason": None}
+        return _status(status, attempt_id=latest["id"], authorization_id=auth["id"] if auth else None)
     run = filled_run(conn, application_workspace_id)
     if run is None or run["account_id"] != account_id:
-        return {"status": "NOT_READY", "attempt_id": None, "reason": "no_filled_run"}
+        return _status("NOT_READY", reason="no_filled_run")
     auth = sp.authorization_for_run(conn, run["id"])
     if auth is not None:
         grant = get_grant(conn, auth["grant_id"])
         if grant["status"] == "ISSUED" and parse_utc(grant["expires_at"]) > now:
-            return {"status": "SUBMITTING", "attempt_id": None, "reason": None}
-        return {"status": "NOT_READY", "attempt_id": None, "reason": "authorization_used"}
+            return _status("SUBMITTING", authorization_id=auth["id"])
+        return _status("NOT_READY", authorization_id=auth["id"], reason="authorization_used")
     if not _lease_live(conn, run["id"], now):
-        return {"status": "NOT_READY", "attempt_id": None, "reason": "lease_expired"}
-    return {"status": "SUBMIT_READY", "attempt_id": None, "reason": None}
+        return _status("NOT_READY", reason="lease_expired")
+    return _status("SUBMIT_READY")
 
 
 def pending_authorization(conn, run_id: str, now: datetime) -> dict[str, Any] | None:

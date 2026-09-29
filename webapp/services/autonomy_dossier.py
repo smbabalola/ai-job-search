@@ -160,7 +160,29 @@ def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_work
     dossier["current_state_derived"] = state
     dossier["approvals"] = _approvals_section(conn, ws)
     dossier["fill"] = _fill_section(conn, settings=settings, account_id=account_id, ws=ws)
+    dossier["submission"] = _submission_section(conn, settings=settings, account_id=account_id, ws=ws)
     return dossier
+
+
+def _submission_section(conn, *, settings, account_id: str, ws: str) -> dict[str, Any]:
+    """6E-A (spec §16.2): the submission status and every attempt with its
+    submission-result.v1 summary (hashes and states only, no cleartext)."""
+    from datetime import datetime, timezone
+    from webapp.persistence import submit as sp
+    from webapp.services.human_submit import submission_status
+    attempts = []
+    for attempt in reversed(sp.attempts_for_application(conn, ws)):
+        auth = sp.authorization_for_grant(conn, attempt["grant_id"])
+        if auth is None or auth["account_id"] != account_id:
+            continue
+        result = sp.get_submission_result(conn, attempt["id"])
+        attempts.append({"id": attempt["id"], "created_at": attempt["created_at"], "state": attempt["state"],
+                         "review_hash": auth["review_hash"],
+                         "reason": result["result"]["reason"] if result else None,
+                         "result_hash": result["result_hash"] if result else None})
+    status = submission_status(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                               now=datetime.now(timezone.utc)) if settings is not None else None
+    return {"status": status, "attempts": attempts}
 
 
 def _fill_section(conn, *, settings, account_id: str, ws: str) -> dict[str, Any]:
