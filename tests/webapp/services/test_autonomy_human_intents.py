@@ -125,6 +125,7 @@ def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_human_intent_backfill", noop)
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_prepare", noop)  # 018 did not exist pre-6B either
     monkeypatch.setattr(migrations_module, "_migrate_review_approval", noop)  # nor 019
+    monkeypatch.setattr(migrations_module, "_migrate_human_submit", noop)  # nor 021 (rebuilds 016's intents)
     monkeypatch.setattr(workflow_module, "record_human_intent", lambda *a, **k: None)  # pre-6B: no hook
     init_db(db)
     c = connect(db)
