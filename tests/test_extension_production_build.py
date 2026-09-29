@@ -96,3 +96,6 @@ def test_production_build_has_no_test_hook_or_spike_artifact():
     manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["optional_permissions"] == ["tabs", "webNavigation"]
     assert manifest["host_permissions"] == ["http://127.0.0.1:8420/*"]
+    # 6E-A: declarativeNetRequestFeedback (getMatchedRules evidence, spike S-E2) is the only addition.
+    assert manifest["permissions"] == ["storage", "activeTab", "scripting", "declarativeNetRequest",
+                                       "declarativeNetRequestFeedback"]
