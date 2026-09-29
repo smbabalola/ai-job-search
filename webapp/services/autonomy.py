@@ -53,7 +53,7 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from product.autonomy_contract import (
-    CLICK_DISPATCH_TTL, ENGINE_VERSION, FILL_SESSION_TTL, SUBMIT_GRANT_TTL, AuthorizationContext,
+    CLICK_DISPATCH_TTL, ENGINE_VERSION, FILL_SESSION_TTL, SUBMIT_GRANT_TTL, AuthorityKind, AuthorizationContext,
     AuthorizationDecision, Capability, Mode, canonical_json, parse_utc, to_utc_iso,
 )
 from product.autonomy_gate import evaluate_authorization
@@ -182,7 +182,13 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None,
-                  in_transaction: bool = False) -> GrantOutcome:
+                  in_transaction: bool = False, authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                  extra_binding: Mapping[str, Any] | None = None,
+                  submit_origin: str | None = None) -> GrantOutcome:
+    """authority=HUMAN_SUBMIT (6E-A §8.3) is reached only through
+    request_human_submit_grant: no autonomy run is required and no autonomous
+    budget is reserved; extra_binding carries the human authorization."""
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     if stage not in (Capability.FILL, Capability.SUBMIT):
         raise ValueError("grants exist only for FILL and SUBMIT")
     if fill_manifest is None:
@@ -191,13 +197,14 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
 
     def work():
         _check_not_paused(conn, account_id=account_id, application_workspace_id=application_workspace_id)
-        if stage == Capability.SUBMIT:
+        if stage == Capability.SUBMIT and not human:
             _require_active_run(conn, account_id=account_id, run_id=run_id)
         sentinel = _observe_sentinel_in_transaction(conn, settings=settings, account_id=account_id, now=now)
         ctx = build_context(conn, settings=settings, account_id=account_id,
                             application_workspace_id=application_workspace_id, requested_stage=stage,
                             mode=Mode.LIVE, now=now, sentinel_present=sentinel, requirements=requirements,
-                            observation=observation, run_id=run_id, cost_estimates=cost_estimates)
+                            observation=observation, run_id=run_id, cost_estimates=cost_estimates,
+                            authority=authority, submit_origin=submit_origin)
         decision = evaluate_authorization(ctx)
         row = insert_decision(conn, ctx=ctx, decision=decision, commit=False)
         if not decision.grantable:
@@ -207,8 +214,9 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                                                        account_id=account_id)
         grant = insert_grant(conn, decision_id=row["id"], account_id=account_id,
                              application_workspace_id=application_workspace_id, stage=stage,
-                             binding=build_binding(ctx, stage=stage, fill_manifest=fill_manifest,
-                                                   observation=observation, target_url=target_url),
+                             binding={**build_binding(ctx, stage=stage, fill_manifest=fill_manifest,
+                                                     observation=observation, target_url=target_url),
+                                      **(extra_binding or {})},
                              issued_at=now, expires_at=now + ttl, commit=False)
         if stage == Capability.FILL:
             day, _ = day_window(now, ctx.standing_policy["timezone"])
@@ -216,7 +224,7 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                                    limit=ctx.standing_policy["limits"]["fill_per_day"], now=now, grant_id=grant["id"])
             if reserved is None:  # impossible under BEGIN IMMEDIATE unless the gate is wrong
                 raise RuntimeError("fill_per_day reservation failed after an ALLOW decision")
-        for budget in ctx.budgets:
+        for budget in () if human else ctx.budgets:
             key = day_window(now, ctx.standing_policy["timezone"])[0] if budget.window == "day" else application_workspace_id
             reserve_budget(conn, account_id=account_id, counter_name=f"budget:{budget.category}:{budget.window}",
                            window_key=key, amount=budget.estimate, grant_id=grant["id"], now=now)
@@ -452,6 +460,26 @@ def request_grant(conn, *, settings: Settings, account_id: str, application_work
                                application_workspace_id=application_workspace_id, stage=stage, now=now,
                                fill_manifest=fill_manifest, requirements=requirements, observation=observation,
                                run_id=run_id, cost_estimates=cost_estimates, in_transaction=in_transaction)
+
+
+def request_human_submit_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                               authorization_id: str, review_hash: str, fill_manifest: dict,
+                               observation: ApplyTargetObservation, submit_origin: str,
+                               now: datetime) -> GrantOutcome:
+    """6E-A §8.3: the ONLY entry point that issues a SUBMIT grant. It runs the
+    unchanged 6B grant engine under HUMAN_SUBMIT authority, inside the
+    caller's BEGIN IMMEDIATE transaction -- the one that inserts the human
+    authorization this grant names (J1). The autonomous request_grant(SUBMIT)
+    keeps refusing."""
+    if not conn.in_transaction:
+        raise RuntimeError("request_human_submit_grant runs inside the authorization transaction")
+    return _request_grant_core(conn, settings=settings, account_id=account_id,
+                               application_workspace_id=application_workspace_id, stage=Capability.SUBMIT, now=now,
+                               fill_manifest=fill_manifest, observation=observation, in_transaction=True,
+                               authority=AuthorityKind.HUMAN_SUBMIT, submit_origin=submit_origin,
+                               extra_binding={"authority": AuthorityKind.HUMAN_SUBMIT.value,
+                                              "human_authorization_id": authorization_id,
+                                              "review_hash": review_hash})
 
 
 def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
