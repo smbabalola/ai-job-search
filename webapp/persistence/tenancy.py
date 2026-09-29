@@ -9,8 +9,9 @@ is missing here, so every new table must be classified when it is created.
 ``owner`` is either the name of the column holding the account id, a
 ``(parent_table, column)`` pair meaning ``column`` references
 ``parent_table.id`` (or ``(parent_table, column, parent_key)`` when the
-parent is keyed by another column), or ``"GLOBAL"`` for rows owned by no
-account.
+parent is keyed by another column), ``("USER", column)`` for rows keyed by a
+user (reached through that user's account membership), or ``"GLOBAL"`` for
+rows owned by no account.
 """
 from __future__ import annotations
 
@@ -143,6 +144,19 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "autonomy_candidate_exceptions": A,
     "autonomy_candidate_exception_resolutions": TableSpec(("autonomy_candidate_exceptions", "exception_id")),
     "autonomy_candidate_promotions": _sws("search_workspace_id"),
+    # identity (Bundle 7, 023_identity)
+    "users": TableSpec(("USER", "id"), purge="PSEUDONYMIZE",
+                       pseudonymize=("email_normalized", "email_display", "display_name")),
+    "user_identities": _internal(("USER", "user_id")),
+    "account_memberships": A,
+    "web_sessions": _internal(("USER", "user_id")),
+    "email_tokens": _internal(("USER", "user_id")),
+    "staff_totp": _internal(("USER", "user_id")),
+    "platform_role_assignments": TableSpec(("USER", "user_id"), purge="RETAIN", retain_class="SECURITY_AUDIT",
+                                           export=False),
+    "legal_acceptances": TableSpec(("USER", "user_id"), purge="RETAIN", retain_class="CONSENT_PROOF"),
+    "legal_documents": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    "rate_limit_buckets": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     # global
     "schema_migrations": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "discovery_source_settings": TableSpec("GLOBAL", purge="GLOBAL", export=False),
@@ -164,6 +178,9 @@ def owner_chain(table: str) -> list[tuple[str, str, str]]:
         if isinstance(owner, str):
             chain.append((current, owner, ""))
             return chain
+        if owner[0] == "USER":
+            chain.append((current, owner[1], "USER"))
+            return chain
         parent, column, *key = owner
         chain.append((current, column, key[0] if key else "id"))
         current = parent
@@ -179,7 +196,11 @@ def account_rows_sql(table: str) -> tuple[str, list[str]]:
     for i in range(1, len(chain)):
         parent_key = chain[i - 1][2]
         sql += f' JOIN "{chain[i][0]}" {aliases[i]} ON {aliases[i]}."{parent_key}" = {aliases[i - 1]}."{chain[i - 1][1]}"'
-    sql += f' WHERE {aliases[-1]}."{chain[-1][1]}" = ?'
+    if chain[-1][2] == "USER":  # user-keyed rows: through the user's account membership
+        sql += (f' JOIN account_memberships m ON m.user_id = {aliases[-1]}."{chain[-1][1]}"'
+                " WHERE m.account_id = ?")
+    else:
+        sql += f' WHERE {aliases[-1]}."{chain[-1][1]}" = ?'
     return sql, [link[0] for link in chain]
 
 

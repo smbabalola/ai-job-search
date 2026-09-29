@@ -64,6 +64,7 @@ def create_search_workspace(
     search_workspace_id: str | None = None,
     copy_profile_from: str | None = None,
     account_id: str,
+    commit: bool = True,
 ) -> dict[str, Any]:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -105,7 +106,8 @@ def create_search_workspace(
                 now,
             ),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_search_workspace(conn, workspace_id, account_id=account_id)
 
 
