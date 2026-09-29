@@ -24,9 +24,14 @@ function anyVisible(doc: Document, selectors: readonly string[]): boolean {
   return selectors.some((sel) => [...doc.querySelectorAll(sel)].some(isVisible));
 }
 
+function path(url: string): string {
+  return url.split("#")[0].split("?")[0];
+}
+
+// The same document path, ignoring query and fragment on BOTH sides (the
+// authorized canonical URL may carry a query string).
 function onUrl(url: string, target: string): boolean {
-  const withoutQuery = url.split("#")[0].split("?")[0];
-  return withoutQuery === target;
+  return path(url) === path(target);
 }
 
 export function detectSignals(doc: Document, cert: SubmitCertification, ctx: SignalContext): Signals {

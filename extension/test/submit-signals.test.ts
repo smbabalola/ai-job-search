@@ -30,6 +30,12 @@ describe("submit signals (6E-A spec §11.1, §12.1)", () => {
     expect(signals(doc('<div id="application_confirmation">Thanks</div>'), BOUND, false).success).toBe(true);
   });
 
+  it("a query string on the bound URL or the page URL does not defeat the match", () => {
+    const d = doc('<div id="application_confirmation">Thanks</div>');
+    expect(detectSignals(d, GREENHOUSE_SUBMIT, { url: BOUND + "?s=xhr", boundUrl: BOUND + "?s=xhr",
+      confirmationUrl: CONFIRM, rootPresent: false }).success).toBe(true);
+  });
+
   it("no success while the form is still there, or on another URL", () => {
     expect(signals(doc('<form id="application_form"></form><div id="application_confirmation"></div>'), BOUND, true)
       .success).toBe(false);

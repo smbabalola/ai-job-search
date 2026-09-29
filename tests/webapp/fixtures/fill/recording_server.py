@@ -41,7 +41,7 @@ class Recorder:
 
 def build_app(recorder: Recorder):
     from starlette.applications import Starlette
-    from starlette.responses import HTMLResponse, RedirectResponse, Response
+    from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
     from starlette.routing import Mount, Route
     from starlette.staticfiles import StaticFiles
 
@@ -53,13 +53,26 @@ def build_app(recorder: Recorder):
         return Response("/* recorded */" if media.endswith("javascript") else "ok", media_type=media)
 
     async def submit(request):
-        # 6E-A: an employer application endpoint. A native form POST gets
-        # 303 to the confirmation page; an XHR gets 200 JSON.
+        # 6E-A: a Greenhouse-shaped application URL. GET serves the
+        # application page (not recorded); POST is the submission (recorded):
+        # an XHR gets 200 JSON, a native form POST gets 303 to the
+        # confirmation page -- unless the page's scenario cookie asks for an
+        # employer validation error (the form again, with #error_explanation)
+        # or no signal at all (204: the browser stays on the page).
         tenant, job = request.path_params["tenant"], request.path_params["job"]
+        if request.method == "GET":
+            return FileResponse(FIXTURES / "submit" / "apply.html")
         await request.body()
         recorder.hit(request.method, f"submit:{tenant}/{job}")
+        scenario = request.cookies.get("s", "")
         if request.headers.get("x-requested-with") == "XMLHttpRequest":
             return Response('{"ok": true}', media_type="application/json")
+        if scenario == "validation_error":
+            page = (FIXTURES / "submit" / "apply.html").read_text(encoding="utf-8")
+            return HTMLResponse(page.replace("<body>", '<body><div id="error_explanation" '
+                                             'style="display:block">Please fix the errors below.</div>', 1))
+        if scenario == "no_signal":
+            return Response(status_code=204)
         return RedirectResponse(f"/{tenant}/jobs/{job}/confirmation", status_code=303)
 
     async def confirmation(request):
@@ -70,7 +83,7 @@ def build_app(recorder: Recorder):
 
     return Starlette(routes=[
         Route("/record/{probe:path}", record, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]),
-        Route("/{tenant}/jobs/{job}", submit, methods=["POST"]),
+        Route("/{tenant}/jobs/{job}", submit, methods=["GET", "POST"]),
         Route("/{tenant}/jobs/{job}/confirmation", confirmation, methods=["GET"]),
         Mount("/", app=StaticFiles(directory=str(FIXTURES))),
     ])
