@@ -129,10 +129,11 @@ class WebSocketRecorder:
 
 
 class RunningServer:
-    def __init__(self, recorder: Recorder):
+    def __init__(self, recorder: Recorder, port: int = PORT):
         import uvicorn
         self.recorder = recorder
-        self.server = uvicorn.Server(uvicorn.Config(build_app(recorder), host="127.0.0.1", port=PORT,
+        self.port = port
+        self.server = uvicorn.Server(uvicorn.Config(build_app(recorder), host="127.0.0.1", port=port,
                                                     log_level="warning", access_log=False))
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 
@@ -142,7 +143,7 @@ class RunningServer:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
-                with socket.create_connection(("127.0.0.1", PORT), timeout=0.25):
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.25):
                     return self
             except OSError:
                 time.sleep(0.05)

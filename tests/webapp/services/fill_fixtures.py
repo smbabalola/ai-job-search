@@ -59,7 +59,7 @@ def store_observation(world, doc, *, run_id=None, phase="INITIAL"):
     return row
 
 
-def _prepare(w, *, gate_ready=False):
+def _prepare(w, *, gate_ready=False, target=TARGET, store=True):
     from webapp.services import review_answers as rv
     add_contact_claim(w, "email", "ada@example.com")
     blocker(w.conn, w.ws, "employment.notice_period", "What is your notice period?")
@@ -68,17 +68,17 @@ def _prepare(w, *, gate_ready=False):
                     answer_key="subject:employment.notice_period", value="1 month", reach=Reach.APPLICATION,
                     actor="u", now=NOW)
     if gate_ready:
-        _make_6b_ready(w)
+        _make_6b_ready(w, target)
     rv.set_field_disposition(w.conn, settings=w.settings, account_id=V2_ACCOUNT, application_workspace_id=w.ws,
                              answer_key="contact:email", disposition="ANSWER", actor="u", now=NOW)
     w.make_approvable()
     w.approve()
     assert w.state().approval_effective
-    obs = store_observation(w, observation_doc())
+    obs = store_observation(w, observation_doc()) if store else None
     return SimpleNamespace(world=w, conn=w.conn, ws=w.ws, settings=w.settings, observation=obs)
 
 
-def _make_6b_ready(w):
+def _make_6b_ready(w, target=TARGET):
     """The 6B facts a FILL grant needs, through production paths: the
     governing blocker resolved, an application identity, and FILL authority
     (policy + account and workspace ceilings)."""
@@ -92,7 +92,7 @@ def _make_6b_ready(w):
             resolve_blocker(w.conn, workspace_id=w.ws, blocker_id=b["id"], request_id=f"r_{b['id']}",
                             answer_value="1 month", answer_scope="APPLICATION_ONLY", resolved_by="u")
     save_application_identity(w.conn, application_workspace_id=w.ws, source_record={
-        "source": "greenhouse", "source_record_id": "123", "source_url": TARGET, "company": "Acme",
+        "source": "greenhouse", "source_record_id": "123", "source_url": target, "company": "Acme",
         "title": "Engineer", "location": "London"})
     w.conn.commit()
     enable_autonomous_preparation(w.conn, account_id=V2_ACCOUNT, actor="u", timezone="Europe/London", now=NOW)
@@ -104,14 +104,14 @@ def _make_6b_ready(w):
 SEARCH_WS = "sw_fill"
 
 
-def patch_6b_external_reads(monkeypatch):
+def patch_6b_external_reads(monkeypatch, target=TARGET):
     """As the 6B suites do: discovery origin, ATS URL provenance and pack
     staleness have their own suites and are fixed here."""
     from webapp.services import autonomy_context
     from webapp.services.workspace_view import ApplyTarget
     monkeypatch.setattr(autonomy_context, "get_search_workspace_for_application", lambda c, w: SEARCH_WS)
     monkeypatch.setattr(autonomy_context, "resolve_apply_target",
-                        lambda c, workspace_id, account_id: ApplyTarget(url=TARGET, provenance="discovery_verified"))
+                        lambda c, workspace_id, account_id: ApplyTarget(url=target, provenance="discovery_verified"))
     monkeypatch.setattr(autonomy_context, "pack_readiness", lambda c, **kw: ("art_pack", True))
 
 

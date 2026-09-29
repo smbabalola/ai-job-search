@@ -25,7 +25,17 @@ import {
 // (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
 // whole branch is removed at build time.
 if (__FILL_TEST_HOOKS__) {
-  (globalThis as unknown as Record<string, unknown>).__fillTest = { ...fillQuarantine, checkSiblingContainment };
+  // The browser acceptance suite starts runs here: automated Chrome cannot
+  // click the toolbar action (the user gesture behind activeTab).
+  (globalThis as unknown as Record<string, unknown>).__fillTest = {
+    ...fillQuarantine, checkSiblingContainment,
+    startFill: (tabId: number, sessionId: string, sessionToken: string, adapterId: string) => {
+      const pending = startFillRun(tabId, { sessionId, sessionToken }, adapterId);
+      void pending.catch(() => undefined);
+      return true;
+    },
+    fillView: (tabId: number) => fillViewFor(tabId),
+  };
 }
 
 const BASE_URL = "http://127.0.0.1:8420";

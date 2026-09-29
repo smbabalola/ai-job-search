@@ -14,6 +14,9 @@ export type Report = (kind: DetectionKind, detail: Record<string, unknown>) => v
 
 export interface DetectionHandle {
   enablePostFill(root: Node): void;
+  // Every kind recorded so far, in order: the controller polls it before each
+  // step, so a stop never depends on the async message arriving first.
+  reported(): DetectionKind[];
   dispose(): void;
 }
 
@@ -21,9 +24,11 @@ const URL_POLL_MS = 250;
 
 export function installDetections(win: Window, report: Report): DetectionHandle {
   const reported = new Set<DetectionKind>();
+  const order: DetectionKind[] = [];
   const once = (kind: DetectionKind, detail: Record<string, unknown>) => {
     if (reported.has(kind)) return;
     reported.add(kind);
+    order.push(kind);
     report(kind, detail);
   };
   const onSubmit = (event: Event) => {
@@ -45,6 +50,7 @@ export function installDetections(win: Window, report: Report): DetectionHandle 
   const poll = win.setInterval(onUrl, URL_POLL_MS);
   let post: MutationObserver | null = null;
   return {
+    reported: () => [...order],
     enablePostFill(root: Node) {
       if (post) return;
       const Observer = (win as unknown as { MutationObserver: typeof MutationObserver }).MutationObserver;

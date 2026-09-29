@@ -16,5 +16,6 @@ export interface FillPageApi {
   execute(adapterId: string, action: PlanAction, envelope: Envelope | null,
           attachment: AttachmentPayload | null): Promise<ActionOutcome>;
   installDetections(runId: string): void;
+  detected(): string[];
   enablePostFill(adapterId: string): void;
 }

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.webapp.fixtures.fill.certify import uncontained_channels
+from tests.webapp.fixtures.fill.extension_worker import extension_worker
 from tests.webapp.fixtures.fill.recording_server import PORT, Recorder, RunningServer
 
 ROOT = Path(__file__).parents[2]
@@ -62,11 +63,7 @@ def context(playwright, tmp_path, recorder):
 
 def _worker(ctx):
     """The EXTENSION's service worker (the probe page registers its own)."""
-    for worker in ctx.service_workers:
-        if worker.url.startswith("chrome-extension://"):
-            return worker
-    return ctx.wait_for_event("serviceworker", predicate=lambda w: w.url.startswith("chrome-extension://"),
-                              timeout=15_000)  # extension SW start-up is slow under load on Windows
+    return extension_worker(ctx, HOOK_BUILD)
 
 
 def _tab_id(worker, url_part: str) -> int:

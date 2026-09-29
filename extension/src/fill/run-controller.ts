@@ -27,6 +27,7 @@ export interface PagePort {
   observe(): Promise<ObservationV1>;
   execute(action: PlanAction, envelope: Envelope | null, attachment: LocalDocument | null): Promise<ActionOutcome>;
   installDetections(runId: string): Promise<void>;
+  detected(): Promise<string[]>;
   enablePostFill(): Promise<void>;
 }
 
@@ -95,6 +96,17 @@ const TERMINAL: Record<string, Phase> = {
   FILLED_AWAITING_SUBMISSION: "FILLED", FILLED_CONTEXT_UNVERIFIED: "STOPPED",
 };
 
+// A new run may start in a tab only if no quarantine is installed for it
+// and no earlier run there got past planning. Replacing a tab's TOTAL rules
+// with PRELOAD would let the still-filled page send GETs before the reset
+// reload; so a quarantined or filled tab is never re-run in place: the only
+// exit is closing it and opening the job page fresh (spec §10.7, §16.4).
+export function mayStartOnTab(previousPhase: Phase | null, tabHasFillRules: boolean): boolean {
+  if (tabHasFillRules) return false;
+  return previousPhase === null || previousPhase === "NEEDS_REVIEW" || previousPhase === "UNSUPPORTED"
+    || previousPhase === "STOPPED";
+}
+
 // The spec §11.3 a value-state expectations, checked locally before every
 // intent (the server re-checks the same PRE_ACTION observation).
 export function localValueProblem(obs: ObservationV1, actions: PlanStatusAction[], completed: Set<number>,
@@ -126,6 +138,7 @@ export class FillRunController {
   // Set when a detection or a closed tab ended the run server-side: the
   // controller stops at the next step and never touches the DOM again.
   private aborted: ControllerView | null = null;
+  private readonly forwarded = new Set<string>();
   private readonly timers: Timers;
 
   constructor(private readonly ports: FillPorts, private readonly context: RunContext,
@@ -230,8 +243,9 @@ export class FillRunController {
       this.follow(await server.quarantine(runId, "LOST", null));
     }
     await server.quarantine(runId, "PRELOAD_INSTALLED", preload);
-    await browser.setBadge("Q");
     await browser.reloadAndWait();
+    // After the reload: Chrome clears a tab's badge on navigation.
+    await browser.setBadge("Q");
     await server.quarantine(runId, "RELOADED", preload);
     await this.waitForRoot();
     const revalidation = await server.observation(runId, "REVALIDATION", await page.observe());
@@ -254,7 +268,7 @@ export class FillRunController {
       this.set({ progress: { done: index + 1, total: actions.length } });
     }
     // 7. final validation
-    this.checkAborted();
+    await this.pollDetections();
     this.follow(await server.final(runId, await page.observe()));
     this.end("STOPPED", "UNEXPECTED_FINAL_STATE");
   }
@@ -276,10 +290,16 @@ export class FillRunController {
     if (this.aborted) throw new RunEnded(this.aborted);
   }
 
+  // Detections the page recorded but whose message may not have arrived yet.
+  private async pollDetections(): Promise<void> {
+    for (const kind of await this.ports.page.detected()) await this.onDetection(kind, { via: "poll" });
+    this.checkAborted();
+  }
+
   private async act(runId: string, index: number, action: PlanStatusAction, actions: PlanStatusAction[],
                     completed: Set<number>, rulesetHash: string): Promise<void> {
     const { server, page, quarantine, browser, store } = this.ports;
-    this.checkAborted();
+    await this.pollDetections();
     // a. local pre-check
     const contained = await browser.siblingsContained();
     const rulesetOk = await quarantine.verify(rulesetHash);
@@ -340,9 +360,15 @@ export class FillRunController {
   }
 
   async onDetection(kind: string, detail: Record<string, unknown>): Promise<void> {
-    if (!this.view.runId) return;
+    if (!this.view.runId || this.forwarded.has(kind)) return;
+    this.forwarded.add(kind);
     const result = await this.ports.server.detection(this.view.runId, kind, detail).catch(() => null);
-    if (result && TERMINAL[result.state] && this.view.phase !== "FILLED") {
+    // Evidence is always forwarded; only a run still in progress can be ended
+    // by it. A run that already ended keeps the reason it ended with (the
+    // server answers an ended run with its state only).
+    const inProgress = this.view.phase === "OBSERVING" || this.view.phase === "PREPARING"
+      || this.view.phase === "FILLING";
+    if (result && TERMINAL[result.state] && inProgress) {
       this.abort(TERMINAL[result.state], (result.reason as string | null) ?? null);
     }
   }

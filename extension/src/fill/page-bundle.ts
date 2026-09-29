@@ -27,7 +27,10 @@ function install(): void {
       return adapter ? { adapterId: adapter.id, adapterVersion: adapter.adapterVersion } : null;
     },
     rootPresent: (adapterId) => adapterFor(adapterId).applicationRoot(document) !== null,
-    observe: (adapterId, context) => observe(document, adapterFor(adapterId), context),
+    // The page's actual current URL, never the one remembered at start: a
+    // history or URL change is then a §13 target change in the observation.
+    observe: (adapterId, context) => observe(document, adapterFor(adapterId),
+      { ...context, canonicalUrl: location.href, origin: location.origin }),
     execute: (adapterId, action, envelope, attachment) => {
       const file = attachment
         ? new File([Uint8Array.from(attachment.bytes)], attachment.filename, { type: attachment.mediaType })
@@ -40,6 +43,7 @@ function install(): void {
         void chrome.runtime.sendMessage({ type: "fill_detection", runId, kind, detail });
       });
     },
+    detected: () => detections?.reported() ?? [],
     enablePostFill(adapterId) {
       detections?.enablePostFill(adapterFor(adapterId).applicationRoot(document) ?? document);
     },

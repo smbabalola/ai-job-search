@@ -7,7 +7,7 @@ import { installRuleset, removeRuleset, verifyRuleset } from "../fill/quarantine
 import { checkSiblingContainment, SAFE_FILL_OPTIONAL_PERMISSIONS } from "../fill/siblings";
 import { FILL_PAGE_KEY, type FillPageApi } from "../fill/page-api";
 import {
-  FillRunController, recoverAfterRestart, type ControllerView, type FillPorts, type PhaseStore,
+  FillRunController, mayStartOnTab, recoverAfterRestart, type ControllerView, type FillPorts, type PhaseStore,
 } from "../fill/run-controller";
 import { HttpFillServer, type LocalDocument } from "../fill/server";
 import { isOpenerCreated } from "../fill/detections";
@@ -110,6 +110,12 @@ function pagePort(tabId: number, adapterId: string, canonicalUrl: string, origin
         func: (key: string, id: string) => ((globalThis as unknown as Record<string, FillPageApi>)[key]).installDetections(id),
         args: [FILL_PAGE_KEY, runId] });
     },
+    async detected() {
+      const [{ result }] = await chrome.scripting.executeScript({ target: { tabId },
+        func: (key: string) => ((globalThis as unknown as Record<string, FillPageApi>)[key]).detected(),
+        args: [FILL_PAGE_KEY] });
+      return (result as string[] | undefined) ?? [];
+    },
     async enablePostFill() {
       await chrome.scripting.executeScript({ target: { tabId },
         func: (key: string, id: string) => ((globalThis as unknown as Record<string, FillPageApi>)[key]).enablePostFill(id),
@@ -167,8 +173,19 @@ function browserPort(tabId: number, origin: string): FillPorts["browser"] {
   };
 }
 
+async function tabHasFillRules(tabId: number): Promise<boolean> {
+  const rules = await chrome.declarativeNetRequest.getSessionRules();
+  return rules.some((rule) => FILL_RULE_ID_SET.has(rule.id) && (rule.condition.tabIds ?? []).includes(tabId));
+}
+
 export async function startFillRun(tabId: number, session: FillSession, adapterId: string): Promise<ControllerView> {
-  if (controllers.has(tabId)) return controllers.get(tabId)!.view;
+  const previous = controllers.get(tabId);
+  if (!mayStartOnTab(previous?.view.phase ?? null, await tabHasFillRules(tabId))) {
+    const refused: ControllerView = previous?.view ?? { phase: "STOPPED", runId: null,
+      reason: "QUARANTINED_TAB_CLOSE_IT", detail: {}, progress: null };
+    views.set(tabId, refused);
+    return refused;
+  }
   const tab = await chrome.tabs.get(tabId);
   const url = new URL(tab.url!);
   const ids = await identity();

@@ -59,6 +59,7 @@ class World {
   duringIntent: (index: number) => Promise<void> = async () => {};
   executeThrowsAt: number | null = null;
   filled = false;
+  deliverMessages = true;  // false: the page's detection message is lost / arrives late
 
   constructor() {
     this.dom = new JSDOM(readFileSync(path.join(here, "fixtures", "fill-greenhouse.html"), "utf-8"), { url: URL_ });
@@ -185,9 +186,10 @@ class World {
         async installDetections(runId: string) {
           world.detections = installDetections(world.dom.window as unknown as Window, (kind, detail) => {
             world.calls.push(["page-detected", kind, runId]);
-            void world.controller.onDetection(kind, detail);
+            if (world.deliverMessages) void world.controller.onDetection(kind, detail);
           });
         },
+        async detected() { return world.detections?.reported() ?? []; },
         async enablePostFill() { world.calls.push(["enablePostFill"]); },
       },
       quarantine: {
@@ -237,7 +239,7 @@ describe("the run controller (spec §11.1)", () => {
       .toEqual(["OBSERVING", "PREPARING", "FILLING", "FILLED"]);
     const names = w.names();
     expect(names.slice(0, 11)).toEqual(["startRun", "observation:INITIAL", "install:PRELOAD",
-      "quarantine:PRELOAD_INSTALLED", "badge", "reload", "quarantine:RELOADED", "observation:REVALIDATION",
+      "quarantine:PRELOAD_INSTALLED", "reload", "badge", "quarantine:RELOADED", "observation:REVALIDATION",
       "install:TOTAL", "quarantine:TOTAL_VERIFIED", "grant"]);
     expect(names.filter((n) => n === "intent")).toHaveLength(5);
     expect(names.slice(-3)).toEqual(["outcome", "final", "enablePostFill"]);
@@ -382,6 +384,32 @@ describe("detections", () => {
     expect(w.value("notice")).toBe("");
   });
 
+  it("a detection whose message never arrives still stops the run at the next step", async () => {
+    const w = new World();
+    w.deliverMessages = false;
+    w.afterOutcome = (index) => {
+      if (index !== 0) return;
+      const form = w.document.getElementById("application_form") as HTMLFormElement;
+      form.dispatchEvent(new w.dom.window.Event("submit", { bubbles: true, cancelable: true }));
+    };
+    expect(await w.run()).toMatchObject({ phase: "STOPPED", reason: "SUBMIT_ATTEMPT_OBSERVED" });
+    expect(w.executes).toBe(1);
+    expect(w.calls.filter((c) => c[0] === "detection")).toEqual([["detection", "SUBMIT_ATTEMPT_OBSERVED"]]);
+  });
+
+  it("a late detection never overwrites how a finished run ended", async () => {
+    const w = new World();
+    w.refuseIntentAt = 1;  // the run ends STOPPED(AUTHORITY_REDUCED) ...
+    await w.run();
+    const server = w.ports().server;
+    // ... then the page's detection message arrives; for an ended run the
+    // server answers with its state only (no reason).
+    server.detection = async () => ({ state: "FILL_STOPPED" });
+    (w.controller as unknown as { ports: { server: FillServer } }).ports.server = server;
+    await w.controller.onDetection("NAVIGATION_ATTEMPT_OBSERVED", {});
+    expect(w.controller.view).toMatchObject({ phase: "STOPPED", reason: "AUTHORITY_REDUCED" });
+  });
+
   it("heartbeats on the pinned interval while the run is live", async () => {
     const w = new World();
     const ticks: { fn: () => void; ms: number }[] = [];
@@ -445,5 +473,18 @@ describe("the popup (spec §16.3)", () => {
     expect(renderFillView({ phase: "STOPPED", runId: "r", reason: "<img src=x>", detail: {}, progress: null }, true))
       .not.toContain("<img");
     expect(renderFillView(null, false)).toContain("Enable safe FILL");
+  });
+});
+
+describe("a new run on the same tab (spec §10.7, §16.4)", () => {
+  it("is refused while the tab still holds a quarantine: the only exit is closing it", async () => {
+    const { mayStartOnTab } = await import("../src/fill/run-controller");
+    expect(mayStartOnTab(null, true)).toBe(false);          // fill rules still installed for this tab
+    expect(mayStartOnTab("FILLED", false)).toBe(false);     // a filled page is never re-run in place
+    expect(mayStartOnTab("FILLING", false)).toBe(false);    // a live run
+    expect(mayStartOnTab(null, false)).toBe(true);
+    expect(mayStartOnTab("NEEDS_REVIEW", false)).toBe(true); // ended before any quarantine
+    expect(mayStartOnTab("UNSUPPORTED", false)).toBe(true);
+    expect(mayStartOnTab("STOPPED", false)).toBe(true);
   });
 });

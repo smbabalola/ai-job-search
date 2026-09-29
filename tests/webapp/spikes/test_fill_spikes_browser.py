@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.webapp.fixtures.fill.extension_worker import extension_worker
+
 ROOT = Path(__file__).parents[3]
 EXTENSION_ROOT = ROOT / "extension"
 BUILD_ROOT = EXTENSION_ROOT / "dist" / "extension"
@@ -143,8 +145,7 @@ def extension_context(playwright, tmp_path):
 
 
 def _worker(context):
-    return context.service_workers[0] if context.service_workers else \
-        context.wait_for_event("serviceworker", timeout=5_000)
+    return extension_worker(context, BUILD_ROOT)
 
 
 def _docx() -> bytes:

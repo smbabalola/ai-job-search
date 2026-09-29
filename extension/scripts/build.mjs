@@ -73,6 +73,9 @@ export async function buildExtension() {
   if (testHooks) {
     const testManifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
     testManifest.permissions = [...testManifest.permissions, ...(testManifest.optional_permissions ?? [])];
+    // The browser acceptance suite's employer fixture origin: stands in for
+    // the activeTab grant a real toolbar click gives (6D-B Task 16).
+    testManifest.host_permissions = [...testManifest.host_permissions, "http://localhost:8430/*"];
     delete testManifest.optional_permissions;
     await writeFile(resolve(outputRoot, "manifest.json"), JSON.stringify(testManifest, null, 2));
   }
