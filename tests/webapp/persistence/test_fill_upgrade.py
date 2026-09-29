@@ -4,8 +4,9 @@ master@8b28c57 (6D-A merged) code, holding 6D-A approvals, deltas, review
 events, dispositions and approved answers, upgrades to 020_fill with every
 6D-A row and trigger byte-identical, FK/integrity clean and a re-run a no-op.
 
-The 8b28c57 archive is required: unlike the older upgrade test this one does
-not skip (a skipped proof is not a proof)."""
+The upgrade test skips only when 8b28c57 is genuinely absent from the clone
+(a shallow CI checkout); any other git failure, or a present commit whose
+archive or upgrade fails, still fails the test."""
 from __future__ import annotations
 
 import io
@@ -98,7 +99,14 @@ def test_fresh_database_gets_twenty_migrations_and_a_rerun_is_a_noop(tmp_path):
 
 @pytest.fixture
 def base_db(tmp_path):
-    archive = subprocess.run(["git", "archive", BASE, "webapp", "product"], cwd=REPO, capture_output=True)
+    # --verify --quiet exits 1 (no output) only when the object is missing;
+    # anything else non-zero (not a repo, git broken) is a real failure.
+    present = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{BASE}^{{commit}}"], cwd=REPO,
+                             capture_output=True, text=True)
+    if present.returncode == 1:
+        pytest.skip(f"{BASE} is not in this clone (shallow checkout); the upgrade proof needs full history")
+    assert present.returncode == 0, f"git rev-parse failed: {present.stderr[:200]}"
+    archive =subprocess.run(["git", "archive", BASE, "webapp", "product"], cwd=REPO, capture_output=True)
     assert archive.returncode == 0, f"{BASE} must be in this clone: {archive.stderr.decode()[:200]}"
     root = tmp_path / "base"
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
