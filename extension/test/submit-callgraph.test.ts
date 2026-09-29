@@ -32,3 +32,19 @@ describe("one SUBMIT_CLICK (6E-A spec E13)", () => {
     expect([...files_].filter((f) => !allowed.has(f))).toEqual([]);
   });
 });
+
+describe("the one-shot pass is armed only around the one click (6E-A condition)", () => {
+  it("clickSubmit arms, clicks and disarms in a finally, and nothing else arms it", () => {
+    const source = readFileSync(path.join(SRC, "fill", "page-bundle.ts"), "utf-8");
+    const body = source.slice(source.indexOf("async clickSubmit("), source.indexOf("signals(adapterId"));
+    const arm = body.indexOf("allowNextSubmit()");
+    const click = body.indexOf("submitClick(el)");
+    const disarm = body.indexOf("disarmSubmit()");
+    expect(arm).toBeGreaterThan(body.indexOf("SUBMIT_CONTROL_MISSING"));  // only once the bound control exists
+    expect(arm).toBeLessThan(click);
+    expect(click).toBeLessThan(disarm);
+    expect(body.slice(click, disarm)).toContain("finally");
+    const armers = identifierRefs("allowNextSubmit").filter((r) => !r.startsWith("fill/detections.ts"));
+    expect(armers).toEqual(["fill/page-bundle.ts#install>clickSubmit"]);
+  });
+});

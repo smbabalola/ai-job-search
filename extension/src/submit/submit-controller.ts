@@ -44,7 +44,6 @@ export interface SubmitPagePort {
   detected(): Promise<string[]>;
   watchContent(): Promise<void>;
   contentChanged(): Promise<boolean>;
-  allowSubmit(): Promise<void>;
   findSubmitControl(certificationId: string, fingerprint: string): Promise<boolean>;
   clickSubmit(certificationId: string, fingerprint: string): Promise<"CLICKED" | "SUBMIT_CONTROL_MISSING">;
   signals(certificationId: string, context: { boundUrl: string; confirmationUrl: string })
@@ -234,7 +233,6 @@ export class SubmitController {
     }
     // 7. the one click
     await store.set(this.key, { ...record, phase: "CLICKED" });
-    await page.allowSubmit();
     const clicked = await page.clickSubmit(auth.certification_id, auth.expected.submit_control_fingerprint)
       .catch(() => "SUBMIT_CONTROL_MISSING" as const);
     if (clicked !== "CLICKED") {
@@ -244,7 +242,7 @@ export class SubmitController {
     }
     await this.event(attemptId, "CLICK_PERFORMED");
     // 8. bounded watch
-    return this.finish(auth, record, await this.watch(auth, attemptId), true);
+    return this.finish(auth, record, await this.watch(auth, attemptId, egressHash), true);
   }
 
   private signalContext(auth: AuthorizationDirective) {
@@ -258,7 +256,7 @@ export class SubmitController {
     return { success: false, failure: false, content: true, cause: "CONTENT_CHANGED" };
   }
 
-  private async watch(auth: AuthorizationDirective, attemptId: string): Promise<WatchOutcome> {
+  private async watch(auth: AuthorizationDirective, attemptId: string, egressHash: string): Promise<WatchOutcome> {
     const { page, browser } = this.ports;
     const pollMs = this.ports.timing?.pollMs ?? SUBMIT_RESULT_POLL_MS;
     let deadline = browser.now() + (this.ports.timing?.windowMs ?? SUBMIT_RESULT_WINDOW_MS);
@@ -291,15 +289,24 @@ export class SubmitController {
         challenge = false;
         await this.event(attemptId, "CHALLENGE_CLEARED");
         this.set("SUBMITTING", null);
-        // The mandatory re-observation (spec §12.2): the form, if still
-        // there, must be exactly the authorized one.
+        // A full fresh revalidation before continuing (spec §12.2): the
+        // SUBMIT egress is still exactly the certified one, and the form,
+        // if still there, is exactly the authorized one -- by the local
+        // fingerprint AND the server's comparison. Anything else, or an
+        // unreachable server, restores TOTAL and stops.
+        if (!(await this.ports.egress.verify(egressHash).catch(() => false))) {
+          await this.event(attemptId, "EGRESS_VERIFY_FAILED", { stage: "challenge_cleared" });
+          await this.ports.egress.restoreTotal(auth.expected.ruleset_hash).catch(() => false);
+          return { success: false, failure: false, content: false, cause: "QUARANTINE_CHANGED" };
+        }
         if (signals.rootPresent) {
-          const observation = await page.observe();
-          await this.ports.server.observation(this.ctx.runId, "CHALLENGE_CLEARED", observation, attemptId)
-            .catch(() => undefined);
-          if (await observationFingerprint(observation) !== auth.expected.observation_fingerprint) {
-            return this.contentChangedStop(auth, attemptId);
-          }
+          const observation = await page.observe().catch(() => null);
+          const local = observation !== null
+            && await observationFingerprint(observation) === auth.expected.observation_fingerprint;
+          const server = observation !== null && await this.ports.server
+            .observation(this.ctx.runId, "CHALLENGE_CLEARED", observation, attemptId)
+            .then((r) => (r as { matches_review?: unknown }).matches_review === true, () => false);
+          if (!local || !server) return this.contentChangedStop(auth, attemptId);
         }
       }
     }

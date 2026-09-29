@@ -46,3 +46,13 @@ describe("6E-A additions to the 6D-B page guards (spec E13, §10 step 7)", () =>
     expect(handle.contentChanged()).toBe(false);
   });
 });
+
+describe("the one-shot pass is disarmed explicitly too (6E-A condition: disarm on any failure)", () => {
+  it("disarmSubmit cancels an armed allowance that no submit consumed", () => {
+    const { doc, handle, reports } = page();
+    handle.allowNextSubmit();
+    handle.disarmSubmit();
+    expect(submit(doc).defaultPrevented).toBe(true);
+    expect(reports).toEqual(["SUBMIT_ATTEMPT_OBSERVED"]);
+  });
+});

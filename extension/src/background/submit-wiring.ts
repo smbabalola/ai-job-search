@@ -57,8 +57,6 @@ function pagePort(b: SubmitBinding): SubmitPagePort {
       (globalThis as unknown as Api)[key].watchSubmitContent(id), [FILL_PAGE_KEY, b.adapterId]),
     contentChanged: () => inPage(tabId, (key: string) => (globalThis as unknown as Api)[key].contentChanged(),
       [FILL_PAGE_KEY]),
-    allowSubmit: () => inPage(tabId, (key: string) => (globalThis as unknown as Api)[key].allowSubmit(),
-      [FILL_PAGE_KEY]),
     findSubmitControl: (certificationId, fingerprint) => inPage(tabId, (key: string, c: string, f: string) =>
       (globalThis as unknown as Api)[key].findSubmitControl(c, f), [FILL_PAGE_KEY, certificationId, fingerprint]),
     clickSubmit: (certificationId, fingerprint) => inPage(tabId, (key: string, c: string, f: string) =>

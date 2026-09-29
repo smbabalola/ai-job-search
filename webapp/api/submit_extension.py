@@ -81,7 +81,8 @@ def post_submit_observation(session_id: str, run_id: str, body: SubmitObservatio
     row = call(lambda: sr.record_submit_observation(conn, settings=request.app.state.settings, run_id=run_id, phase=body.phase,
                                                     attempt_id=body.attempt_id, observation=body.observation,
                                                     now=_now()))
-    return {"observation_id": row["id"], "observation_fingerprint": row["observation_fingerprint"]}
+    return {"observation_id": row["id"], "observation_fingerprint": row["observation_fingerprint"],
+            "matches_review": row.get("matches_review")}
 
 
 @router.post("/runs/{run_id}/submit/pre-click")

@@ -105,19 +105,25 @@ def record_submit_observation(conn, *, settings: Settings, run_id: str, phase: s
         run = f.get_run(conn, run_id)
         if run is None:
             raise SubmitRefused("run_not_found")
-        authorized = sp.authorization_for_run(conn, run_id) is not None
+        authorization = sp.authorization_for_run(conn, run_id)
         if phase == "REVIEW":
             if current_state(conn, run_id) != FILLED:
                 raise SubmitRefused("unexpected_phase")
-            if authorized:
+            if authorization is not None:
                 raise SubmitRefused("already_authorized")
-        elif not authorized:
+        elif authorization is None:
             raise SubmitRefused("not_authorized")
-        return sp.insert_submit_observation(
+        row = sp.insert_submit_observation(
             conn, account_id=run["account_id"], application_workspace_id=run["application_workspace_id"],
             fill_run_id=run_id, attempt_id=attempt_id, phase=phase,
             structure_fingerprint=structure_fingerprint(observation),
             observation_fingerprint=observation_fingerprint(observation), observation=observation, now=now)
+        if authorization is not None:
+            # Revalidation (spec §12.2): is the page still exactly the
+            # authorized one? The controller continues only on True.
+            row["matches_review"] = (row["observation_fingerprint"]
+                                     == authorization["review"]["observation"]["observation_fingerprint"])
+        return row
     return run_immediate(conn, work)
 
 

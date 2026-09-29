@@ -68,7 +68,15 @@ function install(): void {
     async clickSubmit(certificationId, fingerprint) {
       const el = await boundSubmitControl(certificationId, fingerprint);
       if (el === null) return "SUBMIT_CONTROL_MISSING";
-      submitClick(el);
+      // The one-shot pass through the 6D-B submit guard covers exactly this
+      // click: a submit button's submit event fires synchronously inside
+      // click(), and the pass is disarmed on every path afterwards.
+      detections?.allowNextSubmit();
+      try {
+        submitClick(el);
+      } finally {
+        detections?.disarmSubmit();
+      }
       return "CLICKED";
     },
     signals(adapterId, certificationId, context) {
@@ -81,9 +89,6 @@ function install(): void {
       detections?.watchContent(adapterFor(adapterId).applicationRoot(document) ?? document);
     },
     contentChanged: () => detections?.contentChanged() ?? false,
-    allowSubmit() {
-      detections?.allowNextSubmit();
-    },
   };
   scope[FILL_PAGE_KEY] = api;
 }

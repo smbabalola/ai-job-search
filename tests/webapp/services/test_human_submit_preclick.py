@@ -174,3 +174,21 @@ def test_a_local_proof_failure_from_the_extension_refuses_and_revokes(filled_wor
     assert grant["status"] == "REVOKED" and grant["revoked_reason"] == f"pre_click:{local.lower()}"
     assert [e["event"] for e in sp.submit_events(filled_world.conn, auth["authorization_id"])] == ["PRE_CLICK_REFUSED"]
     assert intents(filled_world) == []
+
+
+def test_a_challenge_cleared_observation_is_revalidated_against_the_authorized_review(filled_world):
+    from webapp.services import submit_review as sr
+    auth = authorized(filled_world)
+    same = sr.record_submit_observation(filled_world.conn, settings=filled_world.settings, run_id=filled_world.run["id"],
+                                        phase="CHALLENGE_CLEARED", attempt_id=None,
+                                        observation=review_observation(filled_world), now=NOW + SEC)
+    assert same["matches_review"] is True
+    doc = review_observation(filled_world)
+    for e in doc["elements"]:
+        if e["page_field_key"] == "gh:notice":
+            e["value_state"] = {"state": "NONBLANK", "current_value_hash": "sha256:" + "9" * 64}
+    changed = sr.record_submit_observation(filled_world.conn, settings=filled_world.settings,
+                                           run_id=filled_world.run["id"], phase="CHALLENGE_CLEARED",
+                                           attempt_id=None, observation=doc, now=NOW + 2 * SEC)
+    assert changed["matches_review"] is False
+    assert auth["authorization_id"]

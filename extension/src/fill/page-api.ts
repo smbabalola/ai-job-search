@@ -26,5 +26,4 @@ export interface FillPageApi {
   signals(adapterId: string, certificationId: string, context: { boundUrl: string; confirmationUrl: string }): Signals;
   watchSubmitContent(adapterId: string): void;
   contentChanged(): boolean;
-  allowSubmit(): void;
 }

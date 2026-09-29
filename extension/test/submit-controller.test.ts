@@ -50,6 +50,8 @@ interface World {
   siblings: boolean;
   matched: { available: boolean; ids: number[] };
   preClickBodies: Record<string, unknown>[];
+  serverMatches: boolean;        // the server's revalidation of a CHALLENGE_CLEARED observation
+  verifyEgressAfterClick: boolean;
 }
 
 function world(overrides: Partial<World> = {}): World {
@@ -59,7 +61,7 @@ function world(overrides: Partial<World> = {}): World {
     calls: [], store: new Map(), signals: [{ success: true, rootPresent: false }], observations: [OBS], results: [],
     preClick: async () => ({ attempt_id: "att_1" }), dispatch: true, verifyTotal: true, verifyEgress: true,
     controlFound: true, clickResult: "CLICKED", contentChangedAt: null, restored: true, detected: [], siblings: true,
-    matched: { available: true, ids: [9201] }, preClickBodies: [],
+    matched: { available: true, ids: [9201] }, preClickBodies: [], serverMatches: true, verifyEgressAfterClick: true,
     ports: undefined as unknown as SubmitPorts, ...overrides,
   };
   const log = (c: string) => { w.calls.push(c); };
@@ -71,7 +73,10 @@ function world(overrides: Partial<World> = {}): World {
   };
   w.ports = {
     server: {
-      async observation(_run, phase) { log(`observation:${phase}`); return {}; },
+      async observation(_run, phase) {
+        log(`observation:${phase}`);
+        return phase === "CHALLENGE_CLEARED" ? { matches_review: w.serverMatches } : {};
+      },
       async preClick(_run, body) { log("preClick"); w.preClickBodies.push(body as never); return w.preClick(); },
       async dispatch() { log("dispatch"); return { dispatched: w.dispatch }; },
       async event(_run, _att, event) { log(`event:${event}`); return {}; },
@@ -89,7 +94,6 @@ function world(overrides: Partial<World> = {}): World {
       async detected() { return w.detected; },
       async watchContent() { log("watchContent"); },
       async contentChanged() { return w.contentChangedAt !== null && polls >= w.contentChangedAt; },
-      async allowSubmit() { log("allowSubmit"); },
       async findSubmitControl() { return w.controlFound; },
       async clickSubmit() { log("clickSubmit"); return w.clickResult; },
       async signals() {
@@ -101,7 +105,10 @@ function world(overrides: Partial<World> = {}): World {
     egress: {
       async verifyTotal() { log("verifyTotal"); return w.verifyTotal; },
       async install() { log("install"); return "sha256:egress"; },
-      async verify() { log("verifyEgress"); return w.verifyEgress; },
+      async verify() {
+        log("verifyEgress");
+        return w.calls.includes("clickSubmit") ? w.verifyEgressAfterClick : w.verifyEgress;
+      },
       async restoreTotal() { log("restoreTotal"); return w.restored; },
       async matched() { log("matched"); return w.matched; },
     },
@@ -132,7 +139,7 @@ describe("SubmitController (6E-A spec §10)", () => {
     expect(view.phase).toBe("SUBMITTED");
     expect(w.calls.filter((c) => !c.startsWith("event:") && c !== "observe")).toEqual([
       "watchContent", "verifyTotal", "preClick", "store.set:DISPATCHING", "dispatch", "store.set:DISPATCHED_ACK",
-      "install", "verifyEgress", "store.set:CLICKED", "allowSubmit", "clickSubmit", "restoreTotal", "matched",
+      "install", "verifyEgress", "store.set:CLICKED", "clickSubmit", "restoreTotal", "matched",
       "observation:POST_SUBMIT", "result", "store.remove"]);
     const verification = w.preClickBodies[0].verification as Record<string, unknown>;
     expect(verification).toEqual({ executor_instance_id: "ex_1", browser_session_id: "b1", execution_tab_id: 1,
@@ -151,7 +158,6 @@ describe("SubmitController (6E-A spec §10)", () => {
     expect(at("store.set:DISPATCHING")).toBeLessThan(at("dispatch"));
     expect(at("verifyEgress")).toBeLessThan(at("clickSubmit"));
     expect(at("store.set:CLICKED")).toBeLessThan(at("clickSubmit"));
-    expect(at("allowSubmit")).toBeLessThan(at("clickSubmit"));
     expect(w.calls.filter((c) => c === "clickSubmit")).toHaveLength(1);
   });
 
@@ -321,5 +327,31 @@ describe("clickSubmit is invoked only by the SubmitController (6E-A E13)", () =>
     const inController = callers.filter((r) => r.startsWith("submit/submit-controller.ts#"));
     const inFunctions = inController.filter((r) => !r.endsWith("#"));
     expect(inFunctions).toEqual(["submit/submit-controller.ts#steps"]);
+  });
+});
+
+describe("revalidation after a challenge (6E-A condition: full fresh observation and revalidation)", () => {
+  const cleared = [{}, { challenge: true }, { challenge: false, rootPresent: true }, { success: true }];
+
+  it("the server's revalidation must agree before the attempt continues", async () => {
+    const w = world({ signals: [...cleared], serverMatches: false });
+    await run(w);
+    expect(w.calls).toContain("event:CONTENT_CHANGED_DURING_ATTEMPT");
+    expect(w.results[0]).toMatchObject({ content_changed: true, success_observed: false });
+  });
+
+  it("the SUBMIT egress is re-verified when the challenge clears; a changed ruleset stops the attempt", async () => {
+    const w = world({ signals: [...cleared], verifyEgressAfterClick: false });
+    await run(w);
+    expect(w.calls.filter((c) => c === "verifyEgress")).toHaveLength(2);
+    expect(w.calls).toContain("event:EGRESS_VERIFY_FAILED");
+    expect(w.results[0]).toMatchObject({ success_observed: false, cause: "QUARANTINE_CHANGED" });
+  });
+
+  it("when all three agree the attempt continues to its signal", async () => {
+    const w = world({ signals: [...cleared] });
+    const { view } = await run(w);
+    expect(view.phase).toBe("SUBMITTED");
+    expect(w.calls.filter((c) => c === "verifyEgress")).toHaveLength(2);
   });
 });

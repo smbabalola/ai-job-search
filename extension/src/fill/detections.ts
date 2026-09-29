@@ -21,6 +21,7 @@ export interface DetectionHandle {
   // guard lets through -- a one-shot allowance armed by the SubmitController
   // immediately before the click, only after the SUBMIT egress is verified.
   allowNextSubmit(): void;
+  disarmSubmit(): void;
   // 6E-A (spec §10 step 8, §12): a TRUSTED input/change inside the
   // application root (a person editing) during an attempt. Page-script
   // mutations are not edits; the mandatory re-observation catches values.
@@ -75,6 +76,9 @@ export function installDetections(win: Window, report: Report): DetectionHandle 
     reported: () => [...order],
     allowNextSubmit() {
       submitAllowance = true;
+    },
+    disarmSubmit() {
+      submitAllowance = false;
     },
     watchContent(root: Node) {
       if (editRoot === null) {
