@@ -4,7 +4,6 @@ Ownership failures are 404; SubmitRefused is 409 with the exact reason;
 extra body keys are 422. The state carries hashes, never cleartext."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -16,6 +15,7 @@ from webapp.persistence.workspaces import get_workspace
 from webapp.services import human_submit as hs
 from webapp.services import submit_review as sr
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/submit", tags=["submit"])
 
@@ -64,7 +64,7 @@ def submit_state(conn, *, settings, account_id: str, workspace_id: str, now: dat
 
 
 @router.get("/state")
-def get_state(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_state(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return submit_state(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -73,7 +73,7 @@ def get_state(workspace_id: str, request: Request, conn: sqlite3.Connection = De
 
 @router.post("/authorize", status_code=201)
 def post_authorize(workspace_id: str, body: AuthorizeBody, request: Request,
-                   conn: sqlite3.Connection = Depends(get_conn),
+                   conn: dbapi.Connection = Depends(get_conn),
                    scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: hs.authorize(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -82,7 +82,7 @@ def post_authorize(workspace_id: str, body: AuthorizeBody, request: Request,
 
 
 @router.post("/cancel")
-def post_cancel(workspace_id: str, body: CancelBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_cancel(workspace_id: str, body: CancelBody, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: hs.cancel_authorization(conn, account_id=scope.account_id,
@@ -91,7 +91,7 @@ def post_cancel(workspace_id: str, body: CancelBody, conn: sqlite3.Connection = 
 
 
 @router.post("/attempts/{attempt_id}/resolve")
-def post_resolve(workspace_id: str, attempt_id: str, body: ResolveBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_resolve(workspace_id: str, attempt_id: str, body: ResolveBody, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return {"state": call(lambda: hs.resolve(conn, account_id=scope.account_id, attempt_id=attempt_id,

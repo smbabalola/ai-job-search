@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 from webapp.persistence.artifacts import get_current_artifact
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.workspaces import get_profile_workspace_id
+from webapp.persistence import dbapi
 
 # Direct upstream artifact TYPES each artifact type depends on. Used only to
 # know which fingerprint rows to expect/check — the actual comparison values
@@ -36,7 +36,7 @@ DEPENDENCY_TYPES: dict[str, tuple[str, ...]] = {
 
 
 def record_dependency_fingerprint(
-    conn: sqlite3.Connection, *, artifact_id: str, upstream_artifact_type: str, upstream_content_id: str,
+    conn: dbapi.Connection, *, artifact_id: str, upstream_artifact_type: str, upstream_content_id: str,
     commit: bool = True,
 ) -> None:
     conn.execute(
@@ -49,7 +49,7 @@ def record_dependency_fingerprint(
 
 
 def check_staleness(
-    conn: sqlite3.Connection, workspace_id: str, artifact_type: str, *,
+    conn: dbapi.Connection, workspace_id: str, artifact_type: str, *,
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
@@ -61,7 +61,7 @@ def check_staleness(
 
 
 def _check_staleness_recursive(
-    conn: sqlite3.Connection, workspace_id: str, artifact_type: str, visiting: set[str],
+    conn: dbapi.Connection, workspace_id: str, artifact_type: str, visiting: set[str],
     extensions_dir: Path, profile_workspace_id: str | None,
 ) -> dict[str, Any]:
     if artifact_type in visiting:

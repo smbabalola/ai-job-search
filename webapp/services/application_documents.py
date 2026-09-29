@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +29,7 @@ from webapp.persistence.workspaces import get_workspace
 from webapp.services.application_pack import build_application_pack
 from webapp.services.document_blob_store import DocumentBlobStore
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
 
 APPLICATION_DOCUMENT_GENERATION_V2 = "application-document-generation.v2"
 
@@ -38,7 +38,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _require_writable_workspace(conn: sqlite3.Connection, workspace_id: str, account_id: str) -> dict[str, Any]:
+def _require_writable_workspace(conn: dbapi.Connection, workspace_id: str, account_id: str) -> dict[str, Any]:
     workspace = get_workspace(conn, workspace_id, account_id=account_id)
     if workspace is None or workspace["kind"] != "job":
         raise PipelineError("application workspace not found")
@@ -59,7 +59,7 @@ def _document_row(*, document_id: str, workspace_id: str, account_id: str, kind:
 
 
 def _load_exact_cv_generation_basis(
-    conn: sqlite3.Connection, cv_generation_basis_artifact_id: str, *, workspace_id: str,
+    conn: dbapi.Connection, cv_generation_basis_artifact_id: str, *, workspace_id: str,
 ) -> dict[str, Any]:
     """Load and validate the exact, caller-pinned cv_generation_basis artifact.
 
@@ -99,7 +99,7 @@ def _build_filename_stem(job: dict[str, Any]) -> str:
 
 
 def generate_application_documents(
-    conn: sqlite3.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
+    conn: dbapi.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
     account_id: str, cv_generation_basis_artifact_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate and persist the CV and cover-letter documents for a workspace.
@@ -158,7 +158,7 @@ def generate_application_documents(
 
 
 def _generate_application_documents_cv_v2(
-    conn: sqlite3.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
+    conn: dbapi.Connection, workspace_id: str, *, documents_root: Path, extensions_dir: Path,
     account_id: str, cv_generation_basis_artifact_id: str,
 ) -> dict[str, Any]:
     try:
@@ -257,7 +257,7 @@ def store_upload_blob(*, kind: str, filename: str, content: bytes, documents_roo
     return blob
 
 
-def record_uploaded_version(conn: sqlite3.Connection, workspace_id: str, *, kind: str, filename: str,
+def record_uploaded_version(conn: dbapi.Connection, workspace_id: str, *, kind: str, filename: str,
                             blob: dict[str, Any], account_id: str) -> dict[str, Any]:
     """The DB write of an upload, inside the caller's transaction (no commit)."""
     _require_writable_workspace(conn, workspace_id, account_id)
@@ -265,7 +265,7 @@ def record_uploaded_version(conn: sqlite3.Connection, workspace_id: str, *, kind
     return create_document_version(conn, row, commit=False)
 
 
-def upload_application_document(conn: sqlite3.Connection, workspace_id: str, *, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
+def upload_application_document(conn: dbapi.Connection, workspace_id: str, *, kind: str, filename: str, content: bytes, documents_root: Path, account_id: str) -> dict[str, Any]:
     blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=documents_root)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -278,7 +278,7 @@ def upload_application_document(conn: sqlite3.Connection, workspace_id: str, *, 
         raise
 
 
-def list_application_documents(conn: sqlite3.Connection, workspace_id: str, *, account_id: str) -> dict[str, Any]:
+def list_application_documents(conn: dbapi.Connection, workspace_id: str, *, account_id: str) -> dict[str, Any]:
     if get_workspace(conn, workspace_id, account_id=account_id) is None:
         raise PipelineError("application workspace not found")
     versions = list_document_versions(conn, account_id=account_id, workspace_id=workspace_id)
@@ -286,7 +286,7 @@ def list_application_documents(conn: sqlite3.Connection, workspace_id: str, *, a
     return {"versions": versions, "reusable": reusable, "selections": {kind: get_selection(conn, workspace_id, kind, account_id=account_id) for kind in DOCUMENT_KINDS}}
 
 
-def apply_selection(conn: sqlite3.Connection, workspace_id: str, *, kind: str, document_version_id: str,
+def apply_selection(conn: dbapi.Connection, workspace_id: str, *, kind: str, document_version_id: str,
                     expected_revision: int, account_id: str) -> dict[str, Any]:
     """The DB write of a selection, inside the caller's transaction (no
     commit). A stale expected_revision raises ValueError."""
@@ -300,7 +300,7 @@ def apply_selection(conn: sqlite3.Connection, workspace_id: str, *, kind: str, d
     return set_selection(conn, workspace_id=workspace_id, account_id=account_id, kind=kind, document_version_id=document_version_id, expected_revision=expected_revision, commit=False)
 
 
-def select_application_document(conn: sqlite3.Connection, workspace_id: str, *, kind: str, document_version_id: str, expected_revision: int, account_id: str) -> dict[str, Any]:
+def select_application_document(conn: dbapi.Connection, workspace_id: str, *, kind: str, document_version_id: str, expected_revision: int, account_id: str) -> dict[str, Any]:
     try:
         conn.execute("BEGIN IMMEDIATE")
         selection = apply_selection(conn, workspace_id, kind=kind, document_version_id=document_version_id,
@@ -312,7 +312,7 @@ def select_application_document(conn: sqlite3.Connection, workspace_id: str, *, 
         raise
 
 
-def set_application_document_reusable(conn: sqlite3.Connection, workspace_id: str, document_version_id: str, *, label: str | None, account_id: str) -> dict[str, Any]:
+def set_application_document_reusable(conn: dbapi.Connection, workspace_id: str, document_version_id: str, *, label: str | None, account_id: str) -> dict[str, Any]:
     _require_writable_workspace(conn, workspace_id, account_id)
     document = get_document_version(conn, document_version_id, account_id=account_id)
     if document is None or document["source_workspace_id"] != workspace_id or document["origin"] != "user_uploaded":
@@ -323,7 +323,7 @@ def set_application_document_reusable(conn: sqlite3.Connection, workspace_id: st
     return save_reusable(conn, account_id=account_id, document_version_id=document_version_id, label=normalized or None)
 
 
-def unset_application_document_reusable(conn: sqlite3.Connection, workspace_id: str, document_version_id: str, *, account_id: str) -> None:
+def unset_application_document_reusable(conn: dbapi.Connection, workspace_id: str, document_version_id: str, *, account_id: str) -> None:
     _require_writable_workspace(conn, workspace_id, account_id)
     document = get_document_version(conn, document_version_id, account_id=account_id)
     if document is None or document["source_workspace_id"] != workspace_id:
@@ -331,7 +331,7 @@ def unset_application_document_reusable(conn: sqlite3.Connection, workspace_id: 
     remove_reusable(conn, account_id=account_id, document_version_id=document_version_id)
 
 
-def download_application_document(conn: sqlite3.Connection, workspace_id: str, document_version_id: str, *, documents_root: Path, account_id: str) -> tuple[dict[str, Any], bytes]:
+def download_application_document(conn: dbapi.Connection, workspace_id: str, document_version_id: str, *, documents_root: Path, account_id: str) -> tuple[dict[str, Any], bytes]:
     if get_workspace(conn, workspace_id, account_id=account_id) is None:
         raise PipelineError("application workspace not found")
     document = get_document_version(conn, document_version_id, account_id=account_id)

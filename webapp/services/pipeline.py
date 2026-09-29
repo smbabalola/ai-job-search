@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -61,6 +60,7 @@ from webapp.services.input_identity import (
     semantic_proposals_identity,
     semantic_proposer_policy_identity,
 )
+from webapp.persistence import dbapi
 
 
 class PipelineError(RuntimeError):
@@ -76,7 +76,7 @@ def _hash_artifact(prefix: str, payload: dict[str, Any]) -> str:
 
 
 def refresh_profile(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     root: str = ".",
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -101,7 +101,7 @@ def refresh_profile(
     return artifact
 
 
-def wake_after_profile_refresh(conn: sqlite3.Connection, *, account_id: str, now: datetime) -> int:
+def wake_after_profile_refresh(conn: dbapi.Connection, *, account_id: str, now: datetime) -> int:
     """Bundle 6C: a new Evidence Profile snapshot can change every enrolled
     application's and candidate's next step (no commit)."""
     from webapp.persistence.autonomy_prepare import wake_account
@@ -109,7 +109,7 @@ def wake_after_profile_refresh(conn: sqlite3.Connection, *, account_id: str, now
 
 
 def get_current_profile_snapshot(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any] | None:
@@ -118,7 +118,7 @@ def get_current_profile_snapshot(
 
 
 def create_job_from_source_record(
-    conn: sqlite3.Connection, *, company: str, title: str, source_record: dict[str, Any],
+    conn: dbapi.Connection, *, company: str, title: str, source_record: dict[str, Any],
     workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
     commit: bool = True, source_record_origin: str | None = None,
 ) -> dict[str, Any]:
@@ -186,7 +186,7 @@ def create_job_from_source_record(
 
 
 def run_job_understanding(
-    conn: sqlite3.Connection, workspace_id: str, provider: JobUnderstandingProvider, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, provider: JobUnderstandingProvider, *, request_id: str,
 ) -> dict[str, Any]:
     job_artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
     if job_artifact is None:
@@ -238,7 +238,7 @@ def run_job_understanding(
 
 
 def run_job_fit(
-    conn: sqlite3.Connection, workspace_id: str, semantic_adapter: SemanticProposalAdapter, *,
+    conn: dbapi.Connection, workspace_id: str, semantic_adapter: SemanticProposalAdapter, *,
     request_id: str, extension_paths: list[str] | None = None,
     active_extensions: list[dict[str, Any]] | None = None,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -377,7 +377,7 @@ def run_job_fit(
 
 
 def run_application_intelligence(
-    conn: sqlite3.Connection, workspace_id: str, ai_provider: ApplicationIntelligenceProvider, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, ai_provider: ApplicationIntelligenceProvider, *, request_id: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     profile_artifact = get_current_profile_snapshot(conn, account_id=account_id)
@@ -446,7 +446,7 @@ def _load_application_intelligence_policy() -> dict[str, Any]:
 
 
 def _persist_semantic_provider_audit(
-    conn: sqlite3.Connection, workspace_id: str, semantic_adapter: Any, *,
+    conn: dbapi.Connection, workspace_id: str, semantic_adapter: Any, *,
     request_artifact_id: str | None = None,
 ) -> None:
     audit = getattr(semantic_adapter, "last_audit", None)

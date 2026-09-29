@@ -5,23 +5,23 @@ transaction (usually autonomy_controls.run_immediate)."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 from product.autonomy_contract import Capability, canonical_json, to_utc_iso
 from webapp.persistence.autonomy_ledger import upsert_queue_item
+from webapp.persistence import dbapi
 
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:20]}"
 
 
-def _insert(conn: sqlite3.Connection, table: str, values: dict[str, Any]) -> dict[str, Any]:
+def _insert(conn: dbapi.Connection, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols, marks = ", ".join(values), ", ".join("?" for _ in values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks}) RETURNING *",
+                         tuple(values.values())).fetchone())
 
 
 # ---- enrolment --------------------------------------------------------------
@@ -96,7 +96,7 @@ def has_latch(conn, application_workspace_id: str, pack_revision: str) -> bool:
 
 # ---- notifications (append-only event history) -----------------------------
 
-def _notification_events(conn, account_id: str, key: str | None = None) -> list[sqlite3.Row]:
+def _notification_events(conn, account_id: str, key: str | None = None) -> list[dbapi.Row]:
     sql = "SELECT * FROM autonomy_notification_events WHERE account_id = ?"
     params: list[Any] = [account_id]
     if key is not None:
@@ -105,7 +105,7 @@ def _notification_events(conn, account_id: str, key: str | None = None) -> list[
     return conn.execute(sql + " ORDER BY seq", params).fetchall()
 
 
-def _fold(events: Iterable[sqlite3.Row]) -> dict[str, dict[str, Any]]:
+def _fold(events: Iterable[dbapi.Row]) -> dict[str, dict[str, Any]]:
     """Latest CREATED cycle per key; open until a later RESOLVED."""
     state: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -166,7 +166,7 @@ def open_notifications(conn, account_id: str) -> list[dict[str, Any]]:
 
 # ---- candidate screenings, promotions, exceptions --------------------------
 
-def _parse_screening(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _parse_screening(row: dbapi.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     item = dict(row)
@@ -238,7 +238,7 @@ def resolve_candidate_exception(conn, *, exception_id: str, resolution: str, act
     })
 
 
-def _with_resolution(conn, row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _with_resolution(conn, row: dbapi.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     item = dict(row)
@@ -274,7 +274,7 @@ def open_candidate_exceptions(conn, account_id: str) -> list[dict[str, Any]]:
 _TERMINAL = ("SUCCEEDED", "REUSED", "FAILED", "ABANDONED")
 
 
-def _parse_attempt(row: sqlite3.Row) -> dict[str, Any]:
+def _parse_attempt(row: dbapi.Row) -> dict[str, Any]:
     item = dict(row)
     item["artifact_refs"] = json.loads(item.pop("artifact_refs_json"))
     item["reservation_ids"] = json.loads(item.pop("reservation_ids_json"))

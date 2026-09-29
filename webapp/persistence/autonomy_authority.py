@@ -4,24 +4,24 @@ versions and autonomous runs. All append-only; "current" is always by seq."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 from typing import Any
 
 from product.autonomy_contract import Capability, canonical_json, to_utc_iso
 from product.standing_policy import policy_hash, validate_standing_policy
+from webapp.persistence import dbapi
 
 
 def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:20]}"
 
 
-def _insert(conn: sqlite3.Connection, table: str, values: dict[str, Any], commit: bool) -> dict[str, Any]:
+def _insert(conn: dbapi.Connection, table: str, values: dict[str, Any], commit: bool) -> dict[str, Any]:
     cols = ", ".join(values)
     marks = ", ".join("?" for _ in values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
-    row = conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone()
+    row = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks}) RETURNING *",
+                         tuple(values.values())).fetchone()
     if commit:
         conn.commit()
     return dict(row)

@@ -22,7 +22,6 @@ yet to classify, not a silent placeholder pretending otherwise.
 from __future__ import annotations
 
 import re
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +50,7 @@ from product.semantic_subject_registry import classify_semantic_subject
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.application_blockers import save_application_blocker
 from webapp.persistence.policy_decisions import save_policy_decision
+from webapp.persistence import dbapi
 
 # Outcomes that stop this workspace from progressing automatically.
 # AUTO_REJECT -> DECLINED_BY_POLICY (policy declined the application).
@@ -71,7 +71,7 @@ _POLICY_FINGERPRINT = application_decision_policy_fingerprint(
 
 
 def _persist(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     stage: str,
@@ -170,7 +170,7 @@ _GATE_EVIDENCE_CATEGORIES = {
 
 
 def _requirement_texts(
-    conn: sqlite3.Connection, workspace_id: str, decision: DecisionRecord,
+    conn: dbapi.Connection, workspace_id: str, decision: DecisionRecord,
 ) -> list[str]:
     """The actual posting requirement text behind a gate_flag decision.
 
@@ -220,7 +220,7 @@ def _is_stable_fact_requirement(texts: list[str]) -> bool:
 
 
 def _blocker_allowed_scopes(
-    conn: sqlite3.Connection, workspace_id: str, decision: DecisionRecord,
+    conn: dbapi.Connection, workspace_id: str, decision: DecisionRecord,
 ) -> list[str]:
     if decision.review_item_type != "gate_flag":
         # Dimension (skill/experience coverage) blockers are not
@@ -233,7 +233,7 @@ def _blocker_allowed_scopes(
 
 
 def _maybe_create_blocker(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     stage: str,
@@ -274,7 +274,7 @@ def _maybe_create_blocker(
 
 
 def execute_job_fit_policy(
-    conn: sqlite3.Connection, *, workspace_id: str, fit_artifact: dict[str, Any],
+    conn: dbapi.Connection, *, workspace_id: str, fit_artifact: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Classify every gate and dimension assessment on a just-persisted
     job_fit_result artifact, durably record each decision, and create the
@@ -337,7 +337,7 @@ def execute_job_fit_policy(
 
 
 def execute_understanding_policy(
-    conn: sqlite3.Connection, *, workspace_id: str, understanding_artifact: dict[str, Any],
+    conn: dbapi.Connection, *, workspace_id: str, understanding_artifact: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """No classifier exists yet for job_understanding_result's suggestions/
     ambiguous_statements/warnings (see this module's docstring). Present
@@ -349,7 +349,7 @@ def execute_understanding_policy(
 
 
 def execute_application_intelligence_policy(
-    conn: sqlite3.Connection, *, workspace_id: str, intelligence_artifact: dict[str, Any],
+    conn: dbapi.Connection, *, workspace_id: str, intelligence_artifact: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """No classifier exists yet for application_intelligence_result's
     content units (cv_content/cover_letter_content) -- content-unit
@@ -360,7 +360,7 @@ def execute_application_intelligence_policy(
 
 
 def current_policy_decisions(
-    conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, source_artifact_id: str,
 ) -> list[dict[str, Any]]:
     """The decisions that govern this workspace right now: every
     policy_decisions row tied to this exact (current) source artifact.
@@ -396,7 +396,7 @@ def derive_workspace_policy_state(decisions: list[dict[str, Any]]) -> str:
 
 
 def current_application_blockers(
-    conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, source_artifact_id: str,
 ) -> list[dict[str, Any]]:
     """Blockers that govern this workspace right now: every
     application_blockers row tied to this exact (current) source artifact,
@@ -416,7 +416,7 @@ def current_application_blockers(
 
 
 def has_unresolved_governing_blockers(
-    conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, source_artifact_id: str,
 ) -> bool:
     """Answers exactly: are there any current unresolved governing
     blockers? Phase 4B exposes only this question -- actual downstream
@@ -429,7 +429,7 @@ def has_unresolved_governing_blockers(
 
 
 def validate_answer_scope(
-    conn: sqlite3.Connection, *, workspace_id: str, answer_scope: str,
+    conn: dbapi.Connection, *, workspace_id: str, answer_scope: str,
 ) -> None:
     """Raises ValueError if answer_scope is not valid for this workspace.
 
@@ -468,7 +468,7 @@ def validate_answer_scope(
 
 
 def find_reusable_answer(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     subject_key: str,
@@ -530,7 +530,7 @@ def find_reusable_answer(
 
 
 def find_semantic_subject_match(
-    conn: sqlite3.Connection, *, workspace_id: str, semantic_subject_key: str | None,
+    conn: dbapi.Connection, *, workspace_id: str, semantic_subject_key: str | None,
 ) -> dict[str, Any] | None:
     """The ONLY cross-application answer lookup Phase 4C performs: a
     SEARCH_WORKSPACE-scoped resolution from a sibling workspace sharing
@@ -582,7 +582,7 @@ def find_semantic_subject_match(
     return None
 
 
-def _row_to_resolution_with_scope_source(row: sqlite3.Row, scope_source: str) -> dict[str, Any]:
+def _row_to_resolution_with_scope_source(row: dbapi.Row, scope_source: str) -> dict[str, Any]:
     from webapp.persistence.application_blockers import _row_to_resolution
 
     resolution = _row_to_resolution(row)
@@ -591,7 +591,7 @@ def _row_to_resolution_with_scope_source(row: sqlite3.Row, scope_source: str) ->
 
 
 def resolve_blocker(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     blocker_id: str,
@@ -635,7 +635,7 @@ def resolve_blocker(
 
 
 def resume_job_fit_after_resolution(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     semantic_adapter: Any,
     *,

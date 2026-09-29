@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 
 def _now() -> str:
@@ -10,7 +10,7 @@ def _now() -> str:
 
 
 def get_progress(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM onboarding_progress "
@@ -21,7 +21,7 @@ def get_progress(
 
 
 def upsert_progress(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str,
     walkthrough_id: str,
@@ -68,7 +68,7 @@ def upsert_progress(
 
 
 def list_progress_for_account(
-    conn: sqlite3.Connection, *, account_id: str
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM onboarding_progress WHERE account_id = ? "

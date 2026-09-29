@@ -1,7 +1,6 @@
 """Resolve exact immutable selected files for download and future submission handoff."""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,7 @@ from webapp.persistence.artifacts import get_artifact
 from webapp.persistence.workspaces import get_workspace
 from webapp.services.document_blob_store import DocumentBlobStore
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
 
 
 def _manifest_matches_row(manifest: dict[str, Any], row: dict[str, Any]) -> bool:
@@ -23,7 +23,7 @@ def _manifest_matches_row(manifest: dict[str, Any], row: dict[str, Any]) -> bool
     }
 
 
-def resolve_application_handoff(conn: sqlite3.Connection, workspace_id: str, *, pack_artifact_id: str, documents_root: Path, account_id: str, enforce_handoff_state: bool = True) -> dict[str, Any]:
+def resolve_application_handoff(conn: dbapi.Connection, workspace_id: str, *, pack_artifact_id: str, documents_root: Path, account_id: str, enforce_handoff_state: bool = True) -> dict[str, Any]:
     workspace = get_workspace(conn, workspace_id, account_id=account_id)
     pack_artifact = get_artifact(conn, pack_artifact_id)
     if workspace is None or pack_artifact is None or pack_artifact["workspace_id"] != workspace_id or pack_artifact["artifact_type"] != "application_pack":

@@ -6,7 +6,6 @@ SubmitRefused is 409 with the exact reason (not_found is 404); invalid
 bodies and observations are 422. No body carries a cleartext value."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -20,6 +19,7 @@ from webapp.persistence import submit as sp
 from webapp.services import human_submit as hs
 from webapp.services import submit_review as sr
 from webapp.services.handoff import SessionScope
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/handoff/sessions/{session_id}/fill", tags=["submit"])
 
@@ -73,7 +73,7 @@ def _owned_attempt(conn, run: dict[str, Any], attempt_id: str) -> None:
 
 @router.post("/runs/{run_id}/submit/observations")
 def post_submit_observation(session_id: str, run_id: str, body: SubmitObservationBody, request: Request,
-                            conn: sqlite3.Connection = Depends(get_conn),
+                            conn: dbapi.Connection = Depends(get_conn),
                             scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     if body.phase == "PRE_SUBMIT":  # PRE_SUBMIT arrives only with the pre-click proof
@@ -87,7 +87,7 @@ def post_submit_observation(session_id: str, run_id: str, body: SubmitObservatio
 
 @router.post("/runs/{run_id}/submit/pre-click")
 def post_pre_click(session_id: str, run_id: str, body: PreClickBody, request: Request,
-                   conn: sqlite3.Connection = Depends(get_conn),
+                   conn: dbapi.Connection = Depends(get_conn),
                    scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: hs.human_pre_click_commit(conn, settings=request.app.state.settings, run_id=run_id,
@@ -97,7 +97,7 @@ def post_pre_click(session_id: str, run_id: str, body: PreClickBody, request: Re
 
 @router.post("/runs/{run_id}/submit/{attempt_id}/dispatch")
 def post_dispatch(session_id: str, run_id: str, attempt_id: str, request: Request,
-                  conn: sqlite3.Connection = Depends(get_conn),
+                  conn: dbapi.Connection = Depends(get_conn),
                   scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_attempt(conn, _owned_run(conn, scope, session_id, run_id), attempt_id)
     return {"dispatched": call(lambda: hs.human_record_click_dispatched(
@@ -106,7 +106,7 @@ def post_dispatch(session_id: str, run_id: str, attempt_id: str, request: Reques
 
 @router.post("/runs/{run_id}/submit/{attempt_id}/events")
 def post_event(session_id: str, run_id: str, attempt_id: str, body: EventBody,
-               conn: sqlite3.Connection = Depends(get_conn),
+               conn: dbapi.Connection = Depends(get_conn),
                scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_attempt(conn, _owned_run(conn, scope, session_id, run_id), attempt_id)
     row = call(lambda: hs.record_submit_event(conn, attempt_id=attempt_id, event=body.event, detail=body.detail,
@@ -116,7 +116,7 @@ def post_event(session_id: str, run_id: str, attempt_id: str, body: EventBody,
 
 @router.post("/runs/{run_id}/submit/{attempt_id}/result")
 def post_result(session_id: str, run_id: str, attempt_id: str, body: ResultBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_attempt(conn, _owned_run(conn, scope, session_id, run_id), attempt_id)
     return call(lambda: hs.report_result(conn, settings=request.app.state.settings, attempt_id=attempt_id,
@@ -124,7 +124,7 @@ def post_result(session_id: str, run_id: str, attempt_id: str, body: ResultBody,
 
 
 @router.post("/runs/{run_id}/submit/{attempt_id}/cancel")
-def post_cancel(session_id: str, run_id: str, attempt_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def post_cancel(session_id: str, run_id: str, attempt_id: str, conn: dbapi.Connection = Depends(get_conn),
                 scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     run = _owned_run(conn, scope, session_id, run_id)
     _owned_attempt(conn, run, attempt_id)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +13,7 @@ from webapp.persistence.search_workspaces import (
     get_search_workspace,
 )
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
 
 
 router = APIRouter(
@@ -48,7 +48,7 @@ class UserProfileBody(StrictBody):
 @router.get("")
 def get_scoped_user_profile(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if get_search_workspace(
@@ -81,7 +81,7 @@ def put_scoped_user_profile(
     search_workspace_id: str,
     body: UserProfileBody,
     if_match: str | None = Header(default=None, alias="If-Match"),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if get_search_workspace(

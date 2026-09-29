@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any
 
 from product.cv_document_model import build_cv_document_model
@@ -29,6 +28,7 @@ from webapp.services.cv_generation_v2 import CV_CONTENT_PLAN_ARTIFACT_VERSION, C
 from webapp.services.cv_statement_review import get_review_authorized_cv_statement_plan
 from webapp.services.pipeline import PipelineError
 from webapp.services.staleness import record_dependency_fingerprint
+from webapp.persistence import dbapi
 
 
 class CvGenerationBasisError(PipelineError):
@@ -42,7 +42,7 @@ def _hash_payload(prefix: str, payload: dict[str, Any]) -> str:
 
 
 def _load_exact_artifact(
-    conn: sqlite3.Connection, artifact_id: str, *, expected_artifact_type: str,
+    conn: dbapi.Connection, artifact_id: str, *, expected_artifact_type: str,
 ) -> dict[str, Any]:
     """Load one artifact by its exact, caller-supplied ID. Never a current-artifact lookup."""
 
@@ -69,7 +69,7 @@ def _verify_ref_matches(ref: dict[str, Any], artifact: dict[str, Any], *, label:
 
 
 def build_and_persist_cv_generation_basis(
-    conn: sqlite3.Connection, workspace_id: str, *,
+    conn: dbapi.Connection, workspace_id: str, *,
     statement_plan_artifact_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     """Build and persist the exact reviewed cv_generation_basis for a pinned plan.

@@ -3,7 +3,6 @@ only caller of record_presented: rendering the full review at an approvable
 binding hash is what makes an application eligible for bulk approval."""
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -20,6 +19,7 @@ from webapp.services.fill_results import fill_summary
 from webapp.services import submit_review
 from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
 
 router = APIRouter(tags=["review"])
 PROVENANCE_WORDS = {
@@ -31,7 +31,7 @@ PROVENANCE_WORDS = {
 
 
 @router.get("/applications/prepared", response_class=HTMLResponse)
-def prepared_page(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def prepared_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
                   scope: AccountScope = Depends(get_account_scope)):
     applications = prepared_applications(conn, settings=request.app.state.settings, account_id=scope.account_id)
     return request.app.state.templates.TemplateResponse(request, "prepared_applications.html",
@@ -39,7 +39,7 @@ def prepared_page(request: Request, conn: sqlite3.Connection = Depends(get_conn)
 
 
 @router.get("/workspaces/{workspace_id}/review", response_class=HTMLResponse)
-def review_page(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def review_page(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)):
     settings = request.app.state.settings
     try:
@@ -74,7 +74,7 @@ def classification_proposals(conn, workspace_id: str) -> list[dict]:
 
 
 @router.get("/workspaces/{workspace_id}/fill-plan", response_class=HTMLResponse)
-def fill_plan_page(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def fill_plan_page(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                    scope: AccountScope = Depends(get_account_scope)):
     """Rendered from ONE snapshot (fill_plan_presentation): the WRITE rows'
     cleartext and the displayed plan hash come from the same read."""
@@ -121,7 +121,7 @@ SUBMIT_REASON_WORDS = {
 
 @router.get("/workspaces/{workspace_id}/submit", response_class=HTMLResponse)
 def submit_review_page(workspace_id: str, request: Request, observed: int = 0,
-                       conn: sqlite3.Connection = Depends(get_conn),
+                       conn: dbapi.Connection = Depends(get_conn),
                        scope: AccountScope = Depends(get_account_scope)):
     """6E-A Submit Review (spec §16.1). The first load asks the extension for
     a fresh look at the employer tab and waits for it; the page then renders

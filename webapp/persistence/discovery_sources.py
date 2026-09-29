@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def list_discovery_source_settings(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_discovery_source_settings(conn: dbapi.Connection) -> list[dict[str, Any]]:
     """All registry rows, regardless of enabled state -- ordered by source_id
     for deterministic output. Never filtered against code-level adapters:
     callers that need runtime-available sources should use
@@ -28,7 +28,7 @@ def list_discovery_source_settings(conn: sqlite3.Connection) -> list[dict[str, A
     ]
 
 
-def list_enabled_discovery_source_ids(conn: sqlite3.Connection) -> list[str]:
+def list_enabled_discovery_source_ids(conn: dbapi.Connection) -> list[str]:
     """Source IDs with enabled = 1 in the registry -- not yet intersected
     with code-level adapter availability. Callers deciding what is actually
     runnable must still intersect against SOURCE_CLI_PATHS.keys()."""
@@ -42,7 +42,7 @@ def list_enabled_discovery_source_ids(conn: sqlite3.Connection) -> list[str]:
 
 
 def set_discovery_source_enabled(
-    conn: sqlite3.Connection, source_id: str, enabled: bool, *, commit: bool = True
+    conn: dbapi.Connection, source_id: str, enabled: bool, *, commit: bool = True
 ) -> dict[str, Any]:
     """Toggle a registry row's enabled state. Raises KeyError for a
     source_id with no registry row -- this function never creates a new

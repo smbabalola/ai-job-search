@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +20,7 @@ from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.workspaces import get_profile_workspace_id, get_workspace
 from webapp.services.pipeline import PipelineError
 from webapp.services.staleness import check_staleness, record_dependency_fingerprint
+from webapp.persistence import dbapi
 
 _ACKNOWLEDGED = "acknowledged_and_proceed"
 _OMITTED = "omit_from_positioning"
@@ -41,7 +41,7 @@ class OutstandingReviewItems(PipelineError):
 
 
 def _current_or_error(
-    conn: sqlite3.Connection, workspace_id: str, artifact_type: str,
+    conn: dbapi.Connection, workspace_id: str, artifact_type: str,
     *, profile_workspace_id: str | None,
 ) -> dict[str, Any]:
     lookup_workspace = profile_workspace_id if artifact_type == "profile_snapshot" else workspace_id
@@ -69,7 +69,7 @@ _PACK_V1_DECISION_FIELDS = (
 
 
 def _decision_index(
-    conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str
+    conn: dbapi.Connection, workspace_id: str, source_artifact_id: str
 ) -> dict[tuple[str, str | None], dict[str, Any]]:
     """Return the newest exact-type decision for each domain item."""
     indexed: dict[tuple[str, str | None], dict[str, Any]] = {}
@@ -90,7 +90,7 @@ def _artifact_ref(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_application_pack_with_profile(
-    conn: sqlite3.Connection, workspace_id: str, *,
+    conn: dbapi.Connection, workspace_id: str, *,
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -371,7 +371,7 @@ def _build_application_pack_with_profile(
 
 
 def list_outstanding_review_items(
-    conn: sqlite3.Connection, workspace_id: str, *, extensions_dir: Path | str, account_id: str,
+    conn: dbapi.Connection, workspace_id: str, *, extensions_dir: Path | str, account_id: str,
 ) -> list[dict[str, Any]]:
     try:
         _build_application_pack_with_profile(conn, workspace_id, extensions_dir=extensions_dir, account_id=account_id)
@@ -381,7 +381,7 @@ def list_outstanding_review_items(
 
 
 def build_application_pack(
-    conn: sqlite3.Connection, workspace_id: str, *,
+    conn: dbapi.Connection, workspace_id: str, *,
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
@@ -395,7 +395,7 @@ def build_application_pack(
 
 
 def confirm_application_pack(
-    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str,
+    conn: dbapi.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path | str = Path("documents"),
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -419,7 +419,7 @@ def confirm_application_pack(
 
 
 def system_confirm_application_pack(
-    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
+    conn: dbapi.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
     extensions_dir: Path | str, account_id: str,
     precheck: Callable[[dict[str, Any], dict[str, Any]], None],
 ) -> dict[str, Any]:
@@ -433,7 +433,7 @@ def system_confirm_application_pack(
 
 
 def _confirm_application_pack_v1(
-    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
+    conn: dbapi.Connection, workspace_id: str, *, effective_date: str, documents_root: Path | str,
     extensions_dir: Path | str, account_id: str, note: str,
     precheck: Callable[[dict[str, Any], dict[str, Any]], None] | None,
 ) -> dict[str, Any]:
@@ -505,7 +505,7 @@ def _confirm_application_pack_v1(
 
 
 def _confirm_application_pack_v2(
-    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str,
+    conn: dbapi.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path, account_id: str, selection_revisions: dict[str, int],
     on_confirmed: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -576,7 +576,7 @@ def _confirm_application_pack_v2(
 
 
 def retry_application_pack_projection(
-    conn: sqlite3.Connection, workspace_id: str, *, pack_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, *, pack_artifact_id: str,
     documents_root: Path | str = Path("documents"),
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:

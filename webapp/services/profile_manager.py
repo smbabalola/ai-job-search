@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import uuid
 from collections import defaultdict
@@ -31,6 +30,7 @@ from webapp.persistence.profile_sources import (
 )
 from webapp.persistence.workspaces import ensure_profile_workspace
 from webapp.services.profile_setup import _atomic_write_bytes, profile_snapshot_is_ready
+from webapp.persistence import dbapi
 
 
 ENTRY_ID_RE = re.compile(r"^\s*<!--\s*profile-entry-id:\s*(profile-entry-[a-f0-9]{20})\s*-->\s*$")
@@ -248,7 +248,7 @@ def parse_candidate_entries(markdown: str) -> list[SourceEntry]:
 
 
 def _assign_entry_ids(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     entries: list[SourceEntry],
     *,
     account_id: str,
@@ -297,7 +297,7 @@ def _public_entry(entry: SourceEntry) -> dict[str, Any]:
 
 
 def get_profile_manager(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     root: str | Path,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -444,7 +444,7 @@ def _insert_entry(lines: list[str], kind: str, fields: dict[str, Any], rendered:
 
 
 def _build_prospective_snapshot(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     root: str | Path,
     markdown: str,
     *,
@@ -489,7 +489,7 @@ def _build_prospective_snapshot(
 
 
 def _persist_mutation(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     operation: Any, account_id: str,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
@@ -537,7 +537,7 @@ def _persist_mutation(
 
 
 def create_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     kind: str, fields: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     normalized = _normalize_fields(kind, fields)
@@ -557,7 +557,7 @@ def create_profile_entry(
 
 
 def update_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     entry_id: str, kind: str, fields: dict[str, Any],
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
@@ -580,7 +580,7 @@ def update_profile_entry(
 
 
 def delete_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     entry_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     def operation(markdown: str, entries: list[SourceEntry]) -> tuple[str, bool]:
@@ -605,7 +605,7 @@ def delete_profile_entry(
 
 
 def update_profile_source(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     source_path: str, included: bool,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:

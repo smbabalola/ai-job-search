@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,6 +21,7 @@ from webapp.services.http_api import (
 )
 from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api", tags=["workspaces"])
 
@@ -67,7 +67,7 @@ def get_extensions(extensions_dir: Path = Depends(get_extensions_dir)):
 @router.post("/workspaces", status_code=201)
 def post_workspace(
     body: CreateWorkspaceBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -82,7 +82,7 @@ def post_workspace(
 
 @router.get("/workspaces")
 def get_workspaces(
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return {
@@ -93,7 +93,7 @@ def get_workspaces(
 @router.get("/workspaces/{workspace_id}")
 def get_workspace_detail(
     workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -109,7 +109,7 @@ def get_workspace_detail(
 @router.post("/workspaces/{workspace_id}/understand")
 def post_understand(
     workspace_id: str, body: ProcessingBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     provider = _job_understanding_provider(request)
@@ -125,7 +125,7 @@ def post_understand(
 @router.post("/workspaces/{workspace_id}/fit")
 def post_fit(
     workspace_id: str, body: FitBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -145,7 +145,7 @@ def post_fit(
 @router.post("/workspaces/{workspace_id}/application-intelligence")
 def post_application_intelligence(
     workspace_id: str, body: ProcessingBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:

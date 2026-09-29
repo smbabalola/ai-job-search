@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 STAGES = ("understanding", "fit", "application_intelligence", "content")
 BLOCKER_STATUSES = ("open", "resolved", "superseded")
@@ -15,21 +15,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_blocker(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_blocker(row: dbapi.Row) -> dict[str, Any]:
     data = dict(row)
     data["context"] = json.loads(data["context"])
     data["allowed_scopes"] = json.loads(data["allowed_scopes"])
     return data
 
 
-def _row_to_resolution(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_resolution(row: dbapi.Row) -> dict[str, Any]:
     data = dict(row)
     data["answer_value"] = json.loads(data["answer_value"])
     return data
 
 
 def save_application_blocker(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     policy_decision_id: str,
@@ -82,11 +82,11 @@ def save_application_blocker(
 
     blocker_id = f"block_{uuid.uuid4().hex[:20]}"
     conn.execute(
-        "INSERT OR IGNORE INTO application_blockers "
+        "INSERT INTO application_blockers "
         "(id, workspace_id, policy_decision_id, source_artifact_id, stage, "
         "blocker_type, subject_key, question, context, resume_stage, "
         "allowed_scopes, status, created_at, resolved_at, semantic_subject_key) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?) ON CONFLICT DO NOTHING",
         (
             blocker_id, workspace_id, policy_decision_id, source_artifact_id, stage,
             blocker_type, subject_key, question, json.dumps(context or {}), resume_stage,
@@ -102,7 +102,7 @@ def save_application_blocker(
     return _row_to_blocker(existing)
 
 
-def get_application_blocker(conn: sqlite3.Connection, blocker_id: str) -> dict[str, Any] | None:
+def get_application_blocker(conn: dbapi.Connection, blocker_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM application_blockers WHERE id = ?", (blocker_id,)
     ).fetchone()
@@ -110,7 +110,7 @@ def get_application_blocker(conn: sqlite3.Connection, blocker_id: str) -> dict[s
 
 
 def list_application_blockers(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
     status: str | None = None,
@@ -130,7 +130,7 @@ def list_application_blockers(
 
 
 def resolve_application_blocker(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     blocker_id: str,
     request_id: str,
@@ -186,10 +186,10 @@ def resolve_application_blocker(
     resolution_id = f"blockres_{uuid.uuid4().hex[:20]}"
     now = _now()
     conn.execute(
-        "INSERT OR IGNORE INTO blocker_resolutions "
+        "INSERT INTO blocker_resolutions "
         "(id, blocker_id, request_id, workspace_id, policy_decision_id, answer_value, "
         "answer_scope, resolved_by, promoted_evidence_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         (
             resolution_id, blocker_id, request_id, blocker["workspace_id"],
             blocker["policy_decision_id"], json.dumps(answer_value), answer_scope,
@@ -210,7 +210,7 @@ def resolve_application_blocker(
     return _row_to_resolution(existing)
 
 
-def get_blocker_resolution(conn: sqlite3.Connection, resolution_id: str) -> dict[str, Any] | None:
+def get_blocker_resolution(conn: dbapi.Connection, resolution_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM blocker_resolutions WHERE id = ?", (resolution_id,)
     ).fetchone()
@@ -218,7 +218,7 @@ def get_blocker_resolution(conn: sqlite3.Connection, resolution_id: str) -> dict
 
 
 def get_effective_resolution(
-    conn: sqlite3.Connection, blocker_id: str,
+    conn: dbapi.Connection, blocker_id: str,
 ) -> dict[str, Any] | None:
     """The current answer for a blocker: the most recently created
     blocker_resolutions row for it, or None if never answered. Derived,
@@ -233,7 +233,7 @@ def get_effective_resolution(
 
 
 def list_blocker_resolution_history(
-    conn: sqlite3.Connection, blocker_id: str,
+    conn: dbapi.Connection, blocker_id: str,
 ) -> list[dict[str, Any]]:
     """Every answer ever given to this blocker, oldest first -- the full
     corrected-answer audit trail, distinct from get_effective_resolution's
@@ -247,7 +247,7 @@ def list_blocker_resolution_history(
 
 
 def list_blocker_resolutions(
-    conn: sqlite3.Connection, workspace_id: str,
+    conn: dbapi.Connection, workspace_id: str,
 ) -> list[dict[str, Any]]:
     """Every resolution row (all history, all blockers) for a workspace.
     Use get_effective_resolution for "what is the current answer to this
@@ -262,7 +262,7 @@ def list_blocker_resolutions(
 
 
 def supersede_open_blockers(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     stage: str,

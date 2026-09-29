@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ from webapp.persistence.search_workspaces import (
     get_search_workspace,
 )
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence import dbapi
 
 
 USER_STATUSES = {"new", "saved", "dismissed", "expired"}
@@ -29,7 +29,7 @@ class DiscoveryIdentityConflictError(RuntimeError):
 
 
 def _require_writable_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -84,7 +84,7 @@ def discovery_identity_keys(record: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def _candidate_id_for_keys(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     keys: list[tuple[str, str]],
 ) -> str | None:
@@ -103,7 +103,7 @@ def _candidate_id_for_keys(
 
 
 def ingest_discovery_record(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     source_record: dict[str, Any],
     *,
     run_id: str | None = None,
@@ -168,7 +168,7 @@ def ingest_discovery_record(
                 "(search_workspace_id, identity_key, candidate_id, key_type) VALUES (?, ?, ?, ?)",
                 (search_workspace_id, identity_key, candidate_id, key_type),
             )
-        except sqlite3.IntegrityError:
+        except dbapi.IntegrityError:
             owner = conn.execute(
                 "SELECT candidate_id FROM discovery_candidate_keys "
                 "WHERE search_workspace_id = ? AND identity_key = ?",
@@ -208,7 +208,7 @@ def _occurrence_quality(record: dict[str, Any]) -> tuple[int, int]:
     return (structured, len(prose))
 
 
-def _canonical_quality(conn: sqlite3.Connection, occurrence_id: str) -> tuple[int, int]:
+def _canonical_quality(conn: dbapi.Connection, occurrence_id: str) -> tuple[int, int]:
     row = conn.execute(
         "SELECT source_record_json FROM discovery_occurrences WHERE id = ?", (occurrence_id,)
     ).fetchone()
@@ -216,7 +216,7 @@ def _canonical_quality(conn: sqlite3.Connection, occurrence_id: str) -> tuple[in
 
 
 def get_discovery_candidate(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
@@ -239,7 +239,7 @@ def get_discovery_candidate(
 
 
 def list_discovery_candidates(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     lifecycle_status: str | None = None,
@@ -268,7 +268,7 @@ def list_discovery_candidates(
 
 
 def set_discovery_candidate_status(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     status: str,
     *,
@@ -305,7 +305,7 @@ def set_discovery_candidate_status(
 
 
 def create_discovery_run(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     user_profile_version_id: str,
@@ -336,7 +336,7 @@ def create_discovery_run(
 
 
 def complete_discovery_run(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     run_id: str,
     *,
     source_status: dict[str, Any],
@@ -345,11 +345,11 @@ def complete_discovery_run(
 ) -> dict[str, Any]:
     if status not in {"completed", "partial", "failed"}:
         raise ValueError("discovery run status must be completed, partial, or failed")
-    conn.execute(
+    updated = conn.execute(
         "UPDATE discovery_runs SET source_status_json = ?, status = ?, completed_at = ? WHERE id = ?",
         (json.dumps(source_status, ensure_ascii=False, sort_keys=True), status, _now(), run_id),
     )
-    if conn.total_changes == 0:
+    if updated.rowcount == 0:
         raise ValueError(f"unknown discovery run {run_id!r}")
     if commit:
         conn.commit()
@@ -357,7 +357,7 @@ def complete_discovery_run(
 
 
 def get_discovery_run(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     run_id: str,
     *,
     search_workspace_id: str | None = None,
@@ -378,7 +378,7 @@ def get_discovery_run(
 
 
 def get_latest_discovery_run(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
 ) -> dict[str, Any] | None:
     row = conn.execute(
@@ -390,7 +390,7 @@ def get_latest_discovery_run(
 
 
 def save_discovery_fit(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     candidate_id: str,
@@ -425,7 +425,7 @@ def save_discovery_fit(
 
 
 def get_current_discovery_fit(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,

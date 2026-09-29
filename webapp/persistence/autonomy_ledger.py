@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import secrets
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -31,6 +30,7 @@ from product.autonomy_contract import (
 )
 from product.semantic_subject_policy import subject_policy_hash
 from product.standing_policy import policy_hash
+from webapp.persistence import dbapi
 
 
 def _id(prefix: str) -> str:
@@ -39,8 +39,8 @@ def _id(prefix: str) -> str:
 
 def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols, marks = ", ".join(values), ", ".join("?" for _ in values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks}) RETURNING *",
+                         tuple(values.values())).fetchone())
 
 
 # ---- decisions -------------------------------------------------------------
@@ -88,7 +88,7 @@ def insert_decision(conn, *, ctx: AuthorizationContext, decision: AuthorizationD
     return row
 
 
-def _parse_decision(row: sqlite3.Row) -> dict[str, Any]:
+def _parse_decision(row: dbapi.Row) -> dict[str, Any]:
     item = dict(row)
     item["reasons"] = [{"code": c, "params": p} for c, p in json.loads(item["reasons_json"])]
     item["require_user_items"] = [{"kind": k, "ref": r} for k, r in json.loads(item["require_user_json"])]
@@ -343,7 +343,7 @@ def claim_intent(conn, *, account_id: str, job_identity_key: str, application_wo
             "overridden": 0, "attempt_id": None, "workflow_event_id": workflow_event_id,
             "created_at": to_utc_iso(now), "updated_at": to_utc_iso(now),
         })
-    except sqlite3.IntegrityError as exc:
+    except dbapi.IntegrityError as exc:
         raise IntentConflict(job_identity_key) from exc
 
 

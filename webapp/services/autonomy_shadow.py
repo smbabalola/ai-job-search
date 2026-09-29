@@ -9,18 +9,18 @@ not logged as a failure."""
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
 from product.autonomy_contract import Capability, Mode
 from webapp.config import Settings
 from webapp.services.autonomy import AutonomyPaused, decide_and_record
+from webapp.persistence import dbapi
 
 logger = logging.getLogger(__name__)
 
 
-def record_shadow_decision(conn: sqlite3.Connection, *, settings: Settings, account_id: str, workspace_id: str,
+def record_shadow_decision(conn: dbapi.Connection, *, settings: Settings, account_id: str, workspace_id: str,
                            stage: Capability, now: datetime | None = None) -> dict[str, Any] | None:
     if not settings.autonomy_shadow_enabled:
         return None

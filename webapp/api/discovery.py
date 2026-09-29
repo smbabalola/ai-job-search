@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +19,7 @@ from webapp.services.discovery import (
 )
 from webapp.services.extension_registry import resolve_active_extensions
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
+from webapp.persistence import dbapi
 
 
 router = APIRouter(tags=["discovery"])
@@ -52,7 +52,7 @@ def _error(exc: Exception) -> HTTPException:
 
 def _authorize_search_workspace(
     scope: AccountScope,
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
 ) -> None:
     try:
@@ -64,7 +64,7 @@ def _authorize_search_workspace(
 @router.get("/api/search-workspaces/{search_workspace_id}/discovery/sources")
 def get_sources(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
@@ -85,7 +85,7 @@ def post_search(
     body: SearchBody,
     request: Request,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
@@ -107,7 +107,7 @@ def post_search(
 @router.get("/api/search-workspaces/{search_workspace_id}/discovery/candidates")
 def get_candidates(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -123,7 +123,7 @@ def patch_candidate(
     candidate_id: str,
     body: LifecycleBody,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
@@ -142,7 +142,7 @@ def post_evaluate(
     body: EvaluateBody,
     request: Request,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -174,7 +174,7 @@ def post_evaluate(
 def post_promote(
     candidate_id: str,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)

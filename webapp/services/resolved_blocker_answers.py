@@ -32,10 +32,10 @@ tests.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from webapp.persistence.application_blockers import get_effective_resolution, list_application_blockers
+from webapp.persistence import dbapi
 
 RESOLVED_BLOCKER_ANSWERS_SCHEMA_VERSION = "resolved_blocker_answers.v1"
 
@@ -70,7 +70,7 @@ def _bundle_entry(
 
 
 def build_resolved_blocker_answers_payload(
-    conn: sqlite3.Connection, workspace_id: str,
+    conn: dbapi.Connection, workspace_id: str,
 ) -> dict[str, Any]:
     from webapp.services.decision_policy import find_semantic_subject_match
 

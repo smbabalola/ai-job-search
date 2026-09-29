@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence import dbapi
 
 
 DEFAULT_SEARCH_WORKSPACE_ID = "search_default"
@@ -24,7 +24,7 @@ def _now() -> str:
 
 
 def get_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -37,7 +37,7 @@ def get_search_workspace(
 
 
 def list_search_workspaces(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
     include_archived: bool = False,
@@ -58,7 +58,7 @@ def list_search_workspaces(
 
 
 def create_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     name: str,
     search_workspace_id: str | None = None,
@@ -110,7 +110,7 @@ def create_search_workspace(
 
 
 def _mutate_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     account_id: str,
@@ -145,7 +145,7 @@ def _mutate_workspace(
 
 
 def rename_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     name: str,
@@ -165,7 +165,7 @@ def rename_search_workspace(
 
 
 def archive_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     expected_revision: int,
@@ -199,7 +199,7 @@ def archive_search_workspace(
 
 
 def restore_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     expected_revision: int,

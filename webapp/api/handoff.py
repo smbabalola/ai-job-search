@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
@@ -41,6 +40,7 @@ from webapp.services.handoff import (
     start_handoff_session,
 )
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/handoff", tags=["handoff"])
 
@@ -79,7 +79,7 @@ class ConfirmSubmissionBody(StrictBody):
 def get_extension_scope(
     request: Request,
     x_handoff_credential: str = Header(...),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> AccountScope:
     try:
         return resolve_account_scope_from_extension_credential(
@@ -92,7 +92,7 @@ def get_extension_scope(
 
 def get_session_scope(
     x_handoff_session_token: str = Header(...),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> SessionScope:
     try:
         return resolve_session_scope(conn, raw_token=x_handoff_session_token)
@@ -123,7 +123,7 @@ def _translate(exc: Exception) -> HTTPException:
 @router.post("/pairing/generate", status_code=201)
 def post_generate_pairing(
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     return {
         "one_time_secret": generate_pairing_secret(conn, account_id=scope.account_id),
@@ -134,7 +134,7 @@ def post_generate_pairing(
 @router.post("/pairing/exchange", status_code=201)
 def post_exchange_pairing(
     body: ExchangePairingBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         return exchange_pairing_secret_for_credential(
@@ -148,7 +148,7 @@ def post_exchange_pairing(
 def post_start_session(
     body: StartSessionBody,
     scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         session = start_handoff_session(conn, scope, **body.model_dump())
@@ -162,7 +162,7 @@ def post_start_session(
 def get_discover_sessions(
     workspace_id: str, target_domain: str,
     scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     # Metadata-only: never mints or rotates a token, and never refreshes
     # last_activity_at for any session it lists — merely listing resumable
@@ -182,7 +182,7 @@ def get_discover_sessions(
 def post_resume_session(
     session_id: str,
     scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         token = resume_handoff_session(conn, scope, handoff_session_id=session_id)
@@ -195,7 +195,7 @@ def post_resume_session(
 def get_session_document(
     session_id: str, kind: str,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     documents_root: Path = Depends(get_documents_root),
 ):
     # No workspace_id/pack_artifact_id request parameter exists on this
@@ -232,7 +232,7 @@ def get_session_document(
 def post_record_event(
     session_id: str, body: RecordEventBody,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         return record_handoff_event(
@@ -246,7 +246,7 @@ def post_record_event(
 def get_replay_events(
     session_id: str,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         return replay_handoff_session(conn, scope, session_id)
@@ -258,7 +258,7 @@ def get_replay_events(
 def post_confirm_submission(
     session_id: str, body: ConfirmSubmissionBody,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
 ):
     try:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ from webapp.persistence.workspaces import (
     get_profile_workspace_id,
     get_workspace,
 )
+from webapp.persistence import dbapi
 
 
 class OwnedResourceNotFound(LookupError):
@@ -24,7 +24,7 @@ class AccountScope:
     profile_root: Path
 
     def require_search_workspace(
-        self, conn: sqlite3.Connection, search_workspace_id: str
+        self, conn: dbapi.Connection, search_workspace_id: str
     ) -> dict[str, Any]:
         workspace = get_search_workspace(
             conn, search_workspace_id, account_id=self.account_id
@@ -34,7 +34,7 @@ class AccountScope:
         return workspace
 
     def require_job_workspace(
-        self, conn: sqlite3.Connection, workspace_id: str
+        self, conn: dbapi.Connection, workspace_id: str
     ) -> dict[str, Any]:
         workspace = get_workspace(
             conn, workspace_id, account_id=self.account_id
@@ -44,7 +44,7 @@ class AccountScope:
         return workspace
 
     def profile_workspace_id(
-        self, conn: sqlite3.Connection, *, ensure: bool = False
+        self, conn: dbapi.Connection, *, ensure: bool = False
     ) -> str | None:
         if ensure:
             return ensure_profile_workspace(

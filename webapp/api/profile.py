@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +18,7 @@ from webapp.services.profile_manager import (
     update_profile_source,
 )
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
@@ -69,7 +69,7 @@ def _manager_error(exc: Exception) -> HTTPException:
 
 @router.get("")
 def get_profile(
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return {
@@ -82,7 +82,7 @@ def get_profile(
 @router.get("/manager")
 def get_manager(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -96,7 +96,7 @@ def get_manager(
 @router.post("/entries", status_code=201)
 def post_profile_entry(
     body: ProfileEntryBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -112,7 +112,7 @@ def post_profile_entry(
 @router.put("/entries/{entry_id}")
 def put_profile_entry(
     entry_id: str, body: ProfileEntryBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -128,7 +128,7 @@ def put_profile_entry(
 @router.delete("/entries/{entry_id}")
 def remove_profile_entry(
     entry_id: str, body: ProfileDeleteBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -143,7 +143,7 @@ def remove_profile_entry(
 @router.put("/sources/{source_path:path}")
 def put_profile_source(
     source_path: str, body: ProfileSourceBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -159,7 +159,7 @@ def put_profile_source(
 @router.post("/refresh")
 def post_profile_refresh(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -173,7 +173,7 @@ def post_profile_refresh(
 @router.post("/setup/basic", status_code=201)
 def post_basic_profile_setup(
     body: BasicProfileBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -189,7 +189,7 @@ def post_basic_profile_setup(
 @router.post("/setup/import", status_code=201)
 def post_profile_import(
     body: ImportProfileBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:

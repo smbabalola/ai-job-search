@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -29,12 +28,13 @@ from webapp.services.profile_manager import get_profile_manager
 from webapp.services.ownership import AccountScope
 from product.onboarding_walkthroughs import WALKTHROUGH_LAUNCH_CONTEXTS
 from webapp.services.onboarding import list_walkthrough_statuses
+from webapp.persistence import dbapi
 
 router = APIRouter(tags=["views"])
 
 
 def _search_context(
-    conn: sqlite3.Connection, account_id: str,
+    conn: dbapi.Connection, account_id: str,
     selected_search_workspace: dict | None = None,
 ) -> dict:
     return {
@@ -46,7 +46,7 @@ def _search_context(
 
 
 def _require_search_workspace(
-    conn: sqlite3.Connection, search_workspace_id: str, account_id: str
+    conn: dbapi.Connection, search_workspace_id: str, account_id: str
 ) -> dict:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -57,7 +57,7 @@ def _require_search_workspace(
 
 
 def _selected_search_workspace_id(
-    request: Request, conn: sqlite3.Connection, account_id: str
+    request: Request, conn: dbapi.Connection, account_id: str
 ) -> str:
     selected = request.cookies.get("search_workspace_id", DEFAULT_SEARCH_WORKSPACE_ID)
     workspace = get_search_workspace(conn, selected, account_id=account_id)
@@ -70,7 +70,7 @@ def _selected_search_workspace_id(
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request, filter: str = "active",
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if filter not in {"all", "active", "drafted", "applied", "interview", "offer", "final"}:
@@ -98,7 +98,7 @@ def dashboard(
 @router.get("/profile", response_class=HTMLResponse)
 def profile_page(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return_to = request.query_params.get("return_to", "")
@@ -124,7 +124,7 @@ def profile_page(
 
 @router.get("/user-profile", response_class=HTMLResponse)
 def user_profile_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return RedirectResponse(
@@ -135,7 +135,7 @@ def user_profile_page(
 
 @router.get("/discover", response_class=HTMLResponse)
 def discovery_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return RedirectResponse(
@@ -148,7 +148,7 @@ def discovery_page(
 def scoped_user_profile_page(
     search_workspace_id: str,
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     workspace = _require_search_workspace(
@@ -174,7 +174,7 @@ def scoped_user_profile_page(
 def scoped_discovery_page(
     search_workspace_id: str,
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     workspace = _require_search_workspace(
@@ -219,7 +219,7 @@ def scoped_discovery_page(
 
 @router.get("/new-job", response_class=HTMLResponse)
 def new_job_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return request.app.state.templates.TemplateResponse(
@@ -229,7 +229,7 @@ def new_job_page(
 
 @router.get("/how-it-works", response_class=HTMLResponse)
 def how_it_works_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return request.app.state.templates.TemplateResponse(
@@ -239,7 +239,7 @@ def how_it_works_page(
 
 @router.get("/pairing", response_class=HTMLResponse)
 def pairing_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     one_time_secret = generate_pairing_secret(conn, account_id=scope.account_id)
@@ -251,7 +251,7 @@ def pairing_page(
 
 @router.get("/search-workspaces", response_class=HTMLResponse)
 def search_workspaces_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     selected_id = _selected_search_workspace_id(
@@ -273,7 +273,7 @@ def search_workspaces_page(
 )
 def cv_v2_review_page(
     workspace_id: str, plan_id: str, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -302,7 +302,7 @@ def cv_v2_review_page(
 @router.get("/workspaces/{workspace_id}", response_class=HTMLResponse)
 def workspace_detail_page(
     workspace_id: str, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -333,7 +333,7 @@ def workspace_detail_page(
 @router.get("/walkthroughs", response_class=HTMLResponse)
 def walkthroughs_page(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     statuses = list_walkthrough_statuses(conn, account_id=scope.account_id)

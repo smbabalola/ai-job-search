@@ -16,7 +16,6 @@ Deviations from the task-13 brief (fail-closed hardening):
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -49,6 +48,7 @@ from webapp.persistence.workspaces import get_profile_workspace_id, get_workspac
 from webapp.services.decision_policy import current_application_blockers, current_policy_decisions
 from webapp.services.staleness import check_staleness
 from webapp.services.workspace_view import resolve_apply_target
+from webapp.persistence import dbapi
 
 GOVERNING_ARTIFACT_TYPES = ("job_understanding_result", "job_fit_result", "application_intelligence_result")
 
@@ -296,7 +296,7 @@ def _budgets(conn, *, doc: dict, account_id: str, workspace_id: str, now: dateti
     return tuple(out)
 
 
-def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: str, application_workspace_id: str,
+def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str, application_workspace_id: str,
                   requested_stage: Capability, mode: Mode, now: datetime, sentinel_present: bool,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   executor_hard_stops: Sequence[str] = (), run_id: str | None = None,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -17,6 +16,7 @@ from webapp.persistence.search_workspaces import (
     restore_search_workspace,
 )
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
 
 
 router = APIRouter(prefix="/api/search-workspaces", tags=["search-workspaces"])
@@ -50,7 +50,7 @@ def _mutate(operation):
 
 
 def _require_owned(
-    conn: sqlite3.Connection, scope: AccountScope, search_workspace_id: str
+    conn: dbapi.Connection, scope: AccountScope, search_workspace_id: str
 ) -> None:
     if get_search_workspace(
         conn, search_workspace_id, account_id=scope.account_id
@@ -60,7 +60,7 @@ def _require_owned(
 
 @router.get("")
 def get_search_workspaces(
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return {"search_workspaces": list_search_workspaces(
@@ -71,7 +71,7 @@ def get_search_workspaces(
 @router.post("", status_code=201)
 def post_search_workspace(
     body: CreateBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if body.copy_profile_from is not None:
@@ -87,7 +87,7 @@ def post_search_workspace(
 @router.get("/{search_workspace_id}")
 def get_one_search_workspace(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     workspace = get_search_workspace(
@@ -102,7 +102,7 @@ def get_one_search_workspace(
 def patch_search_workspace(
     search_workspace_id: str,
     body: RenameBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_owned(conn, scope, search_workspace_id)
@@ -121,7 +121,7 @@ def patch_search_workspace(
 def post_archive_search_workspace(
     search_workspace_id: str,
     body: RevisionBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_owned(conn, scope, search_workspace_id)
@@ -137,7 +137,7 @@ def post_archive_search_workspace(
 def post_restore_search_workspace(
     search_workspace_id: str,
     body: RevisionBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_owned(conn, scope, search_workspace_id)

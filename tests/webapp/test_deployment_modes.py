@@ -102,3 +102,12 @@ def test_settings_read_deployment_values_from_the_environment(monkeypatch):
 def test_unknown_deployment_value_is_a_problem(monkeypatch):
     monkeypatch.setenv("JOBSEARCH_DEPLOYMENT", "cloud")
     assert validate_settings(Settings()) == ["JOBSEARCH_DEPLOYMENT must be 'local' or 'hosted'"]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 10000), ("2500", 2500), ("50", 1000), ("99999", 30000), ("junk", 10000)])
+def test_writer_lock_timeout_is_bounded(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("JOBSEARCH_WRITER_LOCK_TIMEOUT_MS", raising=False)
+    else:
+        monkeypatch.setenv("JOBSEARCH_WRITER_LOCK_TIMEOUT_MS", raw)
+    assert Settings().writer_lock_timeout_ms == expected

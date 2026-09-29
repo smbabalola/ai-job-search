@@ -12,7 +12,6 @@ EXECUTOR_LOST (FILLED_CONTEXT_UNVERIFIED after FILLED) and never authorizes
 resumption; the reaper only reduces."""
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping
@@ -36,6 +35,7 @@ from webapp.services.autonomy_context import ApplyTargetObservation
 from webapp.services.autonomy_controls import run_immediate
 from webapp.services.fill_plans import _open_deltas, approval_context, propose_plan_in_transaction
 from webapp.services.fill_results import run_plan_hash, write_result
+from webapp.persistence import dbapi
 
 
 class FillRefused(Exception):
@@ -189,7 +189,7 @@ def start_run(conn, *, settings: Settings, account_id: str, handoff_session_id: 
         try:
             f.claim_active_run(conn, application_workspace_id=ws, fill_run_id=run["id"],
                                context_key=context_key(executor_instance_id, browser_session_id, execution_tab_id))
-        except sqlite3.IntegrityError:
+        except dbapi.IntegrityError:
             raise FillRefused("run_active" if f.active_run_for(conn, ws) else "context_in_use") from None
         f.touch_lease(conn, fill_run_id=run["id"], expires_at=now + RUN_LEASE_TTL, now=now)
         f.append_run_event(conn, fill_run_id=run["id"], event="OBSERVING", now=now)

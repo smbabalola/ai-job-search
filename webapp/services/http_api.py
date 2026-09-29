@@ -6,7 +6,6 @@ and restoration of current-artifact pointers after a failed processing stage.
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -45,6 +44,7 @@ from webapp.services.pipeline import (
     run_job_understanding,
 )
 from webapp.services.staleness import check_staleness
+from webapp.persistence import dbapi
 
 
 class JobWorkspaceNotFound(LookupError):
@@ -52,7 +52,7 @@ class JobWorkspaceNotFound(LookupError):
 
 
 def require_job_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -64,13 +64,13 @@ def require_job_workspace(
 
 
 def list_job_workspaces(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
 ) -> list[dict[str, Any]]:
     return list_workspaces(conn, account_id=account_id)
 
 
 def get_job_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -79,7 +79,7 @@ def get_job_workspace(
 
 
 def create_job_workspace(
-    conn: sqlite3.Connection, *, company: str, title: str,
+    conn: dbapi.Connection, *, company: str, title: str,
     source_record: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
     source_record_origin: str | None = None,
 ) -> dict[str, Any]:
@@ -101,7 +101,7 @@ def list_public_extensions(extensions_dir: Path) -> list[dict[str, Any]]:
 
 
 def _preserve_current_artifacts(
-    conn: sqlite3.Connection, workspace_id: str, operation: Callable[[], dict[str, Any]]
+    conn: dbapi.Connection, workspace_id: str, operation: Callable[[], dict[str, Any]]
 ) -> dict[str, Any]:
     before = [
         (row["artifact_type"], row["artifact_id"])
@@ -126,7 +126,7 @@ def _preserve_current_artifacts(
 
 
 def understand_job(
-    conn: sqlite3.Connection, workspace_id: str, provider: Any, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, provider: Any, *, request_id: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
@@ -148,7 +148,7 @@ def understand_job(
 
 
 def fit_job(
-    conn: sqlite3.Connection, workspace_id: str, semantic_adapter: Any, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, semantic_adapter: Any, *, request_id: str,
     extension_ids: list[str], extensions_dir: Path,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
@@ -171,7 +171,7 @@ def fit_job(
 
 
 def generate_application_intelligence(
-    conn: sqlite3.Connection, workspace_id: str, provider: Any, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, provider: Any, *, request_id: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
@@ -189,7 +189,7 @@ def generate_application_intelligence(
     return artifact
 
 
-def _after_user_review(conn: sqlite3.Connection, workspace_id: str, account_id: str) -> None:
+def _after_user_review(conn: dbapi.Connection, workspace_id: str, account_id: str) -> None:
     """Bundle 6C: a USER review decision latches an already system-confirmed
     revision (never an unconfirmed one) and wakes the application."""
     from webapp.services.autonomy_prepare import on_user_review_decision
@@ -197,7 +197,7 @@ def _after_user_review(conn: sqlite3.Connection, workspace_id: str, account_id: 
                             now=datetime.now(timezone.utc))
 
 
-def _wake_if_enrolled(conn: sqlite3.Connection, workspace_id: str) -> None:
+def _wake_if_enrolled(conn: dbapi.Connection, workspace_id: str) -> None:
     """Bundle 6C: a manual rerun changes artifacts an enrolled application's
     next step is derived from, so the scheduler must re-derive it."""
     from webapp.persistence.autonomy_prepare import is_enrolled, wake
@@ -207,7 +207,7 @@ def _wake_if_enrolled(conn: sqlite3.Connection, workspace_id: str) -> None:
 
 
 def record_review_decision(
-    conn: sqlite3.Connection, workspace_id: str, *, review_item_type: str,
+    conn: dbapi.Connection, workspace_id: str, *, review_item_type: str,
     source_artifact_id: str, domain_item_id: str | None, disposition: str,
     note: str | None, commit: bool = True,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -233,7 +233,7 @@ def record_review_decision(
 
 
 def record_review_decisions(
-    conn: sqlite3.Connection, workspace_id: str, decisions: list[dict[str, Any]],
+    conn: dbapi.Connection, workspace_id: str, decisions: list[dict[str, Any]],
     *, account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> list[dict[str, Any]]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
@@ -264,7 +264,7 @@ def record_review_decisions(
 
 
 def confirm_job_application_pack(
-    conn: sqlite3.Connection, workspace_id: str, *, effective_date: str,
+    conn: dbapi.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path, extensions_dir: Path,
     account_id: str = DEFAULT_ACCOUNT_ID,
     document_selection_revisions: dict[str, int] | None = None,
@@ -278,7 +278,7 @@ def confirm_job_application_pack(
 
 
 def retry_job_application_pack_projection(
-    conn: sqlite3.Connection, workspace_id: str, *, pack_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, *, pack_artifact_id: str,
     documents_root: Path,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
@@ -290,7 +290,7 @@ def retry_job_application_pack_projection(
 
 
 def render_job_application_pack_document(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
     kind: str,
@@ -351,7 +351,7 @@ def render_job_application_pack_document(
 
 
 def change_job_status(
-    conn: sqlite3.Connection, workspace_id: str, *, new_status: str,
+    conn: dbapi.Connection, workspace_id: str, *, new_status: str,
     effective_date: str, note: str | None,
     extensions_dir: Path | str = Path("extensions"),
     account_id: str = DEFAULT_ACCOUNT_ID,

@@ -6,7 +6,6 @@ failures are 404, refusals are 409 with the reason, bodies forbid extra
 keys. No route here submits or reaches any SUBMIT authority."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -21,6 +20,7 @@ from webapp.services.fill_results import fill_status
 from webapp.services.fill_runs import FillRefused
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import ReviewRefused
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["fill"])
 
@@ -81,7 +81,7 @@ def plan_state(conn, *, settings, account_id: str, workspace_id: str) -> dict[st
 
 
 @router.get("/fill-plan/state")
-def get_plan_state(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_plan_state(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                    scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: plan_state(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -89,7 +89,7 @@ def get_plan_state(workspace_id: str, request: Request, conn: sqlite3.Connection
 
 
 @router.post("/fill-plan/mappings")
-def post_mapping(workspace_id: str, body: MappingBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_mapping(workspace_id: str, body: MappingBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: fill_plans.record_mapping_choice(
@@ -99,7 +99,7 @@ def post_mapping(workspace_id: str, body: MappingBody, request: Request, conn: s
 
 
 @router.post("/fill-plan/confirm")
-def post_confirm(workspace_id: str, body: ConfirmBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_confirm(workspace_id: str, body: ConfirmBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: fill_plans.confirm_plan(
@@ -110,7 +110,7 @@ def post_confirm(workspace_id: str, body: ConfirmBody, request: Request, conn: s
 
 @router.post("/review/deltas/{delta_id}/classification/confirm")
 def post_classification(workspace_id: str, delta_id: str, body: ClassificationBody,
-                        conn: sqlite3.Connection = Depends(get_conn),
+                        conn: dbapi.Connection = Depends(get_conn),
                         scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     return call(lambda: fill_classification.confirm_classification(
@@ -125,7 +125,7 @@ def _run_summary(conn, run: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/fill-runs")
-def get_runs(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def get_runs(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     runs = [r for r in f.runs_for_application(conn, workspace_id) if r["account_id"] == scope.account_id]
@@ -133,7 +133,7 @@ def get_runs(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.get("/fill-runs/{run_id}")
-def get_run(workspace_id: str, run_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def get_run(workspace_id: str, run_id: str, conn: dbapi.Connection = Depends(get_conn),
             scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
     run = f.get_run(conn, run_id)

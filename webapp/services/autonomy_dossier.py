@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any
 
 from webapp.persistence.application_blockers import list_application_blockers, list_blocker_resolution_history
 from webapp.persistence.autonomy_ledger import list_attempt_events, list_decisions
 from webapp.persistence.workspaces import get_workspace
+from webapp.persistence import dbapi
 
 DOSSIER_SCHEMA_VERSION = "autonomy-dossier.v1"
 _RAW_DECISION_COLUMNS = ("reasons_json", "require_user_json", "completion_blockers_json", "inputs_json")
@@ -21,7 +21,7 @@ def _rows(conn, sql: str, params: tuple) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def _build_6b_dossier(conn: sqlite3.Connection, *, account_id: str, application_workspace_id: str) -> dict[str, Any]:
+def _build_6b_dossier(conn: dbapi.Connection, *, account_id: str, application_workspace_id: str) -> dict[str, Any]:
     ws = application_workspace_id
     workspace = get_workspace(conn, ws, account_id=account_id)
     if workspace is None:
@@ -125,7 +125,7 @@ def _pack_section(conn, ws: str) -> dict[str, Any] | None:
     }
 
 
-def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_workspace_id: str,
+def build_dossier(conn: dbapi.Connection, *, account_id: str, application_workspace_id: str,
                   settings: Any = None) -> dict[str, Any]:
     ws = application_workspace_id
     dossier = _build_6b_dossier(conn, account_id=account_id, application_workspace_id=ws)

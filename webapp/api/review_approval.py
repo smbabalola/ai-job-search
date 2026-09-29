@@ -7,7 +7,6 @@ No route here reaches any SUBMIT authority."""
 from __future__ import annotations
 
 import dataclasses
-import sqlite3
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
@@ -27,6 +26,7 @@ from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
 from webapp.persistence.application_documents import get_selection
 from webapp.services.review_application import KINDS, ReviewRefused, review_snapshot, review_state
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
 
@@ -137,7 +137,7 @@ def review_payload(conn, *, settings, account_id: str, workspace_id: str) -> dic
 # The bare GET /api/workspaces/{id}/review is the pre-existing Phase 2 review
 # surface (webapp/api/review.py); the 6D-A read-only state lives at /review/state.
 @router.get("/state")
-def get_review(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_review(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_payload(conn, settings=request.app.state.settings, account_id=scope.account_id,
                                        workspace_id=workspace_id))
@@ -145,7 +145,7 @@ def get_review(workspace_id: str, request: Request, conn: sqlite3.Connection = D
 
 @router.post("/documents/{kind}")
 def post_replace(workspace_id: str, kind: str, request: Request, file: UploadFile = File(...),
-                 expected_revision: int = Form(...), conn: sqlite3.Connection = Depends(get_conn),
+                 expected_revision: int = Form(...), conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     content = file.file.read(10 * 1024 * 1024 + 1)
     if file.file.read(1):
@@ -158,7 +158,7 @@ def post_replace(workspace_id: str, kind: str, request: Request, file: UploadFil
 
 @router.post("/documents/{kind}/select")
 def post_select(workspace_id: str, kind: str, body: SelectBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_documents.select_document(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -167,7 +167,7 @@ def post_select(workspace_id: str, kind: str, body: SelectBody, request: Request
 
 
 @router.post("/save")
-def post_save(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_save(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     def action():
         review_state(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -179,7 +179,7 @@ def post_save(workspace_id: str, request: Request, conn: sqlite3.Connection = De
 
 
 @router.post("/answers")
-def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.answer_field(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -188,7 +188,7 @@ def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: sql
 
 @router.post("/proposals/{proposal_id}/accept")
 def post_accept(workspace_id: str, proposal_id: str, body: AcceptBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.accept_proposal(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -198,7 +198,7 @@ def post_accept(workspace_id: str, proposal_id: str, body: AcceptBody, request: 
 
 @router.post("/fields/{answer_key}/disposition")
 def post_disposition(workspace_id: str, answer_key: str, body: DispositionBody, request: Request,
-                     conn: sqlite3.Connection = Depends(get_conn),
+                     conn: dbapi.Connection = Depends(get_conn),
                      scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.set_field_disposition(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -206,7 +206,7 @@ def post_disposition(workspace_id: str, answer_key: str, body: DispositionBody, 
 
 
 @router.post("/warnings/ack")
-def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_ack(workspace_id: str, body: AckBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.acknowledge_warning(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -214,7 +214,7 @@ def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.C
 
 
 @router.post("/approve")
-def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_approval.approve(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -222,7 +222,7 @@ def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: s
 
 
 @router.post("/revoke")
-def post_revoke(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_revoke(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_approval.revoke(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -230,7 +230,7 @@ def post_revoke(workspace_id: str, request: Request, conn: sqlite3.Connection = 
 
 
 @router.post("/deltas", status_code=201)
-def post_delta(workspace_id: str, body: DeltaBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_delta(workspace_id: str, body: DeltaBody, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     """Internal intake for 6D-B (same account scope)."""
     return call(lambda: review_approval.open_review_delta(
@@ -240,7 +240,7 @@ def post_delta(workspace_id: str, body: DeltaBody, conn: sqlite3.Connection = De
 
 
 @router.get("/documents/{kind}/preview")
-def get_preview(workspace_id: str, kind: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_preview(workspace_id: str, kind: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     """A read-only rendering of the currently selected document's exact bytes."""
     from webapp.persistence.application_documents import get_document_version, get_selection

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +13,7 @@ from webapp.persistence.search_workspaces import (
     SearchWorkspaceError,
     get_search_workspace,
 )
+from webapp.persistence import dbapi
 
 
 CURRENT_USER_PROFILE_ID = "current"
@@ -23,7 +23,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _row_to_record(row: dbapi.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     record = dict(row)
@@ -32,7 +32,7 @@ def _row_to_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def get_current_user_profile(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     *,
     account_id: str = DEFAULT_ACCOUNT_ID,
@@ -49,7 +49,7 @@ def get_current_user_profile(
 
 
 def save_user_profile(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     profile: dict[str, Any],
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
@@ -138,7 +138,7 @@ def save_user_profile(
 
 
 def list_user_profile_versions(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT DISTINCT v.* FROM user_profile_versions v "

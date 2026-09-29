@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from product.autonomy_contract import canonical_json, to_utc_iso
+from webapp.persistence import dbapi
 
 # Keys that would carry an answer or field value in clear. Hash-named keys
 # (value_hash, rendered_value_hash, current_value_hash, value_state) are fine.
@@ -47,9 +48,8 @@ def _json(value: Any) -> str:
 
 def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols = ", ".join(values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)})",
-                       tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)}) RETURNING *",
+                            tuple(values.values())).fetchone())
 
 
 def _decode(row, *json_cols: str) -> dict[str, Any] | None:
@@ -296,7 +296,7 @@ def get_result(conn, fill_run_id: str) -> dict[str, Any] | None:
 # ---- operational (mutable): concurrency keys and leases -----------------------------------
 
 def claim_active_run(conn, *, application_workspace_id: str, fill_run_id: str, context_key: str) -> None:
-    """Raises sqlite3.IntegrityError if the application or the execution
+    """Raises dbapi.IntegrityError if the application or the execution
     context already has a non-terminal run."""
     conn.execute("INSERT INTO active_fill_runs (application_workspace_id, fill_run_id, context_key) VALUES (?, ?, ?)",
                  (application_workspace_id, fill_run_id, context_key))

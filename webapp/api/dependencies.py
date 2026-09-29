@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Iterator
 
@@ -9,9 +8,10 @@ from fastapi import Depends, HTTPException, Request
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID, get_account
 from webapp.persistence.db import connect
 from webapp.services.ownership import AccountScope, account_profile_root
+from webapp.persistence import dbapi
 
 
-def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
+def get_conn(request: Request) -> Iterator[dbapi.Connection]:
     conn = connect(request.app.state.settings.db_path)
     try:
         yield conn
@@ -34,7 +34,7 @@ def require_cv_quality_v2_enabled(request: Request) -> None:
 
 def get_account_scope(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> AccountScope:
     # One application instance currently serves one configured account. Future
     # authentication should replace this resolver, not the persisted ownership

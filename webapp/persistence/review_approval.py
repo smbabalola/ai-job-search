@@ -17,9 +17,8 @@ def _id(prefix: str) -> str:
 
 def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols = ", ".join(values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)})",
-                       tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)}) RETURNING *",
+                            tuple(values.values())).fetchone())
 
 
 def _approval(row) -> dict[str, Any] | None:

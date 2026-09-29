@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 
 def _now() -> str:
@@ -18,7 +18,7 @@ def hash_pairing_secret(secret: str) -> str:
 
 
 def create_extension_credential(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str,
     secret_hash: str,
@@ -42,7 +42,7 @@ def create_extension_credential(
 
 
 def get_extension_credential_by_hash(
-    conn: sqlite3.Connection, secret_hash: str
+    conn: dbapi.Connection, secret_hash: str
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM extension_credentials "
@@ -53,7 +53,7 @@ def get_extension_credential_by_hash(
 
 
 def revoke_extension_credential(
-    conn: sqlite3.Connection, credential_id: str, *, commit: bool = True
+    conn: dbapi.Connection, credential_id: str, *, commit: bool = True
 ) -> None:
     conn.execute(
         "UPDATE extension_credentials SET revoked_at = ? "
@@ -68,7 +68,7 @@ _TERMINAL_STATUSES = frozenset({"abandoned", "expired", "user_confirmed_submitte
 
 
 def create_handoff_session(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str,
     workspace_id: str,
@@ -100,7 +100,7 @@ def create_handoff_session(
 
 
 def get_handoff_session(
-    conn: sqlite3.Connection, session_id: str
+    conn: dbapi.Connection, session_id: str
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM handoff_sessions WHERE id = ?", (session_id,)
@@ -109,7 +109,7 @@ def get_handoff_session(
 
 
 def find_in_progress_handoff_sessions(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str,
     workspace_id: str,
@@ -125,7 +125,7 @@ def find_in_progress_handoff_sessions(
 
 
 def set_handoff_session_status(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     session_id: str,
     *,
     status: str,
@@ -144,7 +144,7 @@ def set_handoff_session_status(
 
 
 def append_handoff_event(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     handoff_session_id: str,
     event_id: str,
@@ -194,7 +194,7 @@ def append_handoff_event(
 
 
 def list_handoff_events(
-    conn: sqlite3.Connection, handoff_session_id: str
+    conn: dbapi.Connection, handoff_session_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM handoff_events WHERE handoff_session_id = ? "
@@ -205,7 +205,7 @@ def list_handoff_events(
 
 
 def create_session_token(
-    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+    conn: dbapi.Connection, *, handoff_session_id: str, commit: bool = True,
 ) -> str:
     token = secrets.token_urlsafe(32)
     token_id = f"hst_{uuid.uuid4().hex[:20]}"
@@ -221,7 +221,7 @@ def create_session_token(
 
 
 def revoke_session_tokens(
-    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+    conn: dbapi.Connection, *, handoff_session_id: str, commit: bool = True,
 ) -> None:
     conn.execute(
         "UPDATE handoff_session_tokens SET revoked_at = ? "
@@ -233,7 +233,7 @@ def revoke_session_tokens(
 
 
 def get_session_token_row(
-    conn: sqlite3.Connection, *, token_hash: str,
+    conn: dbapi.Connection, *, token_hash: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT hst.*, hs.account_id, hs.workspace_id, hs.pack_artifact_id, "
@@ -247,7 +247,7 @@ def get_session_token_row(
 
 
 def refresh_session_activity(
-    conn: sqlite3.Connection, *, handoff_session_id: str, commit: bool = True,
+    conn: dbapi.Connection, *, handoff_session_id: str, commit: bool = True,
 ) -> None:
     conn.execute(
         "UPDATE handoff_sessions SET last_activity_at = ? WHERE id = ?",
@@ -258,7 +258,7 @@ def refresh_session_activity(
 
 
 def create_submission_confirmation(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     handoff_session_id: str,
     workflow_event_id: str | None = None,

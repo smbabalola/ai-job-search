@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from webapp.persistence.artifacts import get_current_artifact
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.workspaces import get_profile_workspace_id
 from webapp.services.http_api import require_job_workspace
+from webapp.persistence import dbapi
 
 _REVIEW_ARTIFACT_TYPES = (
     "profile_snapshot", "job_posting_snapshot", "job_understanding_result",
@@ -15,7 +15,7 @@ _REVIEW_ARTIFACT_TYPES = (
 
 
 def build_review_view_model(
-    conn: sqlite3.Connection, workspace_id: str, *,
+    conn: dbapi.Connection, workspace_id: str, *,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)

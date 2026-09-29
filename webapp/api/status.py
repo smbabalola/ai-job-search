@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +10,7 @@ from webapp.services.ownership import AccountScope
 from webapp.services.http_api import JobWorkspaceNotFound, change_job_status
 from webapp.services.pipeline import PipelineError
 from webapp.services.workflow_events import list_events
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["status"])
 
@@ -32,7 +32,7 @@ def _translate(exc: Exception) -> HTTPException:
 @router.patch("/status")
 def patch_status(
     workspace_id: str, body: StatusBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -50,7 +50,7 @@ def patch_status(
 @router.get("/events")
 def get_events(
     workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:

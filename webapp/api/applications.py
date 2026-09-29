@@ -1,7 +1,6 @@
 """Bundle 6D-A Prepared Applications routes (spec §10, §16)."""
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -16,6 +15,7 @@ from webapp.services.fill_results import fill_summary
 from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import review_snapshot
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/applications", tags=["review"])
 LISTED = ("READY_FOR_REVIEW", "NEEDS_REVIEW", "APPROVED_FOR_FILL")
@@ -62,14 +62,14 @@ def prepared_applications(conn, *, settings, account_id: str) -> list[dict[str, 
 
 
 @router.get("/prepared")
-def get_prepared(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_prepared(request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return {"applications": prepared_applications(conn, settings=request.app.state.settings,
                                                   account_id=scope.account_id)}
 
 
 @router.post("/approve-selected")
-def post_approve_selected(body: ApproveSelectedBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_approve_selected(body: ApproveSelectedBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                           scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     results = review_approval.approve_selected(
         conn, settings=request.app.state.settings, account_id=scope.account_id,

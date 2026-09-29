@@ -46,6 +46,15 @@ def _parse_step_cost_max(raw: str | None) -> dict[str, Decimal]:
     return out
 
 
+def _parse_writer_lock_timeout() -> int:
+    """Spec §10.7: bounded writer-lock acquisition, 1000-30000 ms, default 10000."""
+    try:
+        value = int(os.environ.get("JOBSEARCH_WRITER_LOCK_TIMEOUT_MS", "10000"))
+    except ValueError:
+        return 10000
+    return max(1000, min(30000, value))
+
+
 def _parse_csv(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
@@ -144,6 +153,8 @@ class Settings:
             os.environ.get("JOBSEARCH_RETENTION_POLICY", "product/policies/retention-policy.dev.json")
         )
     )
+
+    writer_lock_timeout_ms: int = field(default_factory=_parse_writer_lock_timeout)
 
     @property
     def is_hosted(self) -> bool:

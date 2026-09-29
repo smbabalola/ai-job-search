@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from webapp.persistence.profile_sources import included_profile_sources
 
 from product.profile_snapshot import SOURCE_PATHS, build_snapshot
 from webapp.services.pipeline import PipelineError, refresh_profile
+from webapp.persistence import dbapi
 
 
 CANDIDATE_PROFILE_PATH = Path(
@@ -98,7 +98,7 @@ def render_basic_profile(data: dict[str, Any]) -> str:
 
 
 def setup_basic_profile(
-    conn: sqlite3.Connection, *, root: str | Path, data: dict[str, Any],
+    conn: dbapi.Connection, *, root: str | Path, data: dict[str, Any],
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     return import_profile_markdown(
@@ -108,7 +108,7 @@ def setup_basic_profile(
 
 
 def import_profile_markdown(
-    conn: sqlite3.Connection, *, root: str | Path, markdown: str,
+    conn: dbapi.Connection, *, root: str | Path, markdown: str,
     account_id: str = DEFAULT_ACCOUNT_ID,
 ) -> dict[str, Any]:
     root_path = Path(root).resolve()

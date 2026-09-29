@@ -14,7 +14,6 @@ Deviations from the task-12 brief:
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +26,7 @@ from webapp.persistence.autonomy_authority import (
 )
 from webapp.persistence import autonomy_prepare as ap
 from webapp.persistence.autonomy_ledger import revoke_issued_grants, wake_queue_items
+from webapp.persistence import dbapi
 
 
 class AutonomyHalted(Exception):
@@ -37,7 +37,7 @@ def sentinel_present(path: Path | str) -> bool:
     return Path(path).exists()
 
 
-def run_immediate(conn: sqlite3.Connection, work):
+def run_immediate(conn: dbapi.Connection, work):
     if conn.in_transaction:
         raise RuntimeError("autonomy control called inside an open transaction; use the *_in_transaction variant")
     conn.execute("BEGIN IMMEDIATE")

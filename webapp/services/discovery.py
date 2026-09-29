@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -51,6 +50,7 @@ from webapp.services.input_identity import (
 from webapp.services.semantic_proposal_adapter import select_semantic_profile_evidence
 from webapp.services.pipeline import PipelineError, create_job_from_source_record
 from webapp.persistence.workspaces import get_workspace
+from webapp.persistence import dbapi
 
 
 class DiscoveryServiceError(RuntimeError):
@@ -58,7 +58,7 @@ class DiscoveryServiceError(RuntimeError):
 
 
 def _require_active_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     account_id: str,
@@ -76,7 +76,7 @@ def _require_active_search_workspace(
 
 
 def run_discovery_search(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     runner: DiscoveryPortalRunner,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
@@ -237,7 +237,7 @@ def _source_limitations(
 
 
 def discovery_run_is_stale(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     run: dict[str, Any] | None = None,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
@@ -260,7 +260,7 @@ def discovery_run_is_stale(
 
 
 def evaluate_discovery_candidate(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     semantic_adapter: Any,
     *,
@@ -362,7 +362,7 @@ def evaluate_discovery_candidate(
 
 
 def discovery_fit_is_stale(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
@@ -416,7 +416,7 @@ def discovery_fit_is_stale(
 
 
 def grouped_discovery_candidates(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
     extensions_dir: Any | None = None,
@@ -465,7 +465,7 @@ def grouped_discovery_candidates(
 
 
 def _promote_candidate_in_transaction(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     *,
     search_workspace_id: str,
@@ -535,7 +535,7 @@ def _promote_candidate_in_transaction(
 
 
 def promote_discovery_candidate(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     candidate_id: str,
     *,
     search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
