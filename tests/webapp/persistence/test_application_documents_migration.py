@@ -6,6 +6,7 @@ from webapp.persistence.db import connect, init_db
 import webapp.persistence.migrations as migrations
 from webapp.persistence.migrations import APPLICATION_DOCUMENTS_MIGRATION_ID
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_fresh_bootstrap_and_idempotent_restart_create_empty_document_tables(tmp_path):
@@ -23,7 +24,7 @@ def test_document_metadata_is_database_immutable(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Example", title="Role")
+    workspace = create_workspace(conn, company="Example", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     conn.execute("INSERT INTO application_document_versions VALUES ('docv_1','account_local',?,'cv','user_uploaded','x.docx',?,1,?,'sha256/aa/x.docx',NULL,'now')", (workspace["id"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "a" * 64))
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         conn.execute("UPDATE application_document_versions SET original_filename='y.docx' WHERE id='docv_1'")
@@ -52,7 +53,7 @@ def test_exact_003_upgrade_preserves_existing_data_and_adds_no_document_rows(tmp
     path = tmp_path / "upgrade.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Existing", title="Role")
+    workspace = create_workspace(conn, company="Existing", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     _return_to_003(conn)
     migrations.apply_migrations(conn)
     assert conn.execute("SELECT company FROM workspaces WHERE id=?", (workspace["id"],)).fetchone()[0] == "Existing"

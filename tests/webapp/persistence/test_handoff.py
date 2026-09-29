@@ -146,7 +146,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     db_path = tmp_path / "upgrade-from-004.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    workspace = create_workspace(conn, company="Existing", title="Role")
+    workspace = create_workspace(conn, company="Existing", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     conn.execute(
         "INSERT INTO application_document_versions "
         "(id, account_id, source_workspace_id, document_kind, origin, "
@@ -528,6 +528,7 @@ from webapp.persistence.handoff import (
     create_submission_confirmation,
     list_handoff_events,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _session(conn):

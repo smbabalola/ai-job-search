@@ -14,6 +14,7 @@ from webapp.persistence.search_workspaces import (
     restore_search_workspace,
 )
 from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _conn(tmp_path):
@@ -24,26 +25,26 @@ def _conn(tmp_path):
 
 def test_create_rename_archive_and_restore_use_optimistic_revision(tmp_path):
     conn = _conn(tmp_path)
-    created = create_search_workspace(conn, name="Project Manager")
+    created = create_search_workspace(conn, name="Project Manager", account_id=DEFAULT_ACCOUNT_ID)
 
     renamed = rename_search_workspace(
         conn, created["id"], name="Programme Manager", expected_revision=1
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     assert renamed["name"] == "Programme Manager"
     assert renamed["revision"] == 2
 
     with pytest.raises(SearchWorkspaceConflictError):
         rename_search_workspace(
             conn, created["id"], name="Stale edit", expected_revision=1
-        )
+        , account_id=DEFAULT_ACCOUNT_ID)
 
     archived = archive_search_workspace(
         conn, created["id"], expected_revision=2
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     assert archived["status"] == "archived"
     restored = restore_search_workspace(
         conn, created["id"], expected_revision=3
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     assert restored["status"] == "active"
     assert restored["revision"] == 4
 
@@ -54,7 +55,7 @@ def test_last_active_search_workspace_cannot_be_archived(tmp_path):
     with pytest.raises(SearchWorkspaceError, match="last active"):
         archive_search_workspace(
             conn, DEFAULT_SEARCH_WORKSPACE_ID, expected_revision=1
-        )
+        , account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_preferences_are_isolated_and_copy_is_explicit(tmp_path):
@@ -64,28 +65,28 @@ def test_preferences_are_isolated_and_copy_is_explicit(tmp_path):
         {"target_roles": ["Planner"]},
         search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID,
         expected_revision=None,
-    )
-    blank = create_search_workspace(conn, name="Blank")
+     account_id=DEFAULT_ACCOUNT_ID)
+    blank = create_search_workspace(conn, name="Blank", account_id=DEFAULT_ACCOUNT_ID)
     copied = create_search_workspace(
         conn,
         name="Copied",
         copy_profile_from=DEFAULT_SEARCH_WORKSPACE_ID,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
-    assert get_current_user_profile(conn, blank["id"]) is None
-    assert get_current_user_profile(conn, copied["id"])["id"] == default_profile["id"]
+    assert get_current_user_profile(conn, blank["id"], account_id=DEFAULT_ACCOUNT_ID) is None
+    assert get_current_user_profile(conn, copied["id"], account_id=DEFAULT_ACCOUNT_ID)["id"] == default_profile["id"]
 
-    copied_profile = get_current_user_profile(conn, copied["id"])
+    copied_profile = get_current_user_profile(conn, copied["id"], account_id=DEFAULT_ACCOUNT_ID)
     updated = save_user_profile(
         conn,
         {"target_roles": ["Project Manager"]},
         search_workspace_id=copied["id"],
         expected_revision=copied_profile["profile_revision"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert updated["payload"]["target_roles"] == ["Project Manager"]
     assert get_current_user_profile(
         conn, DEFAULT_SEARCH_WORKSPACE_ID
-    )["payload"]["target_roles"] == ["Planner"]
+    , account_id=DEFAULT_ACCOUNT_ID)["payload"]["target_roles"] == ["Planner"]
     assert conn.execute(
         "SELECT COUNT(*) FROM search_workspace_user_profile_history "
         "WHERE search_workspace_id = ?",
@@ -100,13 +101,13 @@ def test_stale_preference_edit_is_rejected(tmp_path):
         {"target_roles": ["Planner"]},
         search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID,
         expected_revision=None,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     save_user_profile(
         conn,
         {"target_roles": ["Scheduler"]},
         search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID,
         expected_revision=first["profile_revision"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     with pytest.raises(SearchWorkspaceConflictError):
         save_user_profile(
@@ -114,4 +115,4 @@ def test_stale_preference_edit_is_rejected(tmp_path):
             {"target_roles": ["Manager"]},
             search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID,
             expected_revision=first["profile_revision"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)

@@ -26,6 +26,7 @@ from tests.webapp.services.test_application_blockers import (
     _run_fit,
     _workspace,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _resolve_the_sponsorship_gate(conn, workspace_id, tmp_path, *, value: bool, request_id: str, answer_scope: str = "APPLICATION_ONLY"):
@@ -138,7 +139,7 @@ def test_candidate_fact_answer_on_a_never_appears_in_b_bundle(tmp_path, webapp_p
     # CANDIDATE_FACT exists anywhere in Phase 4C, even for a genuine
     # SEARCH_WORKSPACE sibling.
     conn, workspace_a_id = _workspace(tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT)
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",

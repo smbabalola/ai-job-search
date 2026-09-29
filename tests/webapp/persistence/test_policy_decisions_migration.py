@@ -10,6 +10,7 @@ from webapp.persistence.migrations import POLICY_DECISIONS_MIGRATION_ID
 from webapp.persistence.workspaces import create_workspace
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.review import save_review_decision
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_fresh_bootstrap_creates_policy_decisions_table(tmp_path):
@@ -65,7 +66,7 @@ def test_upgrade_preserves_existing_review_decisions_unchanged(tmp_path):
     path = tmp_path / "upgrade.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Existing Co", title="Engineer")
+    workspace = create_workspace(conn, company="Existing Co", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -119,7 +120,7 @@ def test_policy_decisions_are_immutable(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -144,7 +145,7 @@ def test_policy_decisions_outcome_check_constraint(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -166,7 +167,7 @@ def test_policy_decisions_subject_key_not_null_constraint(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )

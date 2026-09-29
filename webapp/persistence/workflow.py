@@ -34,7 +34,7 @@ def _record_status_change_reserved(
     conn: dbapi.Connection, *, workspace_id: str, new_status: str, effective_date: str,
     note: str | None = None, submitted_pack_artifact_id: str | None = None,
     _allow_drafted: bool = False, commit: bool = True,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     if new_status not in TRACKER_STATUSES:
         raise ValueError(f"unknown tracker status: {new_status!r}")
@@ -174,7 +174,7 @@ def record_status_change(
     conn: dbapi.Connection, *, workspace_id: str, new_status: str, effective_date: str,
     note: str | None = None, submitted_pack_artifact_id: str | None = None,
     _allow_drafted: bool = False, commit: bool = True,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     """Record one transition, reserving exact-pack reads and event writes together."""
     if not commit:

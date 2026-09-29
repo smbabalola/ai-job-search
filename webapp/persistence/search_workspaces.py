@@ -27,7 +27,7 @@ def get_search_workspace(
     conn: dbapi.Connection,
     search_workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM search_workspaces WHERE id = ? AND account_id = ?",
@@ -39,7 +39,7 @@ def get_search_workspace(
 def list_search_workspaces(
     conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     if include_archived:
@@ -63,7 +63,7 @@ def create_search_workspace(
     name: str,
     search_workspace_id: str | None = None,
     copy_profile_from: str | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -150,7 +150,7 @@ def rename_search_workspace(
     *,
     name: str,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -169,7 +169,7 @@ def archive_search_workspace(
     search_workspace_id: str,
     *,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -203,7 +203,7 @@ def restore_search_workspace(
     search_workspace_id: str,
     *,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id

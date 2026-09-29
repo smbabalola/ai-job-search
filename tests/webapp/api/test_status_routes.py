@@ -9,6 +9,7 @@ from webapp.persistence.db import connect
 from webapp.persistence.workflow import record_status_change
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
 from webapp.services.staleness import record_dependency_fingerprint
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _client_workspace(tmp_path):
@@ -16,7 +17,7 @@ def _client_workspace(tmp_path):
     app = create_app(settings)
     with TestClient(app):
         conn = connect(settings.db_path)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
     return TestClient(app), settings, workspace["id"]
 
@@ -73,12 +74,12 @@ def test_applied_ignores_client_pack_id_and_binds_current_pack_server_side(tmp_p
     client, settings, workspace_id = _client_workspace(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         old_pack = _seed_non_stale_pack(conn, workspace_id, marker="old")
         record_status_change(
             conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
             submitted_pack_artifact_id=old_pack["id"], _allow_drafted=True,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         current_pack = _seed_non_stale_pack(conn, workspace_id, marker="current")
         conn.close()
         response = client.patch(f"/api/workspaces/{workspace_id}/status", json={
@@ -108,7 +109,7 @@ def test_profile_pseudo_workspace_rejected_by_status_and_events(tmp_path):
     client, settings, _ = _client_workspace(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
         assert client.patch("/api/workspaces/profile/status", json={
             "new_status": "interview", "effective_date": "2026-08-20"

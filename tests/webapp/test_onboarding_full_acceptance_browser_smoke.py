@@ -14,6 +14,7 @@ from tests.webapp.test_browser_smoke import (
 from webapp.persistence.db import connect
 from webapp.persistence.workflow import list_workflow_events
 from webapp.persistence.workspaces import get_workspace, list_workspaces
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_driving_every_walkthrough_via_its_real_launcher_flow_causes_zero_underlying_mutation(
@@ -26,9 +27,9 @@ def test_driving_every_walkthrough_via_its_real_launcher_flow_causes_zero_underl
     workspace_id = workspace_url.rsplit("/", 1)[-1]
 
     conn = connect(live_server.db_path)
-    workspace_before = get_workspace(conn, workspace_id)
+    workspace_before = get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     workflow_events_before = list_workflow_events(conn, workspace_id)
-    workspace_count_before = len(list_workspaces(conn))
+    workspace_count_before = len(list_workspaces(conn, account_id=DEFAULT_ACCOUNT_ID))
     render_url = f"{live_server.base_url}/api/workspaces/{workspace_id}/application-pack/render/cv"
     pack_bytes_before = page.request.get(render_url).body()
     conn.close()
@@ -88,9 +89,9 @@ def test_driving_every_walkthrough_via_its_real_launcher_flow_causes_zero_underl
         page.wait_for_selector(".onboarding-popover", state="detached")
 
     conn = connect(live_server.db_path)
-    workspace_after = get_workspace(conn, workspace_id)
+    workspace_after = get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     workflow_events_after = list_workflow_events(conn, workspace_id)
-    workspace_count_after = len(list_workspaces(conn))
+    workspace_count_after = len(list_workspaces(conn, account_id=DEFAULT_ACCOUNT_ID))
     conn.close()
     pack_bytes_after = page.request.get(render_url).body()
 

@@ -9,6 +9,7 @@ from webapp.config import Settings
 from webapp.persistence.artifacts import get_current_artifact, save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import ensure_profile_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 EXTENSIONS_DIR = Path(__file__).parents[2] / "fixtures" / "extensions"
 
@@ -310,7 +311,7 @@ def test_profile_pseudo_workspace_cannot_run_processing(tmp_path, suffix, body):
     app.state.application_intelligence_provider = object()
     with TestClient(app) as client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
         assert client.post(f"/api/workspaces/profile/{suffix}", json=body).status_code == 404
 

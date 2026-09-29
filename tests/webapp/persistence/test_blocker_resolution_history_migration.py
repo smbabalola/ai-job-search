@@ -13,6 +13,7 @@ from webapp.persistence.migrations import (
 from webapp.persistence.workspaces import create_workspace
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.policy_decisions import save_policy_decision
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_fresh_bootstrap_has_request_id_and_superseded_at_columns(tmp_path):
@@ -81,7 +82,7 @@ def test_upgrade_preserves_existing_single_resolution_with_request_id_backfilled
     path = tmp_path / "upgrade.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Existing Co", title="Engineer")
+    workspace = create_workspace(conn, company="Existing Co", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -151,7 +152,7 @@ def test_multiple_resolutions_per_blocker_now_permitted(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -197,7 +198,7 @@ def test_duplicate_request_id_for_same_blocker_rejected(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -240,7 +241,7 @@ def test_application_blockers_can_be_marked_superseded(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )

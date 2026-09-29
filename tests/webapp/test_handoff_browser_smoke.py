@@ -17,6 +17,7 @@ from webapp.config import Settings
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "handoff"
 
@@ -93,8 +94,8 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
     app = create_app(settings)
     with TestClient(app) as client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             payload={"schema_version": "application-pack.v1"},

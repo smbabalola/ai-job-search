@@ -34,6 +34,7 @@ from tests.webapp.services.test_application_blockers import (
     _run_fit,
     _workspace,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _empty_adapter():
@@ -59,7 +60,7 @@ def test_run_job_fit_with_no_blockers_produces_v2_request_with_empty_bundle(
 
     run_job_fit(
         conn, workspace_id, _empty_adapter(), request_id="req-1", active_extensions=[],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     bundle_artifact = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
     assert bundle_artifact is not None
@@ -89,7 +90,7 @@ def test_dependency_fingerprint_references_the_exact_persisted_bundle_artifact(
 ):
     conn, workspace_id = _workspace(tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT)
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-1", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-1", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
 
     request_artifact = get_current_artifact(conn, workspace_id, "job_fit_request")
     bundle_artifact = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
@@ -125,7 +126,7 @@ def test_application_only_answer_appears_in_next_v2_request(tmp_path, webapp_pro
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     request_artifact = get_current_artifact(conn, workspace_id, "job_fit_request")
     answers = request_artifact["payload"]["resolved_blocker_answers"]["answers"]
     assert len(answers) == 1
@@ -146,7 +147,7 @@ def test_search_workspace_answer_appears_in_own_next_v2_request_with_own_workspa
         answer_scope="SEARCH_WORKSPACE", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     request_artifact = get_current_artifact(conn, workspace_id, "job_fit_request")
     answers = request_artifact["payload"]["resolved_blocker_answers"]["answers"]
     assert len(answers) == 1
@@ -169,7 +170,7 @@ def test_candidate_fact_answer_appears_in_own_next_v2_request(tmp_path, webapp_p
         answer_scope="CANDIDATE_FACT", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     request_artifact = get_current_artifact(conn, workspace_id, "job_fit_request")
     answers = request_artifact["payload"]["resolved_blocker_answers"]["answers"]
     assert len(answers) == 1
@@ -186,7 +187,7 @@ def _setup_two_sibling_workspaces(tmp_path, webapp_profile_root, *, search_works
     conn, workspace_a_id = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT
     )
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -213,7 +214,7 @@ def test_sibling_search_workspace_answer_appears_via_real_pipeline_rerun(
     # Sibling B reruns Job Fit (its own posting also has a matching
     # sponsorship requirement, so applicability holds) -- through the real
     # production pipeline, not a unit-level bundle-only call.
-    run_job_fit(conn, workspace_b_id, _empty_adapter(), request_id="req-fit-b-2", active_extensions=[])
+    run_job_fit(conn, workspace_b_id, _empty_adapter(), request_id="req-fit-b-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     request_b = get_current_artifact(conn, workspace_b_id, "job_fit_request")
     answers_b = request_b["payload"]["resolved_blocker_answers"]["answers"]
     assert len(answers_b) == 1
@@ -235,7 +236,7 @@ def test_candidate_fact_answer_never_reused_by_sibling_via_real_pipeline_rerun(
         answer_scope="CANDIDATE_FACT", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_b_id, _empty_adapter(), request_id="req-fit-b-2", active_extensions=[])
+    run_job_fit(conn, workspace_b_id, _empty_adapter(), request_id="req-fit-b-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     request_b = get_current_artifact(conn, workspace_b_id, "job_fit_request")
     answers_b = request_b["payload"]["resolved_blocker_answers"]["answers"]
     assert answers_b == []
@@ -258,7 +259,7 @@ def test_every_pipeline_produced_bundle_entry_has_source_workspace_id(
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     bundle_artifact = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
     assert bundle_artifact["payload"]["answers"]  # sanity: not empty
     for entry in bundle_artifact["payload"]["answers"]:
@@ -283,10 +284,10 @@ def test_repeated_run_job_fit_with_no_answer_change_produces_same_bundle_content
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     content_id_1 = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")["content_id"]
 
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-3", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-3", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     content_id_2 = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")["content_id"]
 
     assert content_id_1 == content_id_2
@@ -313,7 +314,7 @@ def test_correcting_answer_between_runs_changes_bundle_content_id(
         answer_value={"type": "boolean", "value": True},  # sponsorship required -> stays blocked
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
-    fit_artifact_2 = run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    fit_artifact_2 = run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=fit_artifact_2)
     content_id_before = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")["content_id"]
 
@@ -324,7 +325,7 @@ def test_correcting_answer_between_runs_changes_bundle_content_id(
         answer_value={"type": "boolean", "value": False},
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
-    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-3", active_extensions=[])
+    run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-3", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     content_id_after = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")["content_id"]
 
     assert content_id_before != content_id_after
@@ -361,12 +362,12 @@ def test_changed_answer_without_rerun_makes_job_fit_stale(tmp_path, webapp_profi
         answer_value={"type": "boolean", "value": True},  # sponsorship required -> stays blocked
         answer_scope="APPLICATION_ONLY", resolved_by="user_1",
     )
-    fit_artifact_2 = run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[])
+    fit_artifact_2 = run_job_fit(conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[], account_id=DEFAULT_ACCOUNT_ID)
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=fit_artifact_2)
 
     # Sanity: immediately after the rerun, resolved_blocker_answers itself
     # is not what's stale (the fingerprint matches the just-saved bundle).
-    request_staleness_before = check_staleness(conn, workspace_id, "job_fit_request")
+    request_staleness_before = check_staleness(conn, workspace_id, "job_fit_request", account_id=DEFAULT_ACCOUNT_ID)
     assert not any(
         "resolved_blocker_answers" in reason for reason in request_staleness_before["reasons"]
     )
@@ -403,11 +404,11 @@ def test_changed_answer_without_rerun_makes_job_fit_stale(tmp_path, webapp_profi
         payload=fresh_bundle, content_id=_hash_artifact("blockeranswers_", fresh_bundle),
     )
 
-    request_staleness = check_staleness(conn, workspace_id, "job_fit_request")
+    request_staleness = check_staleness(conn, workspace_id, "job_fit_request", account_id=DEFAULT_ACCOUNT_ID)
     assert request_staleness["stale"] is True
     assert any("resolved_blocker_answers" in reason for reason in request_staleness["reasons"])
 
-    result_staleness = check_staleness(conn, workspace_id, "job_fit_result")
+    result_staleness = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result_staleness["stale"] is True
     conn.close()
 
@@ -427,7 +428,7 @@ def test_old_v1_job_fit_request_payload_still_validates(tmp_path, webapp_profile
     conn, workspace_id = _workspace(tmp_path, webapp_profile_root, job_snapshot=EMPTY_JOB_SNAPSHOT)
     from webapp.services.pipeline import get_current_profile_snapshot
 
-    profile_artifact = get_current_profile_snapshot(conn)
+    profile_artifact = get_current_profile_snapshot(conn, account_id=DEFAULT_ACCOUNT_ID)
     job_artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
     bundle = build_resolved_job_evidence_bundle(
         job_artifact["payload"], job_understanding_request=None, job_understanding_result=None,

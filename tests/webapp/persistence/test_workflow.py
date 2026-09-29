@@ -6,13 +6,14 @@ from webapp.persistence.workspaces import create_workspace, get_workspace
 from webapp.persistence.workflow import (
     TRACKER_STATUSES, FINAL_STATUSES, is_final, record_status_change, list_workflow_events,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, ws["id"]
 
 
@@ -32,14 +33,14 @@ def test_final_statuses_grouping():
 def test_record_status_change_rejects_drafted_without_explicit_allow(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     with pytest.raises(ValueError, match="drafted"):
-        record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18")
+        record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
 
 def test_record_status_change_rejects_applied_without_prior_drafted(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     with pytest.raises(ValueError, match="applied requires the workspace"):
-        record_status_change(conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-18")
+        record_status_change(conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-18", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
 
@@ -51,9 +52,9 @@ def test_record_status_change_rejects_applied_without_pack_binding(tmp_path):
         payload=completion_ready_pack_payload("missing_binding"),
     )
     record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
-                          submitted_pack_artifact_id=pack["id"], _allow_drafted=True)
+                          submitted_pack_artifact_id=pack["id"], _allow_drafted=True, account_id=DEFAULT_ACCOUNT_ID)
     with pytest.raises(ValueError, match="applied requires submitted_pack_artifact_id"):
-        record_status_change(conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-19")
+        record_status_change(conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-19", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
 
@@ -65,10 +66,10 @@ def test_record_status_change_allows_applied_after_drafted_with_pack_binding(tmp
         payload=completion_ready_pack_payload("applied"),
     )
     record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
-                          submitted_pack_artifact_id=pack["id"], _allow_drafted=True)
+                          submitted_pack_artifact_id=pack["id"], _allow_drafted=True, account_id=DEFAULT_ACCOUNT_ID)
     record_status_change(conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-19",
-                          submitted_pack_artifact_id=pack["id"])
-    assert get_workspace(conn, workspace_id)["workflow_status"] == "applied"
+                          submitted_pack_artifact_id=pack["id"], account_id=DEFAULT_ACCOUNT_ID)
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] == "applied"
     events = list_workflow_events(conn, workspace_id)
     applied_event = next(e for e in events if e["new_status"] == "applied")
     assert applied_event["submitted_pack_artifact_id"] == pack["id"]
@@ -93,9 +94,9 @@ def test_record_status_change_rejects_applied_with_incomplete_pack_binding(tmp_p
         record_status_change(
             conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-19",
             submitted_pack_artifact_id=pack["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
-    assert get_workspace(conn, workspace_id)["workflow_status"] == "drafted"
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] == "drafted"
 
 
 def test_record_status_change_does_not_silently_revalidate_a_legacy_pack(tmp_path):
@@ -113,9 +114,9 @@ def test_record_status_change_does_not_silently_revalidate_a_legacy_pack(tmp_pat
         record_status_change(
             conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
             submitted_pack_artifact_id=pack["id"], _allow_drafted=True,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
-    assert get_workspace(conn, workspace_id)["workflow_status"] is None
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] is None
 
 
 def test_record_status_change_allows_drafted_with_internal_flag_and_pack_binding(tmp_path):
@@ -128,8 +129,8 @@ def test_record_status_change_allows_drafted_with_internal_flag_and_pack_binding
     record_status_change(
         conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
         submitted_pack_artifact_id=pack["id"], _allow_drafted=True,
-    )
-    assert get_workspace(conn, workspace_id)["workflow_status"] == "drafted"
+     account_id=DEFAULT_ACCOUNT_ID)
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] == "drafted"
     events = list_workflow_events(conn, workspace_id)
     assert events[0]["submitted_pack_artifact_id"] == pack["id"]
     conn.close()
@@ -137,8 +138,8 @@ def test_record_status_change_allows_drafted_with_internal_flag_and_pack_binding
 
 def test_record_status_change_updates_workspace_and_logs_event_for_non_drafted(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
-    record_status_change(conn, workspace_id=workspace_id, new_status="interview", effective_date="2026-08-18", note="x")
-    assert get_workspace(conn, workspace_id)["workflow_status"] == "interview"
+    record_status_change(conn, workspace_id=workspace_id, new_status="interview", effective_date="2026-08-18", note="x", account_id=DEFAULT_ACCOUNT_ID)
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] == "interview"
     events = list_workflow_events(conn, workspace_id)
     assert len(events) == 1
     assert events[0]["previous_status"] is None
@@ -149,14 +150,14 @@ def test_record_status_change_updates_workspace_and_logs_event_for_non_drafted(t
 def test_record_status_change_rejects_unknown_status(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     with pytest.raises(ValueError):
-        record_status_change(conn, workspace_id=workspace_id, new_status="ghosted", effective_date="2026-08-18")
+        record_status_change(conn, workspace_id=workspace_id, new_status="ghosted", effective_date="2026-08-18", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
 
 def test_record_status_change_tracks_previous_status(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
-    record_status_change(conn, workspace_id=workspace_id, new_status="interview", effective_date="2026-08-18")
-    record_status_change(conn, workspace_id=workspace_id, new_status="offer", effective_date="2026-08-19")
+    record_status_change(conn, workspace_id=workspace_id, new_status="interview", effective_date="2026-08-18", account_id=DEFAULT_ACCOUNT_ID)
+    record_status_change(conn, workspace_id=workspace_id, new_status="offer", effective_date="2026-08-19", account_id=DEFAULT_ACCOUNT_ID)
     events = list_workflow_events(conn, workspace_id)
     assert events[0]["previous_status"] == "interview"
     assert events[0]["new_status"] == "offer"
@@ -173,7 +174,7 @@ def test_status_and_event_commit_atomically(tmp_path):
         record_status_change(
             conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-18",
             submitted_pack_artifact_id="art_does_not_exist", _allow_drafted=True,
-        )
-    assert get_workspace(conn, workspace_id)["workflow_status"] is None
+         account_id=DEFAULT_ACCOUNT_ID)
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] is None
     assert list_workflow_events(conn, workspace_id) == []
     conn.close()

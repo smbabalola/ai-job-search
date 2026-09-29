@@ -15,6 +15,7 @@ from webapp.persistence.db import connect, init_db
 from webapp.persistence.migrations import (
     FILL_MIGRATION_ID, HUMAN_SUBMIT_MIGRATION_ID, SUBMIT_APPEND_ONLY_TABLES, SUBMIT_EVENTS, SUBMIT_OBSERVATION_PHASES,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 NOW = "2026-09-29T10:00:00.000000+00:00"
 
@@ -61,7 +62,7 @@ def test_new_tables_reject_update_and_delete(conn, table):
 def _ws(conn):
     from webapp.persistence.workspaces import create_workspace
     row = conn.execute("SELECT id FROM workspaces LIMIT 1").fetchone()
-    return row[0] if row else create_workspace(conn, company="Acme", title="Engineer")["id"]
+    return row[0] if row else create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)["id"]
 
 
 def _intent(conn, id_, key, *, state="CLAIMED", source="HUMAN_AUTHORIZED"):

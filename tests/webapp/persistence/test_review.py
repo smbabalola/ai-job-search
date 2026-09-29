@@ -3,13 +3,14 @@ from webapp.persistence.workspaces import create_workspace
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.policy_decisions import save_policy_decision
 from webapp.persistence.review import save_review_decision, list_review_decisions
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _setup(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(conn, workspace_id=ws["id"], artifact_type="job_fit_result", payload={"gaps": []})
     return conn, ws["id"], artifact["id"]
 

@@ -97,7 +97,7 @@ def render_basic_profile(data: dict[str, Any]) -> str:
 
 def setup_basic_profile(
     conn: dbapi.Connection, *, root: str | Path, data: dict[str, Any],
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     return import_profile_markdown(
         conn, root=root, markdown=render_basic_profile(data),
@@ -107,7 +107,7 @@ def setup_basic_profile(
 
 def import_profile_markdown(
     conn: dbapi.Connection, *, root: str | Path, markdown: str,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     from webapp.storage.profile_sources import as_profile_sources
 

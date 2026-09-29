@@ -58,6 +58,7 @@ from tests.webapp.test_full_journey_acceptance import (
     _decide_current_review_surface,
     _review,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 AUTHORIZED_DISPOSITION = "acknowledged_and_proceed"
 
@@ -108,7 +109,7 @@ class TestServiceLevelGoldenPath:
             assert get_current_artifact(conn, workspace_id, "resolved_job_evidence") is not None
 
             # 5: Task 1 + Task 2, persisted as exact provenance-pinned artifacts.
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             content_plan_artifact = plan_result["content_plan_artifact"]
             statement_plan_artifact = plan_result["statement_plan_artifact"]
             assert content_plan_artifact["payload"]["schema_version"] == "cv-content-plan-artifact.v1"
@@ -121,7 +122,7 @@ class TestServiceLevelGoldenPath:
             # 7: immutable reviewed generation basis.
             basis_result = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=statement_plan_artifact["id"],
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
             basis_artifact = basis_result["basis_artifact"]
             assert basis_artifact["payload"]["schema_version"] == "cv-generation-basis.v1"
             assert basis_artifact["payload"]["review"]["statement_plan_artifact_id"] == statement_plan_artifact["id"]
@@ -215,7 +216,7 @@ class TestEvidenceGrounding:
             assert unsupported_evidence | gate_only_evidence <= set(claim_text)
             assert not (unsupported_evidence | gate_only_evidence) & cited_evidence
 
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             statement_plan_artifact = plan_result["statement_plan_artifact"]
             statement_plan = statement_plan_artifact["payload"]["statement_plan"]
 
@@ -238,7 +239,7 @@ class TestEvidenceGrounding:
             _authorize_all(conn, workspace_id, statement_plan_artifact["id"])
             basis_artifact = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=statement_plan_artifact["id"],
-            )["basis_artifact"]
+             account_id=DEFAULT_ACCOUNT_ID)["basis_artifact"]
             conn.commit()
             model_provenance = basis_artifact["payload"]["cv_document_model"]["provenance"]
             assert set(model_provenance["source_profile_evidence_ids"]) == cited_evidence
@@ -275,7 +276,7 @@ class TestReviewBoundary:
             tmp_path, ai_units=completion_ready_content_units(),
         )
         try:
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             statement_plan_artifact = plan_result["statement_plan_artifact"]
             items = list_cv_statement_review_items(conn, statement_plan_artifact["id"])
             assert len(items) >= 1
@@ -292,7 +293,7 @@ class TestReviewBoundary:
 
             basis_result = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=statement_plan_artifact["id"],
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
             basis_artifact = basis_result["basis_artifact"]
 
             # Model-level exclusion.
@@ -319,12 +320,12 @@ class TestHistoricalImmutability:
             tmp_path, ai_units=completion_ready_content_units(),
         )
         try:
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             statement_plan_artifact = plan_result["statement_plan_artifact"]
             _authorize_all(conn, workspace_id, statement_plan_artifact["id"])
             basis_result = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=statement_plan_artifact["id"],
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
             basis_artifact = basis_result["basis_artifact"]
             conn.commit()
 
@@ -361,12 +362,12 @@ class TestHistoricalImmutability:
             # (unchanged, but independently re-derived) inputs to produce
             # a newer plan/basis -- the earlier confirmed pack must be
             # completely unaffected.
-            newer_plan = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            newer_plan = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             newer_statement_plan_artifact = newer_plan["statement_plan_artifact"]
             _authorize_all(conn, workspace_id, newer_statement_plan_artifact["id"])
             build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=newer_statement_plan_artifact["id"],
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
             conn.commit()
 
             reread_cv_row = get_document_version(conn, original_cv_id, account_id="account_local")
@@ -390,11 +391,11 @@ class TestPinnedBasisAcceptance:
             tmp_path, ai_units=completion_ready_content_units(),
         )
         try:
-            plan_a = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_a = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             _authorize_all(conn, workspace_id, plan_a["statement_plan_artifact"]["id"])
             basis_a = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=plan_a["statement_plan_artifact"]["id"],
-            )["basis_artifact"]
+             account_id=DEFAULT_ACCOUNT_ID)["basis_artifact"]
             conn.commit()
 
             first_generation = generate_application_documents(
@@ -406,11 +407,11 @@ class TestPinnedBasisAcceptance:
                 next(row for row in first_generation["documents"] if row["document_kind"] == "cv")
             )
 
-            plan_b = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_b = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             _authorize_all(conn, workspace_id, plan_b["statement_plan_artifact"]["id"])
             build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=plan_b["statement_plan_artifact"]["id"],
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
             conn.commit()
 
             second_generation = generate_application_documents(
@@ -455,11 +456,11 @@ class TestNoRegenerationOnDownload:
             tmp_path, ai_units=completion_ready_content_units(),
         )
         try:
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             _authorize_all(conn, workspace_id, plan_result["statement_plan_artifact"]["id"])
             basis_artifact = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=plan_result["statement_plan_artifact"]["id"],
-            )["basis_artifact"]
+             account_id=DEFAULT_ACCOUNT_ID)["basis_artifact"]
             conn.commit()
 
             generated = generate_application_documents(
@@ -553,11 +554,11 @@ class TestOneAuthority:
         legacy_units = completion_ready_content_units(first_unit=legacy_marker_unit)
         client, app, settings, workspace_id, conn = _cv_v2_chain(tmp_path, ai_units=legacy_units)
         try:
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             _authorize_all(conn, workspace_id, plan_result["statement_plan_artifact"]["id"])
             basis_artifact = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=plan_result["statement_plan_artifact"]["id"],
-            )["basis_artifact"]
+             account_id=DEFAULT_ACCOUNT_ID)["basis_artifact"]
             conn.commit()
 
             generated = generate_application_documents(
@@ -584,11 +585,11 @@ class TestCandidateSnapshotCompatibility:
             tmp_path, ai_units=completion_ready_content_units(),
         )
         try:
-            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
             _authorize_all(conn, workspace_id, plan_result["statement_plan_artifact"]["id"])
             basis_artifact = build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id=plan_result["statement_plan_artifact"]["id"],
-            )["basis_artifact"]
+             account_id=DEFAULT_ACCOUNT_ID)["basis_artifact"]
             conn.commit()
 
             generated = generate_application_documents(

@@ -29,6 +29,7 @@ from webapp.persistence.workspaces import PROFILE_WORKSPACE_ID, create_workspace
 from webapp.services.document_blob_store import DocumentBlobStore
 
 from tests.webapp.fixtures.acceptance.fixtures import extension
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 POSTING_TEXT = (
@@ -858,7 +859,7 @@ def test_user_managed_documents_upload_select_confirm_replace_and_apply_exact_by
             conn = connect(live_server.db_path)
             reusable_workspace = create_workspace(
                 conn, company="Reuse Demo", title="Second Role"
-            )
+            , account_id=DEFAULT_ACCOUNT_ID)
             conn.close()
             page.goto(
                 f"{live_server.base_url}/workspaces/{reusable_workspace['id']}",

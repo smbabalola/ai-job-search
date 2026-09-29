@@ -11,6 +11,7 @@ import pytest
 from webapp.persistence import submit as s
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.fill import CleartextAtRestError
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 pytestmark = pytest.mark.sqlite_only  # turns SQLite foreign keys off to test row shape alone
 
@@ -91,7 +92,7 @@ def test_record_human_intent_keeps_one_live_intent_when_human_authorized_is_live
     from webapp.persistence.workspaces import create_workspace
     init_db(tmp_path / "i.sqlite3")
     c = connect(tmp_path / "i.sqlite3")
-    ws = create_workspace(c, company="Acme", title="Engineer")["id"]
+    ws = create_workspace(c, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)["id"]
     save_application_identity(c, application_workspace_id=ws, source_record={
         "source": "greenhouse", "source_record_id": "123", "source_url": "http://127.0.0.1:8430/acme/jobs/123",
         "company": "Acme", "title": "Engineer", "location": "London"})

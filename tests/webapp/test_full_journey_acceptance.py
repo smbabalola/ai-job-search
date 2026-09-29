@@ -37,6 +37,7 @@ from tests.webapp.fixtures.acceptance.fixtures import (
     transferable_proposal,
     unsupported_content_unit,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 PROFILE_ROOT = Path(__file__).parent / "fixtures" / "webapp_profile_root"
@@ -67,7 +68,7 @@ def _install_extension(settings: Settings, *, conditional: bool = True) -> None:
 def _install_profile(settings: Settings, payload: dict | None = None) -> dict:
     profile = copy.deepcopy(payload or rich_profile())
     conn = connect(settings.db_path)
-    ensure_profile_workspace(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn,
         workspace_id=PROFILE_WORKSPACE_ID,
@@ -339,8 +340,8 @@ def test_global_profile_refresh_genuinely_stales_fit_and_blocks_pack(tmp_path):
         )
         assert client.post("/api/profile/refresh").status_code == 200
         conn = connect(settings.db_path)
-        assert check_staleness(conn, workspace_id, "job_fit_result")["stale"] is True
-        assert check_staleness(conn, workspace_id, "application_intelligence_result")["stale"] is True
+        assert check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
+        assert check_staleness(conn, workspace_id, "application_intelligence_result", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
         conn.close()
         rejected = client.post(
             f"/api/workspaces/{workspace_id}/application-pack",
@@ -359,9 +360,9 @@ def test_job_and_understanding_changes_stale_the_entire_downstream_chain(tmp_pat
         )
         assert rerun.status_code == 200, rerun.text
         conn = connect(settings.db_path)
-        assert check_staleness(conn, workspace_id, "resolved_job_evidence")["stale"] is True
-        assert check_staleness(conn, workspace_id, "job_fit_result")["stale"] is True
-        assert check_staleness(conn, workspace_id, "application_intelligence_result")["stale"] is True
+        assert check_staleness(conn, workspace_id, "resolved_job_evidence", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
+        assert check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
+        assert check_staleness(conn, workspace_id, "application_intelligence_result", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
         current_job = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
         changed_job = copy.deepcopy(current_job["payload"])
         changed_job["description"] += " Updated source evidence."
@@ -369,7 +370,7 @@ def test_job_and_understanding_changes_stale_the_entire_downstream_chain(tmp_pat
             conn, workspace_id=workspace_id, artifact_type="job_posting_snapshot",
             payload=changed_job, content_id="jobsnap_acceptance_changed",
         )
-        assert check_staleness(conn, workspace_id, "job_understanding_result")["stale"] is True
+        assert check_staleness(conn, workspace_id, "job_understanding_result", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
         conn.close()
     finally:
         _close(client)

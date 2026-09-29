@@ -55,7 +55,7 @@ def require_job_workspace(
     conn: dbapi.Connection,
     workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_workspace(conn, workspace_id, account_id=account_id)
     if workspace is None or workspace["kind"] != "job":
@@ -64,7 +64,7 @@ def require_job_workspace(
 
 
 def list_job_workspaces(
-    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     return list_workspaces(conn, account_id=account_id)
 
@@ -73,14 +73,14 @@ def get_job_workspace(
     conn: dbapi.Connection,
     workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     return require_job_workspace(conn, workspace_id, account_id=account_id)
 
 
 def create_job_workspace(
     conn: dbapi.Connection, *, company: str, title: str,
-    source_record: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
+    source_record: dict[str, Any], account_id: str,
     source_record_origin: str | None = None,
 ) -> dict[str, Any]:
     return create_job_from_source_record(
@@ -127,7 +127,7 @@ def _preserve_current_artifacts(
 
 def understand_job(
     conn: dbapi.Connection, workspace_id: str, provider: Any, *, request_id: str,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     artifact = _preserve_current_artifacts(
@@ -150,7 +150,7 @@ def understand_job(
 def fit_job(
     conn: dbapi.Connection, workspace_id: str, semantic_adapter: Any, *, request_id: str,
     extension_ids: list[str], extensions_dir: Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     try:
@@ -172,7 +172,7 @@ def fit_job(
 
 def generate_application_intelligence(
     conn: dbapi.Connection, workspace_id: str, provider: Any, *, request_id: str,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     artifact = _preserve_current_artifacts(
@@ -210,7 +210,7 @@ def record_review_decision(
     conn: dbapi.Connection, workspace_id: str, *, review_item_type: str,
     source_artifact_id: str, domain_item_id: str | None, disposition: str,
     note: str | None, commit: bool = True,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     if disposition not in DISPOSITIONS:
@@ -234,7 +234,7 @@ def record_review_decision(
 
 def record_review_decisions(
     conn: dbapi.Connection, workspace_id: str, decisions: list[dict[str, Any]],
-    *, account_id: str = DEFAULT_ACCOUNT_ID,
+    *, account_id: str,
 ) -> list[dict[str, Any]]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     if not decisions:
@@ -266,7 +266,7 @@ def record_review_decisions(
 def confirm_job_application_pack(
     conn: dbapi.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path, extensions_dir: Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     document_selection_revisions: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
@@ -280,7 +280,7 @@ def confirm_job_application_pack(
 def retry_job_application_pack_projection(
     conn: dbapi.Connection, workspace_id: str, *, pack_artifact_id: str,
     documents_root: Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     return retry_application_pack_projection(
@@ -295,7 +295,7 @@ def render_job_application_pack_document(
     *,
     kind: str,
     pack_artifact_id: str | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     documents_root: Path = Path("documents"),
 ):
     """Render one document (``kind`` is ``"cv"`` or ``"cover_letter"``) from an
@@ -354,7 +354,7 @@ def change_job_status(
     conn: dbapi.Connection, workspace_id: str, *, new_status: str,
     effective_date: str, note: str | None,
     extensions_dir: Path | str = Path("extensions"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     if new_status == "drafted":
         raise PipelineError(

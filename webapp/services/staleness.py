@@ -51,7 +51,7 @@ def record_dependency_fingerprint(
 def check_staleness(
     conn: dbapi.Connection, workspace_id: str, artifact_type: str, *,
     extensions_dir: Path | str = Path("extensions"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     return _check_staleness_recursive(

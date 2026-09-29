@@ -18,6 +18,7 @@ from webapp.services.profile_manager import (
     update_profile_source,
 )
 from webapp.services.staleness import check_staleness, record_dependency_fingerprint
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "webapp_profile_root"
@@ -57,7 +58,7 @@ def _setup(tmp_path):
     db_path = tmp_path / "profile.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    original = refresh_profile(conn, root=str(root))
+    original = refresh_profile(conn, root=str(root), account_id=DEFAULT_ACCOUNT_ID)
     return root, conn, original
 
 
@@ -67,7 +68,7 @@ def _entry(manager, kind):
 
 def test_crud_uses_stable_source_entry_identity_and_immutable_snapshots(tmp_path):
     root, conn, original = _setup(tmp_path)
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     employment = _entry(manager, "employment")
     entry_id = employment["entry_id"]
 
@@ -78,7 +79,7 @@ def test_crud_uses_stable_source_entry_identity_and_immutable_snapshots(tmp_path
             "date_range": "2020 - Present", "location": "London",
             "details": ["Built reliable analytical systems.", "Led delivery planning."],
         },
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert _entry(updated["manager"], "employment")["entry_id"] == entry_id
     assert "profile-entry-id: " + entry_id in (root / CANDIDATE).read_text(encoding="utf-8")
     assert any(
@@ -94,14 +95,14 @@ def test_crud_uses_stable_source_entry_identity_and_immutable_snapshots(tmp_path
     added = create_profile_entry(
         conn, root=root, expected_revision=updated["manager"]["revision"],
         kind="certification", fields={"value": "AWS Solutions Architect"},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     added_id = added["entry_id"]
     assert any(item["entry_id"] == added_id for item in added["manager"]["entries"])
 
     deleted = delete_profile_entry(
         conn, root=root, expected_revision=added["manager"]["revision"],
         entry_id=added_id,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert all(item["entry_id"] != added_id for item in deleted["manager"]["entries"])
     assert "AWS Solutions Architect" not in (root / CANDIDATE).read_text(encoding="utf-8")
     assert len(list_artifact_history(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")) == 4
@@ -109,35 +110,35 @@ def test_crud_uses_stable_source_entry_identity_and_immutable_snapshots(tmp_path
 
 def test_stale_revision_and_validation_failure_preserve_source_and_current_snapshot(tmp_path):
     root, conn, original = _setup(tmp_path)
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     source_before = (root / CANDIDATE).read_bytes()
 
     create_profile_entry(
         conn, root=root, expected_revision=manager["revision"],
         kind="technical_skill", fields={"subsection": "Tools", "value": "SQL"},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     current = get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")
     with pytest.raises(ProfileRevisionConflict):
         create_profile_entry(
             conn, root=root, expected_revision=manager["revision"],
             kind="certification", fields={"value": "Stale write"},
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     assert get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")["id"] == current["id"]
 
-    fresh = get_profile_manager(conn, root=root)
+    fresh = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     name = next(item for item in fresh["entries"] if item["kind"] == "identity" and item["fields"]["label"] == "Name")
     source_after_success = (root / CANDIDATE).read_bytes()
     with pytest.raises(ProfileManagerError, match="cannot be deleted"):
         delete_profile_entry(
             conn, root=root, expected_revision=fresh["revision"], entry_id=name["entry_id"]
-        )
+        , account_id=DEFAULT_ACCOUNT_ID)
     assert (root / CANDIDATE).read_bytes() == source_after_success
     with pytest.raises(ProfileManagerError, match="non-conflicted candidate name"):
         update_profile_entry(
             conn, root=root, expected_revision=fresh["revision"],
             entry_id=name["entry_id"], kind="identity",
             fields={"label": "Name", "value": "[YOUR_NAME]"},
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     assert (root / CANDIDATE).read_bytes() == source_after_success
     assert get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")["id"] == current["id"]
     assert source_before != source_after_success
@@ -146,7 +147,7 @@ def test_stale_revision_and_validation_failure_preserve_source_and_current_snaps
 
 def test_persistence_failure_restores_source_and_current_pointer(tmp_path, monkeypatch):
     root, conn, original = _setup(tmp_path)
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     source_before = (root / CANDIDATE).read_bytes()
 
     def fail_save(*args, **kwargs):
@@ -158,7 +159,7 @@ def test_persistence_failure_restores_source_and_current_pointer(tmp_path, monke
         create_profile_entry(
             conn, root=root, expected_revision=manager["revision"],
             kind="certification", fields={"value": "Must roll back"},
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     assert (root / CANDIDATE).read_bytes() == source_before
     assert get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")["id"] == original["id"]
     assert len(list_artifact_history(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")) == 1
@@ -166,25 +167,25 @@ def test_persistence_failure_restores_source_and_current_pointer(tmp_path, monke
         update_profile_source(
             conn, root=root, expected_revision=manager["revision"],
             source_path="CLAUDE.md", included=False,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     assert next(
-        source for source in list_profile_source_settings(conn)
+        source for source in list_profile_source_settings(conn, account_id=DEFAULT_ACCOUNT_ID)
         if source["source_path"] == "CLAUDE.md"
     )["included"] is True
 
 
 def test_supplemental_sources_can_be_excluded_and_reenabled_but_candidate_is_required(tmp_path):
     root, conn, original = _setup(tmp_path)
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     excluded = update_profile_source(
         conn, root=root, expected_revision=manager["revision"],
         source_path="CLAUDE.md", included=False,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert "CLAUDE.md" not in {
         source["file"] for source in excluded["profile"]["payload"]["sources"]
     }
     assert (root / "CLAUDE.md").is_file()
-    refreshed_while_excluded = refresh_profile(conn, root=str(root))
+    refreshed_while_excluded = refresh_profile(conn, root=str(root), account_id=DEFAULT_ACCOUNT_ID)
     assert "CLAUDE.md" not in {
         source["file"] for source in refreshed_while_excluded["payload"]["sources"]
     }
@@ -192,11 +193,11 @@ def test_supplemental_sources_can_be_excluded_and_reenabled_but_candidate_is_req
         update_profile_source(
             conn, root=root, expected_revision=excluded["manager"]["revision"],
             source_path=CANDIDATE.as_posix(), included=False,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     reenabled = update_profile_source(
         conn, root=root, expected_revision=excluded["manager"]["revision"],
         source_path="CLAUDE.md", included=True,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert "CLAUDE.md" in {
         source["file"] for source in reenabled["profile"]["payload"]["sources"]
     }
@@ -205,7 +206,7 @@ def test_supplemental_sources_can_be_excluded_and_reenabled_but_candidate_is_req
 
 def test_profile_change_uses_existing_dependency_staleness_path(tmp_path):
     root, conn, original = _setup(tmp_path)
-    workspace = create_workspace(conn, company="Acme", title="Engineer")
+    workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
     fit = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result",
         content_id="fit-old", payload={"status": "READY"},
@@ -214,19 +215,19 @@ def test_profile_change_uses_existing_dependency_staleness_path(tmp_path):
         conn, artifact_id=fit["id"], upstream_artifact_type="profile_snapshot",
         upstream_content_id=original["content_id"],
     )
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     create_profile_entry(
         conn, root=root, expected_revision=manager["revision"],
         kind="certification", fields={"value": "New evidence"},
-    )
-    stale = check_staleness(conn, workspace["id"], "job_fit_result")
+     account_id=DEFAULT_ACCOUNT_ID)
+    stale = check_staleness(conn, workspace["id"], "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert stale["stale"] is True
     assert any("profile_snapshot changed" in reason for reason in stale["reasons"])
 
 
 def test_entry_identity_and_source_settings_survive_database_restart(tmp_path):
     root, conn, _ = _setup(tmp_path)
-    manager = get_profile_manager(conn, root=root)
+    manager = get_profile_manager(conn, root=root, account_id=DEFAULT_ACCOUNT_ID)
     ids_before = {
         (item["kind"], tuple(sorted(
             (key, tuple(value) if isinstance(value, list) else value)
@@ -237,12 +238,12 @@ def test_entry_identity_and_source_settings_survive_database_restart(tmp_path):
     excluded = update_profile_source(
         conn, root=root, expected_revision=manager["revision"],
         source_path="cv/main_example.tex", included=False,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     db_path = conn.execute("PRAGMA database_list").fetchone()[2]
     conn.close()
 
     reopened = connect(Path(db_path))
-    restarted = get_profile_manager(reopened, root=root)
+    restarted = get_profile_manager(reopened, root=root, account_id=DEFAULT_ACCOUNT_ID)
     ids_after = {
         (item["kind"], tuple(sorted(
             (key, tuple(value) if isinstance(value, list) else value)

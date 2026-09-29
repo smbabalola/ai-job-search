@@ -8,6 +8,7 @@ from webapp.persistence.review import list_review_decisions
 from webapp.persistence.workflow import list_workflow_events
 from webapp.persistence.workspaces import ensure_profile_workspace
 from tests.webapp.services.test_application_pack import _decide, _seed, _completion_ready_units
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _app_with_pack_chain(tmp_path):
@@ -17,9 +18,9 @@ def _app_with_pack_chain(tmp_path):
     app = create_app(settings)
     with TestClient(app):
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         from webapp.persistence.workspaces import create_workspace
-        workspace = create_workspace(conn, company="Acme", title="Backend Engineer")
+        workspace = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
         units = _completion_ready_units()
         _, _, _, intelligence = _seed(conn, workspace["id"], units=units)
         for unit in units:

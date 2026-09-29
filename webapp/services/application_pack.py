@@ -92,7 +92,7 @@ def _artifact_ref(artifact: dict[str, Any]) -> dict[str, Any]:
 def _build_application_pack_with_profile(
     conn: dbapi.Connection, workspace_id: str, *,
     extensions_dir: Path | str = Path("extensions"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     profile_artifact = _current_or_error(
@@ -383,7 +383,7 @@ def list_outstanding_review_items(
 def build_application_pack(
     conn: dbapi.Connection, workspace_id: str, *,
     extensions_dir: Path | str = Path("extensions"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     pack, _ = _build_application_pack_with_profile(
         conn,
@@ -398,7 +398,7 @@ def confirm_application_pack(
     conn: dbapi.Connection, workspace_id: str, *, effective_date: str,
     documents_root: Path | str = Path("documents"),
     extensions_dir: Path | str = Path("extensions"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     document_selection_revisions: dict[str, int] | None = None,
     on_confirmed: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -578,7 +578,7 @@ def _confirm_application_pack_v2(
 def retry_application_pack_projection(
     conn: dbapi.Connection, workspace_id: str, *, pack_artifact_id: str,
     documents_root: Path | str = Path("documents"),
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     """Retry only the compatibility export for one immutable existing pack.
 

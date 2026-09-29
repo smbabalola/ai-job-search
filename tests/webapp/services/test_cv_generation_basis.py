@@ -27,14 +27,15 @@ from webapp.services.cv_generation_basis import (
     build_and_persist_cv_generation_basis,
 )
 from webapp.services.cv_statement_review import save_cv_statement_review_decision
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
-    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, workspace["id"]
 
 
@@ -164,7 +165,7 @@ class TestBuildAndPersist:
 
         result = build_and_persist_cv_generation_basis(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         basis = result["basis_artifact"]["payload"]
 
         assert basis["schema_version"] == "cv-generation-basis.v1"
@@ -179,7 +180,7 @@ class TestBuildAndPersist:
 
         result = build_and_persist_cv_generation_basis(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         source_artifacts = result["basis_artifact"]["payload"]["source_artifacts"]
 
         for upstream_type in ("profile_snapshot", "job_fit_result", "resolved_job_evidence", "cv_content_plan"):
@@ -199,7 +200,7 @@ class TestBuildAndPersist:
 
         result = build_and_persist_cv_generation_basis(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         review = result["basis_artifact"]["payload"]["review"]
 
         assert review["statement_plan_artifact_id"] == plan["id"]
@@ -218,7 +219,7 @@ class TestBuildAndPersist:
 
         result = build_and_persist_cv_generation_basis(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         model = result["basis_artifact"]["payload"]["cv_document_model"]
 
         selected_ids = set(model["provenance"]["selected_statement_ids"])
@@ -236,7 +237,7 @@ class TestBuildAndPersist:
         # stmt_b left pending.
 
         with pytest.raises(Exception):
-            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         from webapp.persistence.artifacts import get_current_artifact
 
         assert get_current_artifact(conn, workspace_id, "cv_generation_basis") is None
@@ -253,7 +254,7 @@ class TestBuildAndPersist:
 
         result = build_and_persist_cv_generation_basis(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         basis = result["basis_artifact"]["payload"]
 
         assert basis["review"]["authorized_statement_ids"] == []
@@ -268,14 +269,14 @@ class TestBuildAndPersist:
             payload={"schema_version": "cv-content-plan-artifact.v1"}, content_id="cvcontentplan_A",
         )
         with pytest.raises(CvGenerationBasisError, match="not a cv_statement_plan"):
-            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=wrong["id"])
+            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=wrong["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     def test_nonexistent_pinned_artifact_is_rejected(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
         with pytest.raises(CvGenerationBasisError, match="not found"):
             build_and_persist_cv_generation_basis(
                 conn, workspace_id, statement_plan_artifact_id="art_nonexistent",
-            )
+             account_id=DEFAULT_ACCOUNT_ID)
 
     def test_lineage_ref_mismatch_against_resolved_artifact_is_rejected(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -294,7 +295,7 @@ class TestBuildAndPersist:
         conn.commit()
 
         with pytest.raises(CvGenerationBasisError, match="content_id mismatch"):
-            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+            build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
 
 class TestDeterminism:
@@ -303,8 +304,8 @@ class TestDeterminism:
         plan, _refs = _seed_full_lineage(conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")])
         _ack(conn, workspace_id, plan["id"], "stmt_a")
 
-        first = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
-        second = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        first = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
+        second = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
         assert first["basis_artifact"]["payload"] == second["basis_artifact"]["payload"]
         assert first["basis_artifact"]["content_id"] == second["basis_artifact"]["content_id"]
@@ -317,10 +318,10 @@ class TestDeterminism:
         ])
         _ack(conn, workspace_id, plan["id"], "stmt_a")
         _ack(conn, workspace_id, plan["id"], "stmt_b")
-        basis_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        basis_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
         _omit(conn, workspace_id, plan["id"], "stmt_b")
-        basis_b = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        basis_b = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
         assert (
             basis_a["basis_artifact"]["content_id"] != basis_b["basis_artifact"]["content_id"]
@@ -332,7 +333,7 @@ class TestHistoricalImmutability:
         conn, workspace_id = _workspace(tmp_path)
         plan_a, _refs = _seed_full_lineage(conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")], suffix="A")
         _ack(conn, workspace_id, plan_a["id"], "stmt_a")
-        basis_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan_a["id"])
+        basis_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan_a["id"], account_id=DEFAULT_ACCOUNT_ID)
         basis_a_id = basis_a["basis_artifact"]["id"]
         basis_a_payload_before = copy.deepcopy(basis_a["basis_artifact"]["payload"])
 
@@ -340,7 +341,7 @@ class TestHistoricalImmutability:
         # changed and a fresh plan+review cycle ran).
         plan_b, _refs_b = _seed_full_lineage(conn, workspace_id, [_statement("stmt_x", "professional_summary", "X")], suffix="B")
         _ack(conn, workspace_id, plan_b["id"], "stmt_x")
-        build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan_b["id"])
+        build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan_b["id"], account_id=DEFAULT_ACCOUNT_ID)
 
         reread = get_artifact(conn, basis_a_id)
         assert reread["payload"] == basis_a_payload_before
@@ -354,14 +355,14 @@ class TestHistoricalImmutability:
         _ack(conn, workspace_id, plan["id"], "stmt_a")
         _ack(conn, workspace_id, plan["id"], "stmt_b")
 
-        result_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        result_a = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         basis_a = result_a["basis_artifact"]
         basis_a_payload_before = copy.deepcopy(basis_a["payload"])
 
         # Append a newer, superseding decision for stmt_b.
         _omit(conn, workspace_id, plan["id"], "stmt_b")
 
-        result_b = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        result_b = build_and_persist_cv_generation_basis(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         basis_b = result_b["basis_artifact"]
 
         # Basis A: unchanged, still authorizes A+B, model retains both.

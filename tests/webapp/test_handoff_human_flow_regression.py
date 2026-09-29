@@ -15,14 +15,15 @@ from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
 from tests.webapp.api.test_handoff_routes import _RENDERABLE_PACK_PAYLOAD
 from tests.webapp.test_handoff_browser_smoke import _live_server_settings
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_human_handoff_lifecycle_is_unchanged(tmp_path):
     settings = _live_server_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(conn, workspace_id=workspace["id"], artifact_type="application_pack",
                                  payload=_RENDERABLE_PACK_PAYLOAD)
         conn.close()

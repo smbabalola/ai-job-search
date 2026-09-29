@@ -27,6 +27,7 @@ from tests.webapp.test_full_journey_acceptance import (
     _close,
     _decide_current_review_surface,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 @pytest.fixture(autouse=True)
 def _enable_cv_quality_v2(monkeypatch):
@@ -221,7 +222,7 @@ def test_plan_and_basis_from_another_workspace_are_not_found(tmp_path):
         basis_id = _build(client, workspace_id, plan_id)
         conn = connect(settings.db_path)
         try:
-            other_id = create_workspace(conn, company="Other", title="Role")["id"]
+            other_id = create_workspace(conn, company="Other", title="Role", account_id=DEFAULT_ACCOUNT_ID)["id"]
         finally:
             conn.close()
 

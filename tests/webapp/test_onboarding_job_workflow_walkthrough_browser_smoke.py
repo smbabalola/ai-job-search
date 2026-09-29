@@ -18,6 +18,7 @@ from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import ensure_profile_workspace, get_workspace
 from webapp.services.pipeline import create_job_from_source_record
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 POSTING_TEXT = (
@@ -83,7 +84,7 @@ def live_server(tmp_path):
         raise RuntimeError("Uvicorn job-tour fixture did not start")
 
     conn = connect(settings.db_path)
-    ensure_profile_workspace(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     result = create_job_from_source_record(
         conn, company="Acme Robotics", title="Data Engineer",
         source_record={
@@ -91,7 +92,7 @@ def live_server(tmp_path):
             "captured_at": "2026-08-28T00:00:00+00:00", "company": "Acme Robotics",
             "title": "Data Engineer", "raw_text": POSTING_TEXT,
         },
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
     yield SimpleNamespace(
@@ -144,7 +145,7 @@ def test_job_workflow_tour_does_not_mutate_workspace_or_run_any_analysis_stage(l
         wait_until="networkidle",
     )
     conn = connect(live_server.db_path)
-    workspace_before = get_workspace(conn, live_server.workspace_id)
+    workspace_before = get_workspace(conn, live_server.workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
     _dismiss_auto_triggered_job_workflow_tour(page)
@@ -157,7 +158,7 @@ def test_job_workflow_tour_does_not_mutate_workspace_or_run_any_analysis_stage(l
     page.wait_for_selector(".onboarding-popover", state="detached")
 
     conn = connect(live_server.db_path)
-    workspace_after = get_workspace(conn, live_server.workspace_id)
+    workspace_after = get_workspace(conn, live_server.workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     # No Understanding/Fit/Intelligence artifact rows appear: the exactly
     # one job_posting_snapshot artifact created at fixture setup is the
     # simplest single proof that nothing wrote through this workspace as

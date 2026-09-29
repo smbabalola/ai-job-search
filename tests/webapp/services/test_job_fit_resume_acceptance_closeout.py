@@ -43,6 +43,7 @@ from tests.webapp.services.test_application_blockers import (
     _workspace,
 )
 from tests.webapp.services.test_job_fit_resume import _eligibility_blocker, _sponsorship_adapter
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +114,7 @@ def test_conflicting_profile_and_resolved_answer_evidence_stays_require_user(
     # adapter's own context actually carries).
     from webapp.services.semantic_proposal_adapter import SEMANTIC_CATEGORIES
 
-    profile_artifact = get_current_profile_snapshot(conn)
+    profile_artifact = get_current_profile_snapshot(conn, account_id=DEFAULT_ACCOUNT_ID)
     claim_id = next(
         claim["id"] for claim in profile_artifact["payload"]["claims"]
         if not claim.get("placeholder") and claim.get("category") in SEMANTIC_CATEGORIES
@@ -166,7 +167,7 @@ def test_conflicting_profile_and_resolved_answer_evidence_stays_require_user(
     result = resume_job_fit_after_resolution(
         conn, workspace_id, adapter,
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     # The production adjudication path actually validated the citation and
     # derived CONFLICTING -> REQUIRE_USER; the test never asserted this
@@ -299,7 +300,7 @@ def test_resolving_blocker_without_resume_does_not_change_governing_state(
     result = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     new_fit_artifact = get_current_artifact(conn, workspace_id, "job_fit_result")
     assert new_fit_artifact["id"] != original_fit_artifact["id"]
     assert result["workflow_state"] == "PROCEEDING"

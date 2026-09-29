@@ -15,7 +15,7 @@ def _now() -> str:
 
 
 def list_profile_source_settings(
-    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict]:
     rows = {
         row["source_path"]: bool(row["included"])
@@ -37,7 +37,7 @@ def list_profile_source_settings(
 
 
 def included_profile_sources(
-    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> tuple[str, ...]:
     return tuple(
         source["source_path"]
@@ -51,7 +51,7 @@ def set_supplemental_source_included(
     source_path: str,
     included: bool,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> None:
     if source_path not in SOURCE_PATHS:
         raise ValueError(f"unknown profile source {source_path!r}")

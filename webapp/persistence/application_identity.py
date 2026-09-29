@@ -39,7 +39,7 @@ def resolve_application_workspace(
     conn: dbapi.Connection,
     source_record: dict[str, Any],
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> ApplicationIdentityLookup:
     incoming = job_identity(source_record)
     clauses = ["weak_fallback_key = ?"]

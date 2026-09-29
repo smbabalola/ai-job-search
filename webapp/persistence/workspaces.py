@@ -18,7 +18,7 @@ def _now() -> str:
 def ensure_profile_workspace(
     conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     mapped = conn.execute(
@@ -77,7 +77,7 @@ def ensure_profile_workspace(
 
 
 def get_profile_workspace_id(
-    conn: dbapi.Connection, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, account_id: str
 ) -> str | None:
     row = conn.execute(
         "SELECT workspace_id FROM account_profiles WHERE account_id = ?",
@@ -87,7 +87,7 @@ def get_profile_workspace_id(
 
 def create_workspace(
     conn: dbapi.Connection, *, company: str, title: str,
-    workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
+    workspace_id: str | None = None, account_id: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     workspace_id = workspace_id or f"ws_{uuid.uuid4().hex[:20]}"
@@ -107,7 +107,7 @@ def get_workspace(
     conn: dbapi.Connection,
     workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM workspaces WHERE id = ? AND account_id = ?",
@@ -117,7 +117,7 @@ def get_workspace(
 
 
 def list_workspaces(
-    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM workspaces WHERE kind = 'job' AND account_id = ? "

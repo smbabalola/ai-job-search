@@ -70,7 +70,7 @@ def _current_or_error(
 
 def plan_and_persist_cv_generation_v2(
     conn: dbapi.Connection, workspace_id: str, *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     budgets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run Task 1 then Task 2 over current immutable inputs and persist both.

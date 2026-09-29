@@ -33,9 +33,9 @@ def _row_to_record(row: dbapi.Row | None) -> dict[str, Any] | None:
 
 def get_current_user_profile(
     conn: dbapi.Connection,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT v.*, p.revision AS profile_revision, p.updated_at AS profile_updated_at "
@@ -52,9 +52,9 @@ def save_user_profile(
     conn: dbapi.Connection,
     profile: dict[str, Any],
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     expected_revision: int | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -142,7 +142,7 @@ def save_user_profile(
 
 
 def list_user_profile_versions(
-    conn: dbapi.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT DISTINCT v.* FROM user_profile_versions v "

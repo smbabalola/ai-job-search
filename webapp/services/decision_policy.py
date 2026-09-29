@@ -642,7 +642,7 @@ def resume_job_fit_after_resolution(
     request_id: str,
     extension_ids: list[str],
     extensions_dir: Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     """Orchestration entry point implementing spec Sec 11 steps 4-9: after a
     blocker answer has already been saved (steps 1-3, via resolve_blocker --

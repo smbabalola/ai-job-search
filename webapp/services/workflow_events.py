@@ -11,7 +11,7 @@ from webapp.persistence import dbapi
 
 def list_events(
     conn: dbapi.Connection, workspace_id: str, *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> list[dict[str, Any]]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     return list_workflow_events(conn, workspace_id)

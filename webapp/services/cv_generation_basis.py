@@ -70,7 +70,7 @@ def _verify_ref_matches(ref: dict[str, Any], artifact: dict[str, Any], *, label:
 
 def build_and_persist_cv_generation_basis(
     conn: dbapi.Connection, workspace_id: str, *,
-    statement_plan_artifact_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    statement_plan_artifact_id: str, account_id: str,
 ) -> dict[str, Any]:
     """Build and persist the exact reviewed cv_generation_basis for a pinned plan.
 

@@ -27,6 +27,7 @@ from webapp.services.cv_generation_v2 import (
     plan_and_persist_cv_generation_v2,
 )
 from webapp.services.pipeline import PipelineError
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 _NAME_CLAIM_ID = "clm_0000000000000001"
@@ -38,8 +39,8 @@ def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
-    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, workspace["id"]
 
 
@@ -252,7 +253,7 @@ class TestServicePersistence:
     def test_missing_profile_snapshot_raises_stable_error(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
         with pytest.raises(PipelineError, match="profile_snapshot"):
-            plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     def test_missing_job_fit_result_raises_stable_error(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -261,7 +262,7 @@ class TestServicePersistence:
             payload=_profile_payload(), content_id="profilesnap_A",
         )
         with pytest.raises(PipelineError, match="job_fit_result"):
-            plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     def test_missing_resolved_job_evidence_raises_stable_error(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -274,7 +275,7 @@ class TestServicePersistence:
             payload=_job_fit_result_payload(), content_id="jobfit_A",
         )
         with pytest.raises(PipelineError, match="resolved_job_evidence"):
-            plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     def test_malformed_upstream_job_fit_result_raises_stable_error_not_silent_fallback(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -295,7 +296,7 @@ class TestServicePersistence:
             payload=None, content_id="jobfit_broken",
         )
         with pytest.raises(Exception):
-            plan_and_persist_cv_generation_v2(conn, workspace_id)
+            plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
         # No cv_content_plan/cv_statement_plan may have been persisted from a
         # failed run -- the transaction must roll back, not partially commit.
         assert get_current_artifact(conn, workspace_id, "cv_content_plan") is None
@@ -305,7 +306,7 @@ class TestServicePersistence:
         conn, workspace_id = _workspace(tmp_path)
         _seed_upstream_artifacts(conn, workspace_id)
 
-        result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
         content_plan_artifact = result["content_plan_artifact"]
         statement_plan_artifact = result["statement_plan_artifact"]
@@ -330,7 +331,7 @@ class TestServicePersistence:
             conn, workspace_id
         )
 
-        result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
         content_plan_artifact = result["content_plan_artifact"]
         statement_plan_artifact = result["statement_plan_artifact"]
 
@@ -362,7 +363,7 @@ class TestServicePersistence:
         conn, workspace_id = _workspace(tmp_path)
         _seed_upstream_artifacts(conn, workspace_id)
 
-        result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
         persisted_content_plan = get_current_artifact(conn, workspace_id, "cv_content_plan")
         from product.cv_statement_plan import build_cv_statement_plan
@@ -376,7 +377,7 @@ class TestServicePersistence:
             conn, workspace_id
         )
 
-        result = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        result = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
         content_plan_artifact = result["content_plan_artifact"]
         statement_plan_artifact = result["statement_plan_artifact"]
 
@@ -417,8 +418,8 @@ class TestServicePersistence:
         conn, workspace_id = _workspace(tmp_path)
         _seed_upstream_artifacts(conn, workspace_id)
 
-        first = plan_and_persist_cv_generation_v2(conn, workspace_id)
-        second = plan_and_persist_cv_generation_v2(conn, workspace_id)
+        first = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
+        second = plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
         # content_plan's own lineage (Profile/JobFit/resolved-evidence) was
         # identical across both runs -- no new upstream rows were created --
@@ -455,7 +456,7 @@ class TestServicePersistence:
         artifact identity differs must NOT collapse to the same content_id."""
         conn_a, workspace_a = _workspace(tmp_path)
         _seed_upstream_artifacts(conn_a, workspace_a)
-        result_a = plan_and_persist_cv_generation_v2(conn_a, workspace_a)
+        result_a = plan_and_persist_cv_generation_v2(conn_a, workspace_a, account_id=DEFAULT_ACCOUNT_ID)
 
         conn_b, workspace_b = _workspace(tmp_path)
         _seed_upstream_artifacts(conn_b, workspace_b)
@@ -466,7 +467,7 @@ class TestServicePersistence:
             conn_b, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
             payload=_profile_payload(), content_id="profilesnap_DIFFERENT",
         )
-        result_b = plan_and_persist_cv_generation_v2(conn_b, workspace_b)
+        result_b = plan_and_persist_cv_generation_v2(conn_b, workspace_b, account_id=DEFAULT_ACCOUNT_ID)
 
         # Inner Task 1 domain output is logically identical...
         assert (
@@ -487,7 +488,7 @@ class TestServicePersistence:
         conn, workspace_id = _workspace(tmp_path)
         _seed_upstream_artifacts(conn, workspace_id)
 
-        plan_and_persist_cv_generation_v2(conn, workspace_id)
+        plan_and_persist_cv_generation_v2(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
         assert get_current_artifact(conn, workspace_id, "application_intelligence_result") is None
         assert get_current_artifact(conn, workspace_id, "application_pack") is None

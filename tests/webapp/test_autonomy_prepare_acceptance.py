@@ -16,6 +16,8 @@ from webapp.persistence.db import connect
 from webapp.services import autonomy_scheduler as sched
 from webapp.services.autonomy_providers import ProviderSet
 from tests.webapp.services.autonomy_6c_fixtures import ACCOUNT, NOW, discover, enable_prepare, portal_job
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 ENVELOPES = {"EVALUATE": "0.05", "UNDERSTAND": "0.05", "FIT": "0.10", "INTELLIGENCE": "0.20"}
 
@@ -140,12 +142,12 @@ def test_discovery_to_system_confirmed_prepared_on_the_real_workflow(journey):
     weak["url"] = ""
     out = discover_and_wake(j, [portal_job("g1", company="Grounded Co"), portal_job("q1", company="Ask Me Co"),
                                 portal_job("d1", company="Dup Co"), weak])
-    by_company = {get_discovery_candidate(j.conn, c)["company"]: c for c in out["candidate_ids"]}
+    by_company = {get_discovery_candidate(j.conn, c, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["company"]: c for c in out["candidate_ids"]}
     # A record with no strong identity never even becomes a candidate.
     assert set(by_company) == {"Grounded Co", "Ask Me Co", "Dup Co"}
-    dup = get_discovery_candidate(j.conn, by_company["Dup Co"])
+    dup = get_discovery_candidate(j.conn, by_company["Dup Co"], search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     create_job_from_source_record(j.conn, company=dup["company"], title=dup["title"],  # already applied manually
-                                  source_record=dup["canonical_source_record"])
+                                  source_record=dup["canonical_source_record"], account_id=DEFAULT_ACCOUNT_ID)
     workspaces_before = j.conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
 
     quiesce(j)

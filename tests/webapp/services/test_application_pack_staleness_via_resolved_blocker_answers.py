@@ -59,6 +59,7 @@ from tests.webapp.services.test_application_blockers import (
     TWO_MATERIAL_GATES_JOB_SNAPSHOT,
     SPONSORSHIP_STATUS_JOB_SNAPSHOT,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _empty_adapter():
@@ -91,8 +92,8 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
-    refresh_profile(conn, root=str(webapp_profile_root))
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    refresh_profile(conn, root=str(webapp_profile_root), account_id=DEFAULT_ACCOUNT_ID)
 
     # Two-gate snapshot so the sponsorship gate's blocker instance survives
     # the rerun after being answered (a second, unrelated material gate --
@@ -104,7 +105,7 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
         **TWO_MATERIAL_GATES_JOB_SNAPSHOT,
         "eligibility_requirements": SPONSORSHIP_STATUS_JOB_SNAPSHOT["eligibility_requirements"],
     }
-    workspace = create_workspace(conn, company="Acme", title="Backend Engineer")
+    workspace = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     workspace_id = workspace["id"]
     save_artifact(
         conn, workspace_id=workspace_id, artifact_type="job_posting_snapshot",
@@ -140,7 +141,7 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
     # Run 1: discover the sponsorship blocker.
     fit_artifact_1 = run_job_fit(
         conn, workspace_id, _empty_adapter(), request_id="req-fit-1", active_extensions=[],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=fit_artifact_1)
     blocker = _eligibility_blocker(conn, workspace_id)
 
@@ -159,7 +160,7 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
     # to be fully unblocked, only that the artifacts used are not stale.
     fit_artifact_2 = run_job_fit(
         conn, workspace_id, _empty_adapter(), request_id="req-fit-2", active_extensions=[],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=fit_artifact_2)
 
     # Acknowledge every review-bearing item on the CURRENT job_fit_result
@@ -201,7 +202,7 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
     # non-placeholder claim id from webapp_profile_root's own profile, rather
     # than invoking a real AI provider -- Task 10 is about pack-safety
     # staleness plumbing, not AI generation.
-    profile_artifact = get_current_profile_snapshot(conn)
+    profile_artifact = get_current_profile_snapshot(conn, account_id=DEFAULT_ACCOUNT_ID)
     claim_id = next(
         claim["id"] for claim in profile_artifact["payload"]["claims"]
         if not claim.get("placeholder")
@@ -266,7 +267,7 @@ def _confirm_pack_then_correct_answer_without_rerun(tmp_path, webapp_profile_roo
     result = confirm_application_pack(
         conn, workspace_id, effective_date="2026-09-15",
         documents_root=tmp_path / "documents",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     pack_artifact_id = result["artifact"]["id"]
 
     # Now, WITHOUT rerunning Job Fit again, correct the blocker's answer (a
@@ -301,7 +302,7 @@ def test_changed_resolved_blocker_answers_without_rerun_makes_application_pack_s
         tmp_path, webapp_profile_root,
     )
 
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is True
     assert any(
         "job_fit_result is itself stale" in reason for reason in staleness["reasons"]
@@ -346,14 +347,14 @@ def test_changed_resolved_blocker_answers_without_rerun_blocks_applied_via_low_l
         tmp_path, webapp_profile_root,
     )
 
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is True
 
     event = record_status_change(
         conn, workspace_id=workspace_id, new_status="applied",
         effective_date="2026-09-16",
         submitted_pack_artifact_id=pack_artifact_id,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert event["new_status"] == "applied"
     conn.close()
 
@@ -370,12 +371,12 @@ def test_change_job_status_rejects_applied_when_pack_is_stale(tmp_path, webapp_p
         tmp_path, webapp_profile_root,
     )
 
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is True
 
     with pytest.raises(PipelineError, match="stale"):
         change_job_status(
             conn, workspace_id, new_status="applied",
             effective_date="2026-09-16", note=None,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     conn.close()

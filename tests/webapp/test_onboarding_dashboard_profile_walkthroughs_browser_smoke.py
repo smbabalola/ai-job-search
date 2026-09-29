@@ -16,6 +16,7 @@ from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import list_workspaces
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _free_port() -> int:
@@ -155,7 +156,7 @@ def test_dashboard_tour_does_not_create_or_modify_any_workspace(live_server, pag
     page.wait_for_selector(".onboarding-popover", state="detached")
 
     conn = connect(live_server.db_path)
-    workspaces = list_workspaces(conn)
+    workspaces = list_workspaces(conn, account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
     assert workspaces == []
 

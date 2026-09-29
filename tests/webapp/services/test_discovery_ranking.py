@@ -18,6 +18,8 @@ from tests.webapp.fixtures.acceptance.fixtures import (
     rich_profile,
     source_record,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 def _record(number, title):
@@ -36,22 +38,22 @@ def _fit(conn, candidate, *, score=None, blocked=False):
         request={"schema_version": "job-fit-request.v1"},
         result={"overall_score": score, "blocked": blocked, "status": "READY" if score is not None else "NEEDS_REVIEW"},
         fingerprints={},
-    )
+     search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
 
 def test_groups_authoritative_ticket7_result_without_fallback_score(tmp_path, monkeypatch):
     path = tmp_path / "rank.db"; init_db(path); conn = connect(path)
-    high = ingest_discovery_record(conn, _record(1, "High"))["candidate"]
-    low = ingest_discovery_record(conn, _record(2, "Low"))["candidate"]
-    unresolved = ingest_discovery_record(conn, _record(3, "Unresolved"))["candidate"]
-    blocked = ingest_discovery_record(conn, _record(4, "Blocked"))["candidate"]
-    expired = ingest_discovery_record(conn, _record(5, "Expired"))["candidate"]
+    high = ingest_discovery_record(conn, _record(1, "High"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    low = ingest_discovery_record(conn, _record(2, "Low"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    unresolved = ingest_discovery_record(conn, _record(3, "Unresolved"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    blocked = ingest_discovery_record(conn, _record(4, "Blocked"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    expired = ingest_discovery_record(conn, _record(5, "Expired"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
     _fit(conn, high, score=91.0); _fit(conn, low, score=68.0)
     _fit(conn, unresolved); _fit(conn, blocked, blocked=True)
-    set_discovery_candidate_status(conn, expired["id"], "expired")
+    set_discovery_candidate_status(conn, expired["id"], "expired", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     monkeypatch.setattr("webapp.services.discovery.discovery_fit_is_stale", lambda *args, **kwargs: False)
 
-    groups = grouped_discovery_candidates(conn)
+    groups = grouped_discovery_candidates(conn, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert [item["title"] for item in groups["scored"]] == ["High", "Low"]
     assert groups["unresolved"][0]["fit"]["result"]["overall_score"] is None
@@ -67,19 +69,19 @@ class _DynamicSemanticAdapter:
 
 def test_batch_fit_reuses_ticket7_and_tracks_exact_staleness_without_user_preferences(tmp_path):
     path = tmp_path / "evaluate.db"; init_db(path); conn = connect(path)
-    ensure_profile_workspace(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     profile = rich_profile()
     save_artifact(
         conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
         payload=profile, content_id=profile_snapshot_content_id(profile),
     )
-    save_user_profile(conn, {"target_roles": ["Unrelated preference"]})
-    candidate = ingest_discovery_record(conn, source_record())["candidate"]
+    save_user_profile(conn, {"target_roles": ["Unrelated preference"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
+    candidate = ingest_discovery_record(conn, source_record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
 
     fit = evaluate_discovery_candidate(
         conn, candidate["id"], _DynamicSemanticAdapter(), request_id="discovery-fit-1",
         understanding_provider=DeterministicFakeProvider(provider_candidate()),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     # Ticket 7 leaves required dimensions unresolved here; discovery must
     # preserve that outcome instead of manufacturing a ranking number.
@@ -87,12 +89,12 @@ def test_batch_fit_reuses_ticket7_and_tracks_exact_staleness_without_user_prefer
     assert fit["result"]["overall_score"] is None
     assert fit["result"]["verdict"] is None
     assert "user_profile" not in fit["fingerprints"]
-    assert discovery_fit_is_stale(conn, candidate["id"]) is False
-    save_user_profile(conn, {"target_roles": ["A changed preference"]})
-    assert discovery_fit_is_stale(conn, candidate["id"]) is False
+    assert discovery_fit_is_stale(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID) is False
+    save_user_profile(conn, {"target_roles": ["A changed preference"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
+    assert discovery_fit_is_stale(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID) is False
 
     changed = source_record()
     changed["captured_at"] = "2026-08-22T09:00:00+00:00"
     changed["description"] += " Additional exact source text makes this a new snapshot."
-    ingest_discovery_record(conn, changed)
-    assert discovery_fit_is_stale(conn, candidate["id"]) is True
+    ingest_discovery_record(conn, changed, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
+    assert discovery_fit_is_stale(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID) is True

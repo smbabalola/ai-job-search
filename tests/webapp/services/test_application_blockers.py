@@ -30,6 +30,7 @@ from webapp.services.decision_policy import (
 from webapp.services.http_api import fit_job
 from webapp.services.pipeline import refresh_profile
 from webapp.services.semantic_proposal_adapter import FakeSemanticProposalAdapter
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 EMPTY_JOB_SNAPSHOT = {
@@ -137,8 +138,8 @@ def _workspace(tmp_path, profile_root, *, job_snapshot=None):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    refresh_profile(conn, root=str(profile_root))
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    refresh_profile(conn, root=str(profile_root), account_id=DEFAULT_ACCOUNT_ID)
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=ws["id"], artifact_type="job_posting_snapshot",
         payload=job_snapshot or EMPTY_JOB_SNAPSHOT, content_id="jobsnap_test",
@@ -154,7 +155,7 @@ def _run_fit(conn, workspace_id, tmp_path, *, request_id="req_1"):
     return fit_job(
         conn, workspace_id, _empty_adapter(), request_id=request_id,
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_one_require_user_decision_creates_one_blocker(tmp_path, webapp_profile_root):
@@ -552,7 +553,7 @@ def test_workspace_isolation_for_blockers_and_resolutions(tmp_path, webapp_profi
     conn, blocked_ws = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=MATERIAL_ELIGIBILITY_JOB_SNAPSHOT
     )
-    other_ws = create_workspace(conn, company="Other Co", title="Other Role")
+    other_ws = create_workspace(conn, company="Other Co", title="Other Role", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=other_ws["id"], artifact_type="job_posting_snapshot",
         payload=MATERIAL_ELIGIBILITY_JOB_SNAPSHOT, content_id="jobsnap_other",
@@ -562,7 +563,7 @@ def test_workspace_isolation_for_blockers_and_resolutions(tmp_path, webapp_profi
     artifact_b = fit_job(
         conn, other_ws["id"], _empty_adapter(), request_id="req_b",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     blockers_a = list_application_blockers(conn, blocked_ws)
     blockers_b = list_application_blockers(conn, other_ws["id"])
@@ -619,7 +620,7 @@ def test_finding_a_reusable_answer_never_auto_applies_it(tmp_path, webapp_profil
         answer_value="yes", answer_scope="CANDIDATE_FACT", resolved_by="human",
     )
 
-    second_ws = create_workspace(conn, company="Other Co", title="Other Role")
+    second_ws = create_workspace(conn, company="Other Co", title="Other Role", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=second_ws["id"], artifact_type="job_posting_snapshot",
         payload=UNMATCHED_TECHNICAL_SKILL_JOB_SNAPSHOT, content_id="jobsnap_second",
@@ -627,7 +628,7 @@ def test_finding_a_reusable_answer_never_auto_applies_it(tmp_path, webapp_profil
     second_artifact = fit_job(
         conn, second_ws["id"], _empty_adapter(), request_id="req_2",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     second_blockers = current_application_blockers(conn, second_ws["id"], second_artifact["id"])
     assert len(second_blockers) == 1
     assert second_blockers[0]["status"] == "open"
@@ -661,7 +662,7 @@ def test_no_blocker_created_for_auto_reject(tmp_path, webapp_profile_root):
     artifact = fit_job(
         conn, workspace_id, FakeSemanticProposalAdapter(canned_response=canned),
         request_id="req_1", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     blockers = list_application_blockers(conn, workspace_id, source_artifact_id=artifact["id"])
     assert blockers == []
     conn.close()

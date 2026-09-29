@@ -162,7 +162,7 @@ def resolve_cv_statement_review_state(
 
 def get_review_authorized_cv_statement_plan(
     conn: dbapi.Connection, workspace_id: str, *,
-    statement_plan_artifact_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    statement_plan_artifact_id: str, account_id: str,
 ) -> dict[str, Any]:
     """Fail-closed accessor: the exact reviewed projection of a pinned artifact.
 

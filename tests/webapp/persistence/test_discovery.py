@@ -9,6 +9,8 @@ from webapp.persistence.discovery import (
     set_discovery_candidate_status,
 )
 from webapp.persistence.search_workspaces import create_search_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 def _record(**overrides):
@@ -42,7 +44,7 @@ def _connection(tmp_path):
 def test_ingestion_creates_candidate_and_occurrence_but_no_workspace(tmp_path):
     conn = _connection(tmp_path)
 
-    result = ingest_discovery_record(conn, _record())
+    result = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert result["candidate"]["lifecycle_status"] == "new"
     assert result["candidate"]["canonical_source_record"]["source_record_id"] == "job-42"
@@ -52,11 +54,11 @@ def test_ingestion_creates_candidate_and_occurrence_but_no_workspace(tmp_path):
 
 def test_deduplicates_source_id_then_url_then_normalized_fallback(tmp_path):
     conn = _connection(tmp_path)
-    first = ingest_discovery_record(conn, _record())
+    first = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     by_source_id = ingest_discovery_record(
         conn, _record(source_url="https://other.example.test/job/42", captured_at="2026-08-21T10:00:00+00:00")
-    )
+    , account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     by_url = ingest_discovery_record(
         conn,
         _record(
@@ -65,7 +67,7 @@ def test_deduplicates_source_id_then_url_then_normalized_fallback(tmp_path):
             source_url="HTTPS://JOBS.EXAMPLE.TEST/roles/42/#details",
             captured_at="2026-08-21T11:00:00+00:00",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     by_fallback = ingest_discovery_record(
         conn,
         _record(
@@ -77,7 +79,7 @@ def test_deduplicates_source_id_then_url_then_normalized_fallback(tmp_path):
             location="Aberdeen,  UK",
             captured_at="2026-08-21T12:00:00+00:00",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     ids = {first["candidate"]["id"], by_source_id["candidate"]["id"], by_url["candidate"]["id"], by_fallback["candidate"]["id"]}
     assert len(ids) == 1
@@ -97,7 +99,7 @@ def test_energy_jobline_record_dedupes_against_other_sources_via_existing_persis
             source_url="https://www.energyjobline.com/job/senior-drilling-engineer-aberdeen-31512381",
             title="Senior Drilling Engineer",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     same_job_repeated = ingest_discovery_record(
         conn,
@@ -108,7 +110,7 @@ def test_energy_jobline_record_dedupes_against_other_sources_via_existing_persis
             title="Senior Drilling Engineer",
             captured_at="2026-08-21T10:00:00+00:00",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert first["candidate"]["id"] == same_job_repeated["candidate"]["id"]
     assert conn.execute("select count(*) from discovery_occurrences").fetchone()[0] == 2
@@ -121,7 +123,7 @@ def test_energy_jobline_record_dedupes_against_other_sources_via_existing_persis
             source_url="https://www.energyjobline.com/job/well-engineer-999",
             title="Well Engineer",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert different_job["candidate"]["id"] != first["candidate"]["id"]
 
 
@@ -140,7 +142,7 @@ def test_airswift_record_dedupes_against_other_sources_via_existing_persistence_
             source_url="https://www.airswift.com/jobs/fpso-piping-integration-coordinator-1280556",
             title="FPSO Piping Integration Coordinator",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     same_job_repeated = ingest_discovery_record(
         conn,
@@ -151,7 +153,7 @@ def test_airswift_record_dedupes_against_other_sources_via_existing_persistence_
             title="FPSO Piping Integration Coordinator",
             captured_at="2026-09-18T11:00:00+00:00",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert first["candidate"]["id"] == same_job_repeated["candidate"]["id"]
     assert conn.execute("select count(*) from discovery_occurrences").fetchone()[0] == 2
@@ -164,35 +166,35 @@ def test_airswift_record_dedupes_against_other_sources_via_existing_persistence_
             source_url="https://www.airswift.com/jobs/well-engineer-999999",
             title="Well Engineer",
         ),
-    )
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert different_job["candidate"]["id"] != first["candidate"]["id"]
 
 
 def test_repeat_discovery_preserves_decision_until_explicit_resurface(tmp_path):
     conn = _connection(tmp_path)
-    candidate_id = ingest_discovery_record(conn, _record())["candidate"]["id"]
-    set_discovery_candidate_status(conn, candidate_id, "dismissed")
+    candidate_id = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]["id"]
+    set_discovery_candidate_status(conn, candidate_id, "dismissed", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     repeated = ingest_discovery_record(
         conn, _record(captured_at="2026-08-22T09:00:00+00:00")
-    )["candidate"]
+    , account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
 
     assert repeated["lifecycle_status"] == "dismissed"
-    assert set_discovery_candidate_status(conn, candidate_id, "new")["lifecycle_status"] == "new"
+    assert set_discovery_candidate_status(conn, candidate_id, "new", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "new"
 
 
 def test_lifecycle_allows_save_dismiss_expire_and_explicit_resurface(tmp_path):
     conn = _connection(tmp_path)
-    candidate_id = ingest_discovery_record(conn, _record())["candidate"]["id"]
+    candidate_id = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]["id"]
 
-    assert set_discovery_candidate_status(conn, candidate_id, "saved")["lifecycle_status"] == "saved"
-    assert set_discovery_candidate_status(conn, candidate_id, "dismissed")["lifecycle_status"] == "dismissed"
-    assert set_discovery_candidate_status(conn, candidate_id, "new")["lifecycle_status"] == "new"
-    assert set_discovery_candidate_status(conn, candidate_id, "expired")["lifecycle_status"] == "expired"
-    assert set_discovery_candidate_status(conn, candidate_id, "new")["lifecycle_status"] == "new"
+    assert set_discovery_candidate_status(conn, candidate_id, "saved", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "saved"
+    assert set_discovery_candidate_status(conn, candidate_id, "dismissed", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "dismissed"
+    assert set_discovery_candidate_status(conn, candidate_id, "new", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "new"
+    assert set_discovery_candidate_status(conn, candidate_id, "expired", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "expired"
+    assert set_discovery_candidate_status(conn, candidate_id, "new", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["lifecycle_status"] == "new"
 
     try:
-        set_discovery_candidate_status(conn, candidate_id, "promoted")
+        set_discovery_candidate_status(conn, candidate_id, "promoted", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     except DiscoveryLifecycleError as exc:
         assert "promotion service" in str(exc)
     else:
@@ -201,32 +203,32 @@ def test_lifecycle_allows_save_dismiss_expire_and_explicit_resurface(tmp_path):
 
 def test_list_filters_lifecycle_and_returns_occurrence_count(tmp_path):
     conn = _connection(tmp_path)
-    saved_id = ingest_discovery_record(conn, _record())["candidate"]["id"]
-    set_discovery_candidate_status(conn, saved_id, "saved")
-    ingest_discovery_record(conn, _record(source_record_id="job-43", source_url="https://jobs.example.test/43", title="Scheduler"))
+    saved_id = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]["id"]
+    set_discovery_candidate_status(conn, saved_id, "saved", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
+    ingest_discovery_record(conn, _record(source_record_id="job-43", source_url="https://jobs.example.test/43", title="Scheduler"), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
-    saved = list_discovery_candidates(conn, lifecycle_status="saved")
+    saved = list_discovery_candidates(conn, lifecycle_status="saved", search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert [item["id"] for item in saved] == [saved_id]
     assert saved[0]["occurrence_count"] == 1
-    assert get_discovery_candidate(conn, saved_id)["canonical_source_record"]["title"] == "Project Planner"
+    assert get_discovery_candidate(conn, saved_id, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["canonical_source_record"]["title"] == "Project Planner"
 
 
 def test_same_job_has_independent_candidates_in_separate_search_workspaces(tmp_path):
     conn = _connection(tmp_path)
-    other = create_search_workspace(conn, name="Project Manager")
+    other = create_search_workspace(conn, name="Project Manager", account_id=DEFAULT_ACCOUNT_ID)
 
-    default_candidate = ingest_discovery_record(conn, _record())["candidate"]
+    default_candidate = ingest_discovery_record(conn, _record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
     other_candidate = ingest_discovery_record(
         conn,
         _record(captured_at="2026-08-21T10:00:00+00:00"),
         search_workspace_id=other["id"],
-    )["candidate"]
+     account_id=DEFAULT_ACCOUNT_ID)["candidate"]
 
     assert default_candidate["id"] != other_candidate["id"]
     assert default_candidate["search_workspace_id"] == "search_default"
     assert other_candidate["search_workspace_id"] == other["id"]
-    assert [item["id"] for item in list_discovery_candidates(conn)] == [
+    assert [item["id"] for item in list_discovery_candidates(conn, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)] == [
         default_candidate["id"]
     ]
     assert [

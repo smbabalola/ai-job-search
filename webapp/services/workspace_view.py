@@ -511,7 +511,7 @@ def _is_outstanding_review_item(item: dict[str, Any]) -> bool:
 
 def build_profile_view_model(
     conn: dbapi.Connection, *, profile_root: str | Path = ".",
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     profile = (
@@ -582,7 +582,7 @@ def _snapshot_url_and_provenance(
 
 
 def resolve_apply_target(
-    conn: dbapi.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, workspace_id: str, account_id: str,
 ) -> ApplyTarget | None:
     """The one trustworthy Apply-with-extension destination for this exact
     workspace, with the provenance it was resolved under, or None if
@@ -620,7 +620,7 @@ def resolve_apply_target(
 
 
 def resolve_apply_target_url(
-    conn: dbapi.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, workspace_id: str, account_id: str,
 ) -> str | None:
     """Bare-URL convenience wrapper over resolve_apply_target, kept for the
     existing callers (e.g. the workspace_detail.html template's
@@ -631,7 +631,7 @@ def resolve_apply_target_url(
 
 def build_workspace_view_model(
     conn: dbapi.Connection, workspace_id: str, *, extensions_dir: Path | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = require_job_workspace(
         conn, workspace_id, account_id=account_id
@@ -961,7 +961,7 @@ def _dashboard_stage(view: dict[str, Any]) -> str:
 def build_dashboard_view_model(
     conn: dbapi.Connection, *, filter_name: str = "active",
     extensions_dir: Path | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     rows = []
     for workspace in list_workspaces(conn, account_id=account_id):

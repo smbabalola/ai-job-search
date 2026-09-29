@@ -12,6 +12,8 @@ from webapp.services.autonomy_providers import ProviderSet
 from tests.webapp.services.autonomy_6c_fixtures import (  # noqa: F401
     ACCOUNT, NOW, add_fit, conn, discover, enable_prepare, fresh_fits, portal_job, settings_6c,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 SW = "search_default"
 
@@ -52,12 +54,12 @@ def test_dismissed_and_failed_run_candidates_are_not_enqueued(conn):
     result = discover(conn, [portal_job("d1")])
     cid = result["candidate_ids"][0]
     conn.execute("DELETE FROM autonomy_candidate_queue")
-    set_discovery_candidate_status(conn, cid, "dismissed")
+    set_discovery_candidate_status(conn, cid, "dismissed", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert ac.enqueue_run_candidates(conn, run_id=result["run"]["id"], account_id=ACCOUNT, search_workspace_id=SW,
                                      deployment_ceiling=Capability.PREPARE,
                                      now=NOW) == 0
     conn.execute("UPDATE discovery_runs SET status = 'failed' WHERE id = ?", (result["run"]["id"],))
-    set_discovery_candidate_status(conn, cid, "new")
+    set_discovery_candidate_status(conn, cid, "new", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert ac.enqueue_run_candidates(conn, run_id=result["run"]["id"], account_id=ACCOUNT, search_workspace_id=SW,
                                      deployment_ceiling=Capability.PREPARE,
                                      now=NOW) == 0
@@ -172,9 +174,9 @@ def test_rediscovered_identity_is_not_promoted_twice(conn, world):
     # A different candidate whose identity already has an application (created
     # by another path) is never promoted into a second one.
     other = discover(conn, [portal_job("r2", company="Second Co")])["candidate_ids"][0]
-    cand = get_discovery_candidate(conn, other)
+    cand = get_discovery_candidate(conn, other, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     create_job_from_source_record(conn, company=cand["company"], title=cand["title"],
-                                  source_record=cand["canonical_source_record"])
+                                  source_record=cand["canonical_source_record"], account_id=DEFAULT_ACCOUNT_ID)
     add_fit(conn, other)
     row2, _ = ac.screen_candidate(conn, ctx=_ctx(conn, world, other), now=NOW)
     conn.commit()  # screen_candidate never commits; the scheduler owns the transaction
@@ -200,11 +202,11 @@ def test_promotion_revalidates_every_input(conn, world, change):
     elif change == "pause":
         pause(conn, account_id=ACCOUNT, scope_type="SEARCH_WORKSPACE", scope_id=SW, actor="u", reason="r", now=NOW)
     elif change == "dedupe":
-        cand = get_discovery_candidate(conn, cid)
+        cand = get_discovery_candidate(conn, cid, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
         create_job_from_source_record(conn, company=cand["company"], title=cand["title"],
-                                      source_record=cand["canonical_source_record"])
+                                      source_record=cand["canonical_source_record"], account_id=DEFAULT_ACCOUNT_ID)
     elif change == "state":
-        set_discovery_candidate_status(conn, cid, "dismissed")
+        set_discovery_candidate_status(conn, cid, "dismissed", account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     elif change == "cap":
         settings = dataclasses.replace(world, autonomy_max_promotions_per_day=0)
     before = _counts(conn)

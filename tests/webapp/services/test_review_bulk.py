@@ -6,6 +6,7 @@ from webapp.persistence import review_approval as ra
 from webapp.services import review_approval as svc
 from webapp.services import review_documents as rd
 from tests.webapp.services.review_fixtures import NOW, V2_ACCOUNT, docx_bytes, v2_chain  # noqa: F401
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _present(world):
@@ -27,7 +28,7 @@ def _second(world):
     from webapp.services.application_documents import generate_application_documents, select_application_document
     from webapp.services.application_pack import confirm_application_pack
     from tests.webapp.services.review_fixtures import V2World
-    ws = create_workspace(world.conn, company="Beta Corp", title="Engineer")["id"]
+    ws = create_workspace(world.conn, company="Beta Corp", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)["id"]
     _seed_completion_ready(world.conn, ws)
     generated = generate_application_documents(world.conn, ws, documents_root=world.settings.documents_root,
                                                extensions_dir=world.settings.extensions_dir, account_id=V2_ACCOUNT)

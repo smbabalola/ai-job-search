@@ -79,7 +79,7 @@ def refresh_profile(
     conn: dbapi.Connection,
     *,
     root: str = ".",
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_workspace = ensure_profile_workspace(conn, account_id=account_id)
     try:
@@ -111,7 +111,7 @@ def wake_after_profile_refresh(conn: dbapi.Connection, *, account_id: str, now: 
 def get_current_profile_snapshot(
     conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     profile_workspace = ensure_profile_workspace(conn, account_id=account_id)
     return get_current_artifact(conn, profile_workspace["id"], "profile_snapshot")
@@ -119,7 +119,7 @@ def get_current_profile_snapshot(
 
 def create_job_from_source_record(
     conn: dbapi.Connection, *, company: str, title: str, source_record: dict[str, Any],
-    workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
+    workspace_id: str | None = None, account_id: str,
     commit: bool = True, source_record_origin: str | None = None,
 ) -> dict[str, Any]:
     try:
@@ -241,7 +241,7 @@ def run_job_fit(
     conn: dbapi.Connection, workspace_id: str, semantic_adapter: SemanticProposalAdapter, *,
     request_id: str, extension_paths: list[str] | None = None,
     active_extensions: list[dict[str, Any]] | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_artifact = get_current_profile_snapshot(conn, account_id=account_id)
     job_artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
@@ -378,7 +378,7 @@ def run_job_fit(
 
 def run_application_intelligence(
     conn: dbapi.Connection, workspace_id: str, ai_provider: ApplicationIntelligenceProvider, *, request_id: str,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_artifact = get_current_profile_snapshot(conn, account_id=account_id)
     fit_artifact = get_current_artifact(conn, workspace_id, "job_fit_result")

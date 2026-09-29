@@ -5,6 +5,7 @@ import pytest
 from webapp.persistence.artifacts import save_artifact
 from webapp.services.staleness import record_dependency_fingerprint, check_staleness
 from tests.webapp.services.test_application_pack import _seed
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _setup(tmp_path):
@@ -15,8 +16,8 @@ def _setup(tmp_path):
     # artifact can be saved under PROFILE_WORKSPACE_ID (artifacts.workspace_id
     # has a FOREIGN KEY REFERENCES workspaces(id), enforced via PRAGMA
     # foreign_keys = ON in webapp.persistence.db.connect).
-    ensure_profile_workspace(conn)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, ws["id"]
 
 
@@ -24,7 +25,7 @@ def test_fresh_artifact_with_matching_fingerprint_is_not_stale(tmp_path):
     conn, workspace_id = _setup(tmp_path)
     _, _, fit, _ = _seed(conn, workspace_id)
 
-    result = check_staleness(conn, workspace_id, "job_fit_result")
+    result = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result == {"stale": False, "reasons": []}
     conn.close()
 
@@ -36,7 +37,7 @@ def test_direct_staleness_after_upstream_change(tmp_path):
     save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
                    payload={"changed": True}, content_id="profilesnap_B")
 
-    result = check_staleness(conn, workspace_id, "job_fit_result")
+    result = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result["stale"] is True
     assert any("profile_snapshot" in reason for reason in result["reasons"])
     conn.close()
@@ -49,12 +50,12 @@ def test_check_staleness_reads_profile_snapshot_from_global_workspace_not_job_wo
     conn, workspace_id = _setup(tmp_path)
     profile = save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
                              payload={}, content_id="profilesnap_A")
-    result = check_staleness(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")
+    result = check_staleness(conn, PROFILE_WORKSPACE_ID, "profile_snapshot", account_id=DEFAULT_ACCOUNT_ID)
     assert result == {"stale": False, "reasons": []}
     # calling check_staleness for "profile_snapshot" with a job workspace_id
     # must resolve to the SAME global artifact, not a different (nonexistent)
     # one — proving the routing fix, not just that the API doesn't crash.
-    assert check_staleness(conn, workspace_id, "profile_snapshot") == result
+    assert check_staleness(conn, workspace_id, "profile_snapshot", account_id=DEFAULT_ACCOUNT_ID) == result
     conn.close()
 
 
@@ -70,10 +71,10 @@ def test_transitive_staleness_propagates_downstream(tmp_path):
     save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
                    payload={"changed": True}, content_id="profilesnap_B")
 
-    fit_staleness = check_staleness(conn, workspace_id, "job_fit_result")
+    fit_staleness = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert fit_staleness["stale"] is True
 
-    intelligence_staleness = check_staleness(conn, workspace_id, "application_intelligence_result")
+    intelligence_staleness = check_staleness(conn, workspace_id, "application_intelligence_result", account_id=DEFAULT_ACCOUNT_ID)
     assert intelligence_staleness["stale"] is True
     assert any("job_fit_result" in reason for reason in intelligence_staleness["reasons"])
     conn.close()
@@ -89,12 +90,12 @@ def test_application_pack_staleness_is_covered(tmp_path):
     record_dependency_fingerprint(conn, artifact_id=pack["id"], upstream_artifact_type="application_intelligence_result",
                                    upstream_content_id=intelligence["content_id"])
 
-    assert check_staleness(conn, workspace_id, "application_pack")["stale"] is False
+    assert check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)["stale"] is False
 
     save_artifact(conn, workspace_id=workspace_id, artifact_type="application_intelligence_result",
                    payload={"changed": True}, content_id="aiintel_B")
 
-    assert check_staleness(conn, workspace_id, "application_pack")["stale"] is True
+    assert check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)["stale"] is True
     conn.close()
 
 
@@ -104,13 +105,13 @@ def test_no_fingerprints_recorded_means_not_stale(tmp_path):
     conn, workspace_id = _setup(tmp_path)
     save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
                    payload={}, content_id="profilesnap_A")
-    assert check_staleness(conn, PROFILE_WORKSPACE_ID, "profile_snapshot") == {"stale": False, "reasons": []}
+    assert check_staleness(conn, PROFILE_WORKSPACE_ID, "profile_snapshot", account_id=DEFAULT_ACCOUNT_ID) == {"stale": False, "reasons": []}
     conn.close()
 
 
 def test_missing_current_artifact_is_not_stale(tmp_path):
     conn, workspace_id = _setup(tmp_path)
-    assert check_staleness(conn, workspace_id, "job_fit_result") == {"stale": False, "reasons": []}
+    assert check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID) == {"stale": False, "reasons": []}
     conn.close()
 
 
@@ -139,7 +140,7 @@ def test_missing_required_fingerprint_fails_closed_at_multiple_depths(
         (artifact["id"], upstream_type),
     )
     conn.commit()
-    result = check_staleness(conn, workspace_id, "application_intelligence_result")
+    result = check_staleness(conn, workspace_id, "application_intelligence_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result["stale"] is True
     assert "required fingerprint" in "; ".join(result["reasons"])
 
@@ -152,7 +153,7 @@ def test_missing_required_upstream_current_pointer_fails_closed(tmp_path):
         (workspace_id,),
     )
     conn.commit()
-    result = check_staleness(conn, workspace_id, "job_fit_result")
+    result = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result["stale"] is True
     assert "required upstream artifact 'resolved_job_evidence' is missing" in result["reasons"]
 
@@ -178,7 +179,7 @@ def test_mutable_server_policy_identity_change_stales_downstream(
     conn, workspace_id = _setup(tmp_path)
     _seed(conn, workspace_id)
     monkeypatch.setattr(input_identity, identity_name, lambda: "changed_policy_identity")
-    result = check_staleness(conn, workspace_id, "application_intelligence_result")
+    result = check_staleness(conn, workspace_id, "application_intelligence_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result["stale"] is True
     assert expected_input in "; ".join(result["reasons"])
 
@@ -191,7 +192,7 @@ def test_promoted_semantic_proposal_request_stales_old_fit_result(tmp_path):
         payload={"active_extensions": [], "semantic_proposals": {"matches": [{"proposal_id": "new"}]}},
         content_id="jobfitreq_new_proposals",
     )
-    result = check_staleness(conn, workspace_id, "job_fit_result")
+    result = check_staleness(conn, workspace_id, "job_fit_result", account_id=DEFAULT_ACCOUNT_ID)
     assert result["stale"] is True
     assert "job_fit_request changed" in "; ".join(result["reasons"])
 

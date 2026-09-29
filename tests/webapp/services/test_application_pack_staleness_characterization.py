@@ -39,6 +39,7 @@ from tests.webapp.test_full_journey_acceptance import (
     _decide_current_review_surface,
 )
 from tests.webapp.fixtures.acceptance.fixtures import completion_ready_content_units
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_confirming_pack_then_changing_job_fit_basis_and_marking_applied(tmp_path):
@@ -113,7 +114,7 @@ def test_confirming_pack_then_changing_job_fit_basis_and_marking_applied(tmp_pat
         staleness = check_staleness(
             conn, workspace_id, "application_pack",
             extensions_dir=settings.extensions_dir,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         assert staleness["stale"] is True, (
             "setup did not actually make the pack stale -- test is not "
             f"exercising the intended condition: {staleness}"
@@ -137,7 +138,7 @@ def test_confirming_pack_then_changing_job_fit_basis_and_marking_applied(tmp_pat
             conn, workspace_id=workspace_id, new_status="applied",
             effective_date="2026-09-16",
             submitted_pack_artifact_id=pack_artifact_id,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         assert event["new_status"] == "applied"
         assert event["submitted_pack_artifact_id"] == pack_artifact_id
 

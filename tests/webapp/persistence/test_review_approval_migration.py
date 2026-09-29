@@ -11,6 +11,7 @@ import pytest
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.migrations import REVIEW_APPROVAL_APPEND_ONLY_TABLES, REVIEW_APPROVAL_MIGRATION_ID
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 @pytest.fixture
@@ -36,7 +37,7 @@ def _approval(conn, ws, scope="FILL"):
 
 
 def test_scope_can_only_be_fill(conn):
-    ws = create_workspace(conn, company="A", title="B")["id"]
+    ws = create_workspace(conn, company="A", title="B", account_id=DEFAULT_ACCOUNT_ID)["id"]
     with pytest.raises(sqlite3.IntegrityError):
         _approval(conn, ws, scope="SUBMIT")
     _approval(conn, ws)
@@ -51,7 +52,7 @@ def test_history_tables_are_append_only(conn, table):
 
 
 def test_disposition_and_event_vocabularies_are_closed(conn):
-    ws = create_workspace(conn, company="A", title="B")["id"]
+    ws = create_workspace(conn, company="A", title="B", account_id=DEFAULT_ACCOUNT_ID)["id"]
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO application_field_dispositions (id, account_id, application_workspace_id, answer_key, "
                      "disposition, actor, created_at) VALUES ('d', 'account_local', ?, 'k', 'MAYBE', 'u', 't')", (ws,))

@@ -32,7 +32,7 @@ def _require_writable_search_workspace(
     conn: dbapi.Connection,
     search_workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> None:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -107,8 +107,8 @@ def ingest_discovery_record(
     source_record: dict[str, Any],
     *,
     run_id: str | None = None,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    search_workspace_id: str,
+    account_id: str,
 ) -> dict[str, Any]:
     validate_job_source_record(source_record)
     _require_writable_search_workspace(
@@ -219,7 +219,7 @@ def get_discovery_candidate(
     conn: dbapi.Connection,
     candidate_id: str,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT c.*, COUNT(o.id) AS occurrence_count "
@@ -241,7 +241,7 @@ def get_discovery_candidate(
 def list_discovery_candidates(
     conn: dbapi.Connection,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     lifecycle_status: str | None = None,
 ) -> list[dict[str, Any]]:
     if lifecycle_status is not None and lifecycle_status not in ALL_STATUSES:
@@ -272,8 +272,8 @@ def set_discovery_candidate_status(
     candidate_id: str,
     status: str,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    search_workspace_id: str,
+    account_id: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     _require_writable_search_workspace(
@@ -307,11 +307,11 @@ def set_discovery_candidate_status(
 def create_discovery_run(
     conn: dbapi.Connection,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     user_profile_version_id: str,
     user_profile_content_id: str,
     request: dict[str, Any],
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     _require_writable_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -379,7 +379,7 @@ def get_discovery_run(
 
 def get_latest_discovery_run(
     conn: dbapi.Connection,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT id FROM discovery_runs WHERE search_workspace_id = ? "
@@ -392,7 +392,7 @@ def get_latest_discovery_run(
 def save_discovery_fit(
     conn: dbapi.Connection,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     candidate_id: str,
     occurrence_id: str,
     request: dict[str, Any],
@@ -421,14 +421,14 @@ def save_discovery_fit(
         (search_workspace_id, candidate_id, fit_id),
     )
     conn.commit()
-    return get_current_discovery_fit(conn, candidate_id)
+    return get_current_discovery_fit(conn, candidate_id, search_workspace_id=search_workspace_id)
 
 
 def get_current_discovery_fit(
     conn: dbapi.Connection,
     candidate_id: str,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT f.* FROM current_discovery_fits c JOIN discovery_fit_results f ON f.id = c.fit_id "

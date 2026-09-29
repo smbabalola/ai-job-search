@@ -16,7 +16,7 @@ _REVIEW_ARTIFACT_TYPES = (
 
 def build_review_view_model(
     conn: dbapi.Connection, workspace_id: str, *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     require_job_workspace(conn, workspace_id, account_id=account_id)
     profile_workspace_id = get_profile_workspace_id(conn, account_id)

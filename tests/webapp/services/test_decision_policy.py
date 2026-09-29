@@ -16,6 +16,7 @@ from webapp.services.decision_policy import derive_workspace_policy_state
 from webapp.services.http_api import fit_job, understand_job, generate_application_intelligence
 from webapp.services.pipeline import refresh_profile
 from webapp.services.semantic_proposal_adapter import FakeSemanticProposalAdapter
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 EMPTY_JOB_SNAPSHOT = {
@@ -43,8 +44,8 @@ def _workspace(tmp_path, profile_root, *, job_snapshot=None):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    refresh_profile(conn, root=str(profile_root))
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    refresh_profile(conn, root=str(profile_root), account_id=DEFAULT_ACCOUNT_ID)
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=ws["id"], artifact_type="job_posting_snapshot",
         payload=job_snapshot or EMPTY_JOB_SNAPSHOT, content_id="jobsnap_test",
@@ -69,7 +70,7 @@ def test_fit_job_persists_durable_policy_decisions(tmp_path, webapp_profile_root
     artifact = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=artifact["id"])
     # 3 gates + 4 dimensions on the v0 evaluation/semantic-fit policy.
     assert len(decisions) == 7
@@ -85,7 +86,7 @@ def test_retrying_same_artifact_creates_no_duplicates(tmp_path, webapp_profile_r
     artifact = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     from webapp.services.decision_policy import execute_job_fit_policy
 
     execute_job_fit_policy(conn, workspace_id=workspace_id, fit_artifact=artifact)
@@ -106,7 +107,7 @@ def test_get_refresh_creates_zero_rows(tmp_path, webapp_profile_root):
     artifact = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     before = list_policy_decisions(conn, workspace_id)
     # Reading the workspace's current artifact (what a GET path would do)
     # must never itself call policy execution.
@@ -127,11 +128,11 @@ def test_rerunning_stage_creates_new_artifact_scoped_decisions_old_remain_histor
     first = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     second = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_2",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert first["id"] != second["id"]
 
     first_decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=first["id"])
@@ -153,7 +154,7 @@ def test_current_artifact_require_user_derives_blocked_for_user(tmp_path, webapp
     artifact = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=artifact["id"])
     eligibility = next(
         d for d in decisions if d["review_item_type"] == "gate_flag"
@@ -187,7 +188,7 @@ def test_current_artifact_supported_fail_derives_declined_by_policy(
     artifact = fit_job(
         conn, workspace_id, FakeSemanticProposalAdapter(canned_response=canned),
         request_id="req_1", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=artifact["id"])
     eligibility = next(
         d for d in decisions if d["review_item_type"] == "gate_flag"
@@ -207,7 +208,7 @@ def test_non_blocking_decisions_allow_normal_progression(tmp_path, webapp_profil
     artifact = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=artifact["id"])
     assert all(not d["blocking"] for d in decisions)
     assert derive_workspace_policy_state(decisions) == "PROCEEDING"
@@ -227,7 +228,7 @@ def test_stale_require_user_from_old_artifact_does_not_keep_workspace_blocked(
     first = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     first_decisions = list_policy_decisions(conn, workspace_id, source_artifact_id=first["id"])
     assert derive_workspace_policy_state(first_decisions) == "BLOCKED_FOR_USER"
 
@@ -247,7 +248,7 @@ def test_stale_require_user_from_old_artifact_does_not_keep_workspace_blocked(
     second = fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_2",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert second["id"] != first["id"]
 
     governing = list_policy_decisions(conn, workspace_id, source_artifact_id=second["id"])
@@ -262,7 +263,7 @@ def test_one_blocked_workspace_does_not_affect_another(tmp_path, webapp_profile_
     conn, blocked_ws = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=MATERIAL_ELIGIBILITY_JOB_SNAPSHOT
     )
-    clean_ws = create_workspace(conn, company="Other Co", title="Other Role")
+    clean_ws = create_workspace(conn, company="Other Co", title="Other Role", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=clean_ws["id"], artifact_type="job_posting_snapshot",
         payload=EMPTY_JOB_SNAPSHOT, content_id="jobsnap_other",
@@ -271,11 +272,11 @@ def test_one_blocked_workspace_does_not_affect_another(tmp_path, webapp_profile_
     blocked_artifact = fit_job(
         conn, blocked_ws, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     clean_artifact = fit_job(
         conn, clean_ws["id"], _empty_adapter(), request_id="req_2",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     blocked_decisions = list_policy_decisions(
         conn, blocked_ws, source_artifact_id=blocked_artifact["id"]
@@ -298,7 +299,7 @@ def test_workflow_status_remains_untouched_by_policy_execution(tmp_path, webapp_
     fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     row = conn.execute(
         "SELECT workflow_status FROM workspaces WHERE id = ?", (workspace_id,)
     ).fetchone()
@@ -317,7 +318,7 @@ def test_no_review_decision_is_fabricated_for_material_absent_gate(tmp_path, web
     fit_job(
         conn, workspace_id, _empty_adapter(), request_id="req_1",
         extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     count = conn.execute(
         "SELECT COUNT(*) FROM review_decisions WHERE workspace_id = ?", (workspace_id,)
     ).fetchone()[0]

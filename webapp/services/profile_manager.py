@@ -297,7 +297,7 @@ def get_profile_manager(
     conn: dbapi.Connection,
     *,
     root: str | Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
         text = as_profile_sources(root).reader().read(CANDIDATE_SOURCE)
@@ -520,7 +520,7 @@ def _persist_mutation(
 
 def create_profile_entry(
     conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
-    kind: str, fields: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
+    kind: str, fields: dict[str, Any], account_id: str,
 ) -> dict[str, Any]:
     normalized = _normalize_fields(kind, fields)
     entry_id = f"profile-entry-{uuid.uuid4().hex[:20]}"
@@ -541,7 +541,7 @@ def create_profile_entry(
 def update_profile_entry(
     conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     entry_id: str, kind: str, fields: dict[str, Any],
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     normalized = _normalize_fields(kind, fields)
 
@@ -563,7 +563,7 @@ def update_profile_entry(
 
 def delete_profile_entry(
     conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
-    entry_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    entry_id: str, account_id: str,
 ) -> dict[str, Any]:
     def operation(markdown: str, entries: list[SourceEntry]) -> tuple[str, bool]:
         entry = next((item for item in entries if item.entry_id == entry_id), None)
@@ -589,7 +589,7 @@ def delete_profile_entry(
 def update_profile_source(
     conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     source_path: str, included: bool,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     def operation(markdown: str, entries: list[SourceEntry]) -> tuple[str, bool]:
         set_supplemental_source_included(

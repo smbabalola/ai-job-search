@@ -75,6 +75,7 @@ from tests.webapp.services.test_application_pack_staleness_via_resolved_blocker_
     _confirm_pack_then_correct_answer_without_rerun,
 )
 from tests.webapp.services.test_job_fit_resume import _eligibility_blocker, _sponsorship_adapter
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +112,11 @@ def test_retrying_resume_after_unchanged_answer_creates_no_duplicate_state(
     first = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     second = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-3", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     assert first["workflow_state"] == second["workflow_state"] == "PROCEEDING"
 
@@ -163,13 +164,13 @@ def test_retrying_resume_produces_identical_bundle_content_id(tmp_path, webapp_p
     resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     first_bundle = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
 
     resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-3", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     second_bundle = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
 
     assert first_bundle["content_id"] == second_bundle["content_id"]
@@ -201,7 +202,7 @@ def test_retrying_execute_job_fit_policy_on_resumed_artifact_creates_no_duplicat
     result = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     fit_artifact = result["job_fit_result"]
 
     before = current_policy_decisions(conn, workspace_id, fit_artifact["id"])
@@ -237,7 +238,7 @@ def test_sibling_source_workspace_id_stable_across_repeated_resume(tmp_path, web
     conn, workspace_a_id = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT
     )
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -260,12 +261,12 @@ def test_sibling_source_workspace_id_stable_across_repeated_resume(tmp_path, web
     result_b_1 = resume_job_fit_after_resolution(
         conn, workspace_b_id, _sponsorship_adapter(conn, blocker_a["id"]),
         request_id="req-fit-b2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     bundle_b_1 = get_current_artifact(conn, workspace_b_id, "resolved_blocker_answers")
     result_b_2 = resume_job_fit_after_resolution(
         conn, workspace_b_id, _sponsorship_adapter(conn, blocker_a["id"]),
         request_id="req-fit-b3", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     bundle_b_2 = get_current_artifact(conn, workspace_b_id, "resolved_blocker_answers")
 
     for bundle in (bundle_b_1, bundle_b_2):
@@ -291,7 +292,7 @@ def test_candidate_fact_stays_excluded_from_sibling_bundle_across_repeated_resum
     conn, workspace_a_id = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT
     )
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -312,7 +313,7 @@ def test_candidate_fact_stays_excluded_from_sibling_bundle_across_repeated_resum
     resume_job_fit_after_resolution(
         conn, workspace_a_id, _sponsorship_adapter(conn, blocker_a["id"]),
         request_id="req-fit-a2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     from webapp.services.semantic_proposal_adapter import FakeSemanticProposalAdapter
 
@@ -323,7 +324,7 @@ def test_candidate_fact_stays_excluded_from_sibling_bundle_across_repeated_resum
         result_b = resume_job_fit_after_resolution(
             conn, workspace_b_id, _empty_adapter(),
             request_id=request_id, extension_ids=[], extensions_dir=tmp_path / "extensions",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         bundle_b = get_current_artifact(conn, workspace_b_id, "resolved_blocker_answers")
         assert bundle_b["payload"]["answers"] == []
         assert result_b["workflow_state"] == "BLOCKED_FOR_USER"
@@ -367,7 +368,7 @@ def test_retried_blocker_resolution_does_not_falsely_stale_confirmed_pack(
     blocker = _eligibility_blocker(conn, workspace_id)
 
     baseline_bundle = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
-    baseline_staleness = check_staleness(conn, workspace_id, "application_pack")
+    baseline_staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     baseline_history_len = len(list_blocker_resolution_history(conn, blocker["id"]))
 
     # Retry the SAME correction call again: identical request_id, identical
@@ -384,7 +385,7 @@ def test_retried_blocker_resolution_does_not_falsely_stale_confirmed_pack(
     bundle_after_retry = build_resolved_blocker_answers_payload(conn, workspace_id)
     assert content_identity("blockeranswers_", bundle_after_retry) == baseline_bundle["content_id"]
 
-    staleness_after_retry = check_staleness(conn, workspace_id, "application_pack")
+    staleness_after_retry = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness_after_retry == baseline_staleness
     conn.close()
 
@@ -419,7 +420,7 @@ def test_correction_with_new_request_id_still_changes_outcome_after_retries(
         result = resume_job_fit_after_resolution(
             conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
             request_id=request_id, extension_ids=[], extensions_dir=tmp_path / "extensions",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         assert result["workflow_state"] == "PROCEEDING"
 
     # Genuine correction.
@@ -431,7 +432,7 @@ def test_correction_with_new_request_id_still_changes_outcome_after_retries(
     corrected = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-3", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert corrected["workflow_state"] == "DECLINED_BY_POLICY"
 
     # Retry resume twice after the correction -- must remain declined, not
@@ -440,7 +441,7 @@ def test_correction_with_new_request_id_still_changes_outcome_after_retries(
         result = resume_job_fit_after_resolution(
             conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
             request_id=request_id, extension_ids=[], extensions_dir=tmp_path / "extensions",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         assert result["workflow_state"] == "DECLINED_BY_POLICY"
 
     history = list_blocker_resolution_history(conn, blocker["id"])

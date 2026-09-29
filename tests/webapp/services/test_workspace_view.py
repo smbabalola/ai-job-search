@@ -33,14 +33,16 @@ from webapp.services.workspace_view import (
     resolve_next_action,
     stage_state_label,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 def _workspace(tmp_path):
     db = tmp_path / "jobsearch.sqlite3"
     init_db(db)
     conn = connect(db)
-    ensure_profile_workspace(conn)
-    workspace = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    workspace = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, workspace["id"]
 
 
@@ -139,7 +141,7 @@ def test_causal_staleness_message_names_direct_cause_on_fit(tmp_path):
         payload={"claims": [], "conflicts": []},
         content_id="profile_B",
     )
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     message = view["stages"]["fit"]["causal_reason"]
     assert "Evidence Profile" in message
     assert "Rerun Job Fit" in message
@@ -155,7 +157,7 @@ def test_causal_staleness_message_names_job_fit_as_cause_on_intelligence(tmp_pat
         payload={"claims": [], "conflicts": []},
         content_id="profile_B",
     )
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     message = view["stages"]["application_intelligence"]["causal_reason"]
     assert "Job Fit" in message
     assert "Rerun Application Intelligence" in message
@@ -241,7 +243,7 @@ def test_friendly_completion_issues_report_exact_counts(tmp_path, monkeypatch):
             }
         ],
     )
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     friendly = view["review_completion_friendly_issues"]
     assert any("0 of 2 required CV bullets" in message for message in friendly)
 
@@ -292,7 +294,7 @@ def test_historical_pack_with_incomplete_current_material_flag_true_when_both_ho
         effective_date="2026-08-20",
         submitted_pack_artifact_id=pack["id"],
         _allow_drafted=True,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     monkeypatch.setattr(
         workspace_view,
         "_build_review_items",
@@ -307,7 +309,7 @@ def test_historical_pack_with_incomplete_current_material_flag_true_when_both_ho
         ],
     )
 
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert view["has_historical_pack_with_incomplete_current_material"] is True
 
@@ -315,7 +317,7 @@ def test_historical_pack_with_incomplete_current_material_flag_true_when_both_ho
 def test_historical_pack_flag_false_when_no_pack_exists(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["has_historical_pack_with_incomplete_current_material"] is False
 
 
@@ -405,7 +407,7 @@ def test_historical_pack_flag_false_when_current_material_is_ready(
         workspace_view, "_build_review_items", lambda *args, **kwargs: ready_items
     )
 
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert view["review_completion_status"] == "READY"
     assert view["has_historical_pack_with_incomplete_current_material"] is False
@@ -435,7 +437,7 @@ def test_friendly_exclusion_reason_falls_back_honestly_for_unknown_text():
 def test_evidence_items_carry_friendly_reason_for_unsupported_claims(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     unsupported = [
         item for item in view["evidence_items"]
         if item["label"] == "Unsupported — excluded from application material"
@@ -446,7 +448,7 @@ def test_evidence_items_carry_friendly_reason_for_unsupported_claims(tmp_path):
 
 def test_unprocessed_workspace_has_product_stage_states(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["stages"]["job"]["state"] == "current"
     assert view["stages"]["understanding"]["state"] == "unavailable"
     assert set(stage["state"] for stage in view["stages"].values()) <= {"complete", "current", "needs_review", "stale", "unavailable"}
@@ -492,7 +494,7 @@ def test_dashboard_exposes_ready_stage_and_next_action(tmp_path):
         content_id="job_ready", payload={"company": "Acme", "title": "Planner"},
     )
 
-    dashboard = build_dashboard_view_model(conn, filter_name="active")
+    dashboard = build_dashboard_view_model(conn, filter_name="active", account_id=DEFAULT_ACCOUNT_ID)
 
     row = next(item for item in dashboard["workspaces"] if item["id"] == workspace_id)
     assert row["computed_stage"] == "Understanding"
@@ -511,7 +513,7 @@ def test_dashboard_stale_application_has_obvious_recovery_action(tmp_path):
         payload={"claims": [], "conflicts": []}, content_id="profile_changed",
     )
 
-    row = build_dashboard_view_model(conn, filter_name="active")["workspaces"][0]
+    row = build_dashboard_view_model(conn, filter_name="active", account_id=DEFAULT_ACCOUNT_ID)["workspaces"][0]
 
     assert row["stage_state_label"] == "Stale"
     assert row["next_action"] == {
@@ -523,7 +525,7 @@ def test_dashboard_stale_application_has_obvious_recovery_action(tmp_path):
 def test_all_six_evidence_concepts_are_classified_without_provider_rationale(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     labels = {item["label"] for item in view["evidence_items"]}
     assert labels == {
         "Verified evidence", "Accepted inference — functionally equivalent", "Transferable evidence",
@@ -534,7 +536,7 @@ def test_all_six_evidence_concepts_are_classified_without_provider_rationale(tmp
 def test_transferability_resolves_candidate_target_extension_conditions_limitations_and_status(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    item = next(item for item in build_workspace_view_model(conn, workspace_id)["evidence_items"] if item["label"] == "Transferable evidence")
+    item = next(item for item in build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["evidence_items"] if item["label"] == "Transferable evidence")
     assert item["candidate_evidence"][0]["id"] == "clm_transfer"
     assert item["target"][0]["id"] == "jobev_transfer"
     assert item["extension_ref"]["extension_id"] == "geophysics"
@@ -546,7 +548,7 @@ def test_transferability_resolves_candidate_target_extension_conditions_limitati
 def test_profile_conflict_is_needs_review_and_never_verified(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    profile_view = build_profile_view_model(conn)
+    profile_view = build_profile_view_model(conn, account_id=DEFAULT_ACCOUNT_ID)
     conflicted = next(item for item in profile_view["claims"] if item["claim"]["id"] == "clm_conflict")
     assert conflicted["label"] == "NEEDS_REVIEW"
     assert build_conflicted_concept_ids(profile_view["profile"]) == {"c5"}
@@ -555,12 +557,12 @@ def test_profile_conflict_is_needs_review_and_never_verified(tmp_path):
 def test_review_queue_includes_ready_and_needs_review_units_with_exact_artifact_decisions(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _, _, intelligence = _seed_evidence(conn, workspace_id)
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     units = [item for item in view["review_items"] if item["review_item_type"] == "content_unit"]
     assert {item["domain_item_id"] for item in units} == {"unit_ready", "unit_review"}
     assert all(item["source_artifact_id"] == intelligence["id"] for item in units)
     save_review_decision(conn, workspace_id=workspace_id, review_item_type="content_unit", source_artifact_id=intelligence["id"], domain_item_id="unit_ready", disposition="acknowledged_and_proceed")
-    updated = build_workspace_view_model(conn, workspace_id)
+    updated = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     ready = next(item for item in updated["review_items"] if item["domain_item_id"] == "unit_ready")
     assert ready["decision"]["disposition"] == "acknowledged_and_proceed"
     assert "unit_ready" not in {
@@ -601,7 +603,7 @@ def test_fully_rejected_empty_unit_has_no_review_or_inclusion_control(tmp_path):
         upstream_content_id="ai_request_A",
     )
 
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert "unit_rejected" not in {
         item["domain_item_id"] for item in view["review_items"]
@@ -612,7 +614,7 @@ def test_stale_fit_disables_downstream_controls(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
     save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot", payload={"claims": [], "conflicts": []}, content_id="profile_B")
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["stages"]["fit"]["state"] == "stale"
     assert view["controls"]["can_intelligence"] is False
     assert view["controls"]["can_confirm_pack"] is False
@@ -640,17 +642,17 @@ def test_submitted_pack_remains_non_stale_history_after_profile_refresh(tmp_path
     record_status_change(
         conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-20",
         submitted_pack_artifact_id=pack["id"], _allow_drafted=True,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     record_status_change(
         conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-21",
         submitted_pack_artifact_id=pack["id"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(
         conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot",
         payload={"claims": [], "conflicts": []}, content_id="profile_B",
     )
 
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["stages"]["fit"]["state"] == "stale"
     assert view["stages"]["application_intelligence"]["state"] == "stale"
     assert view["stages"]["review"]["state"] == "complete"
@@ -667,7 +669,7 @@ def test_blocking_review_disposition_keeps_gate_four_disabled(tmp_path):
             source_artifact_id=intelligence["id"], domain_item_id=unit_id,
             disposition="requires_upstream_change",
         )
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["outstanding_review_count"] >= 2
     assert view["controls"]["can_confirm_pack"] is False
 
@@ -689,7 +691,7 @@ def test_omitting_all_usable_material_keeps_gate_four_incomplete(tmp_path, monke
         }],
     )
 
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert view["outstanding_review_count"] == 0
     assert view["stages"]["review"]["state"] == "needs_review"
@@ -727,7 +729,7 @@ def test_understanding_count_and_recovery_state_are_available_before_job_fit(tmp
     for artifact_type, artifact in (("job_posting_snapshot", job), ("job_understanding_request", request)):
         record_dependency_fingerprint(conn, artifact_id=result["id"], upstream_artifact_type=artifact_type, upstream_content_id=artifact["content_id"])
 
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["accepted_job_evidence_count"] == 2
     assert view["understanding_has_no_grounded_evidence"] is False
 
@@ -765,7 +767,7 @@ def test_understanding_count_supersedes_historical_resolved_bundle(tmp_path):
             upstream_content_id=artifact["content_id"],
         )
 
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert len(old_bundle["payload"]["evidence"]) == 1
     assert view["accepted_job_evidence_count"] == 3
@@ -779,7 +781,7 @@ def test_no_grounded_understanding_is_marked_for_recovery(tmp_path):
     result = save_artifact(conn, workspace_id=workspace_id, artifact_type="job_understanding_result", content_id="result_empty", payload={"status": "NEEDS_REVIEW", "requirements": [], "responsibilities": [], "language_requirements": [], "eligibility_requirements": [], "logistics_requirements": []})
     for artifact_type, artifact in (("job_posting_snapshot", job), ("job_understanding_request", request)):
         record_dependency_fingerprint(conn, artifact_id=result["id"], upstream_artifact_type=artifact_type, upstream_content_id=artifact["content_id"])
-    view = build_workspace_view_model(conn, workspace_id)
+    view = build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert view["accepted_job_evidence_count"] == 0
     assert view["understanding_has_no_grounded_evidence"] is True
 
@@ -803,7 +805,7 @@ def test_acknowledging_unsafe_profile_item_does_not_resolve_ui_review(
         }],
     )
 
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert view["outstanding_review_count"] == 1
     assert view["controls"]["can_confirm_pack"] is False
@@ -828,7 +830,7 @@ def test_leaving_unsafe_profile_item_out_resolves_that_ui_decision(tmp_path, mon
         }],
     )
 
-    view = workspace_view.build_workspace_view_model(conn, workspace_id)
+    view = workspace_view.build_workspace_view_model(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert view["outstanding_review_count"] == 0
 
@@ -836,16 +838,16 @@ def test_leaving_unsafe_profile_item_out_resolves_that_ui_decision(tmp_path, mon
 def test_dashboard_has_required_summary_fields_and_filters(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_evidence(conn, workspace_id)
-    active = build_dashboard_view_model(conn, filter_name="active")
+    active = build_dashboard_view_model(conn, filter_name="active", account_id=DEFAULT_ACCOUNT_ID)
     row = active["workspaces"][0]
     assert {"company", "title", "computed_stage", "fit_verdict", "recommendation", "stale", "review_count", "workflow_status", "updated_at"} <= set(row)
     pack = save_artifact(
         conn, workspace_id=workspace_id, artifact_type="application_pack",
         payload=completion_ready_pack_payload("dashboard"),
     )
-    record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-20", submitted_pack_artifact_id=pack["id"], _allow_drafted=True)
-    assert build_dashboard_view_model(conn, filter_name="active")["workspaces"] == []
-    assert build_dashboard_view_model(conn, filter_name="drafted")["workspaces"][0]["id"] == workspace_id
+    record_status_change(conn, workspace_id=workspace_id, new_status="drafted", effective_date="2026-08-20", submitted_pack_artifact_id=pack["id"], _allow_drafted=True, account_id=DEFAULT_ACCOUNT_ID)
+    assert build_dashboard_view_model(conn, filter_name="active", account_id=DEFAULT_ACCOUNT_ID)["workspaces"] == []
+    assert build_dashboard_view_model(conn, filter_name="drafted", account_id=DEFAULT_ACCOUNT_ID)["workspaces"][0]["id"] == workspace_id
 
 
 def _discovery_source_record(**overrides):
@@ -864,11 +866,11 @@ def _discovery_source_record(**overrides):
 
 def test_resolve_apply_target_url_returns_url_for_discovery_origin_workspace(tmp_path):
     conn, _ = _workspace(tmp_path)
-    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
-    promoted = promote_discovery_candidate(conn, candidate["id"])
+    candidate = ingest_discovery_record(conn, _discovery_source_record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     workspace_id = promoted["workspace"]["id"]
 
-    url = resolve_apply_target_url(conn, workspace_id=workspace_id)
+    url = resolve_apply_target_url(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert url == "https://freehire.me/jobs/planner-77"
 
@@ -876,7 +878,7 @@ def test_resolve_apply_target_url_returns_url_for_discovery_origin_workspace(tmp
 def test_resolve_apply_target_url_returns_none_for_non_discovery_workspace(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID) is None
 
 
 def test_resolve_apply_target_url_returns_none_for_null_source_url(tmp_path):
@@ -886,10 +888,10 @@ def test_resolve_apply_target_url_returns_none_for_null_source_url(tmp_path):
     # string when the key is present at all, so "no URL" is modeled by
     # the key's genuine absence — matching how a real scraped record with
     # no discoverable posting URL would actually look.
-    candidate = ingest_discovery_record(conn, record)["candidate"]
-    promoted = promote_discovery_candidate(conn, candidate["id"])
+    candidate = ingest_discovery_record(conn, record, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
-    assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"]) is None
+    assert resolve_apply_target_url(conn, workspace_id=promoted["workspace"]["id"], account_id=DEFAULT_ACCOUNT_ID) is None
 
 
 def test_untrustworthy_scheme_is_rejected_at_discovery_ingestion(tmp_path):
@@ -908,7 +910,7 @@ def test_untrustworthy_scheme_is_rejected_at_discovery_ingestion(tmp_path):
     with pytest.raises(JobIngestionValidationError):
         ingest_discovery_record(
             conn, _discovery_source_record(source_url="javascript:alert(1)"),
-        )
+         account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
 
 def test_resolve_apply_target_url_does_not_leak_another_workspaces_url(tmp_path):
@@ -919,18 +921,18 @@ def test_resolve_apply_target_url_does_not_leak_another_workspaces_url(tmp_path)
         conn, _discovery_source_record(
             source_record_id="job-a", source_url="https://jobs.example/a",
         ),
-    )["candidate"]
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
     candidate_b = ingest_discovery_record(
         conn, _discovery_source_record(
             source_record_id="job-b", source_url="https://jobs.example/b",
             company="Other Co", title="Other Role",
         ),
-    )["candidate"]
-    workspace_a = promote_discovery_candidate(conn, candidate_a["id"])["workspace"]["id"]
-    workspace_b = promote_discovery_candidate(conn, candidate_b["id"])["workspace"]["id"]
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    workspace_a = promote_discovery_candidate(conn, candidate_a["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["workspace"]["id"]
+    workspace_b = promote_discovery_candidate(conn, candidate_b["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["workspace"]["id"]
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_a) == "https://jobs.example/a"
-    assert resolve_apply_target_url(conn, workspace_id=workspace_b) == "https://jobs.example/b"
+    assert resolve_apply_target_url(conn, workspace_id=workspace_a, account_id=DEFAULT_ACCOUNT_ID) == "https://jobs.example/a"
+    assert resolve_apply_target_url(conn, workspace_id=workspace_b, account_id=DEFAULT_ACCOUNT_ID) == "https://jobs.example/b"
 
 
 def test_resolve_apply_target_url_rejects_cross_account_workspace(tmp_path):
@@ -960,7 +962,7 @@ def _manual_job_workspace(conn, *, source_url=None, source_record_origin="manual
     created = create_job_from_source_record(
         conn, company="Acme", title="Backend Engineer", source_record=record,
         source_record_origin=source_record_origin,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     return created["workspace"]["id"]
 
 
@@ -970,7 +972,7 @@ def test_manually_supplied_snapshot_url_is_returned_when_no_discovery_origin_url
         conn, source_url="https://boards.example.com/acme/42",
     )
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_id) == (
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID) == (
         "https://boards.example.com/acme/42"
     )
 
@@ -981,7 +983,7 @@ def test_resolve_apply_target_reports_user_supplied_provenance_for_manual_job(tm
         conn, source_url="https://boards.example.com/acme/42", source_record_origin="manual_entry",
     )
 
-    target = resolve_apply_target(conn, workspace_id=workspace_id)
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert target is not None
     assert target.url == "https://boards.example.com/acme/42"
@@ -994,7 +996,7 @@ def test_resolve_apply_target_reports_imported_source_provenance_for_imported_jo
         conn, source_url="https://boards.example.com/acme/42", source_record_origin="imported_json",
     )
 
-    target = resolve_apply_target(conn, workspace_id=workspace_id)
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert target is not None
     assert target.provenance == "imported_source"
@@ -1002,10 +1004,10 @@ def test_resolve_apply_target_reports_imported_source_provenance_for_imported_jo
 
 def test_resolve_apply_target_reports_discovery_verified_provenance(tmp_path):
     conn, _ = _workspace(tmp_path)
-    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
-    promoted = promote_discovery_candidate(conn, candidate["id"])
+    candidate = ingest_discovery_record(conn, _discovery_source_record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
-    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"])
+    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     assert target is not None
     assert target.url == "https://freehire.me/jobs/planner-77"
@@ -1018,10 +1020,10 @@ def test_discovery_origin_url_wins_over_manually_supplied_snapshot_url(tmp_path)
     fallback — so the discovery URL always wins even if the snapshot also
     happens to carry a (weaker) source_url."""
     conn, _ = _workspace(tmp_path)
-    candidate = ingest_discovery_record(conn, _discovery_source_record())["candidate"]
-    promoted = promote_discovery_candidate(conn, candidate["id"])
+    candidate = ingest_discovery_record(conn, _discovery_source_record(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    promoted = promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
-    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"])
+    target = resolve_apply_target(conn, workspace_id=promoted["workspace"]["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     assert target.url == "https://freehire.me/jobs/planner-77"
     assert target.provenance == "discovery_verified"
@@ -1031,8 +1033,8 @@ def test_manual_job_without_url_has_no_apply_target(tmp_path):
     conn, _ = _workspace(tmp_path)
     workspace_id = _manual_job_workspace(conn, source_url=None)
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
-    assert resolve_apply_target(conn, workspace_id=workspace_id) is None
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID) is None
+    assert resolve_apply_target(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID) is None
 
 
 def test_manual_job_with_untrustworthy_scheme_has_no_apply_target(tmp_path):
@@ -1052,7 +1054,7 @@ def test_manual_job_with_untrustworthy_scheme_has_no_apply_target(tmp_path):
     )
     conn.commit()
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_id) is None
+    assert resolve_apply_target_url(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID) is None
 
 
 def test_imported_json_cannot_self_assert_discovery_verified_via_resolver(tmp_path):
@@ -1063,7 +1065,7 @@ def test_imported_json_cannot_self_assert_discovery_verified_via_resolver(tmp_pa
         metadata={"ingestion": {"source_url_provenance": "discovery_verified"}},
     )
 
-    target = resolve_apply_target(conn, workspace_id=workspace_id)
+    target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert target.provenance == "imported_source"
 
@@ -1071,9 +1073,9 @@ def test_imported_json_cannot_self_assert_discovery_verified_via_resolver(tmp_pa
 def test_workspace_a_snapshot_url_does_not_resolve_for_workspace_b(tmp_path):
     conn, _ = _workspace(tmp_path)
     workspace_a = _manual_job_workspace(conn, source_url="https://boards.example.com/a")
-    workspace_b = create_workspace(conn, company="Other", title="Other Role")["id"]
+    workspace_b = create_workspace(conn, company="Other", title="Other Role", account_id=DEFAULT_ACCOUNT_ID)["id"]
 
-    assert resolve_apply_target_url(conn, workspace_id=workspace_a) == (
+    assert resolve_apply_target_url(conn, workspace_id=workspace_a, account_id=DEFAULT_ACCOUNT_ID) == (
         "https://boards.example.com/a"
     )
-    assert resolve_apply_target_url(conn, workspace_id=workspace_b) is None
+    assert resolve_apply_target_url(conn, workspace_id=workspace_b, account_id=DEFAULT_ACCOUNT_ID) is None

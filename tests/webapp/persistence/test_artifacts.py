@@ -9,13 +9,14 @@ from webapp.persistence.artifacts import (
     get_artifact,
     list_artifact_history,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, ws["id"]
 
 

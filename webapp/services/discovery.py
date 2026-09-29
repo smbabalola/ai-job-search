@@ -79,12 +79,12 @@ def run_discovery_search(
     conn: dbapi.Connection,
     runner: DiscoveryPortalRunner,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     sources: list[str] | None = None,
     queries: list[str] | None = None,
     locations: list[str] | None = None,
     limit_per_source: int = 20,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     deployment_ceiling: Any = None,
 ) -> dict[str, Any]:
     _require_active_search_workspace(
@@ -240,8 +240,8 @@ def discovery_run_is_stale(
     conn: dbapi.Connection,
     run: dict[str, Any] | None = None,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    search_workspace_id: str,
+    account_id: str,
 ) -> bool | None:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -264,11 +264,11 @@ def evaluate_discovery_candidate(
     candidate_id: str,
     semantic_adapter: Any,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     request_id: str,
     understanding_provider: Any | None = None,
     active_extensions: list[dict[str, Any]] | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -365,10 +365,10 @@ def discovery_fit_is_stale(
     conn: dbapi.Connection,
     candidate_id: str,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     active_extensions: list[dict[str, Any]] | None = None,
     extensions_dir: Any | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> bool | None:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -418,9 +418,9 @@ def discovery_fit_is_stale(
 def grouped_discovery_candidates(
     conn: dbapi.Connection,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     extensions_dir: Any | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, list[dict[str, Any]]]:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -538,8 +538,8 @@ def promote_discovery_candidate(
     conn: dbapi.Connection,
     candidate_id: str,
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    search_workspace_id: str,
+    account_id: str,
 ) -> dict[str, Any]:
     try:
         conn.execute("BEGIN IMMEDIATE")

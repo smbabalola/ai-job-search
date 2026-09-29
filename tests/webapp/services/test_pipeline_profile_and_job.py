@@ -12,6 +12,7 @@ from webapp.services.pipeline import (
     run_job_understanding,
     PipelineError,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 FIXTURE_PROFILE_ROOT = Path(__file__).parents[1] / "fixtures" / "webapp_profile_root"
 
@@ -24,7 +25,7 @@ def _conn(tmp_path):
 
 def test_refresh_profile_saves_under_the_global_profile_workspace(tmp_path):
     conn = _conn(tmp_path)
-    saved = refresh_profile(conn, root=str(FIXTURE_PROFILE_ROOT))
+    saved = refresh_profile(conn, root=str(FIXTURE_PROFILE_ROOT), account_id=DEFAULT_ACCOUNT_ID)
     assert saved["workspace_id"] == PROFILE_WORKSPACE_ID
     assert saved["content_id"].startswith("profilesnap_")
     current = get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot")
@@ -34,16 +35,16 @@ def test_refresh_profile_saves_under_the_global_profile_workspace(tmp_path):
 
 def test_job_workspace_reads_the_same_global_profile_snapshot(tmp_path):
     conn = _conn(tmp_path)
-    refresh_profile(conn, root=str(FIXTURE_PROFILE_ROOT))
+    refresh_profile(conn, root=str(FIXTURE_PROFILE_ROOT), account_id=DEFAULT_ACCOUNT_ID)
     created = create_job_from_source_record(
         conn, company="Acme", title="Backend Engineer",
         source_record={"schema_version": "job-source-record.v0", "source": "manual",
                         "captured_at": "2026-08-18T00:00:00Z", "company": "Acme", "title": "Backend Engineer"},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     # the job workspace itself never stores its own profile_snapshot artifact —
     # the global lookup is what pipeline stages must use
     assert get_current_artifact(conn, created["workspace"]["id"], "profile_snapshot") is None
-    snapshot = get_current_profile_snapshot(conn)
+    snapshot = get_current_profile_snapshot(conn, account_id=DEFAULT_ACCOUNT_ID)
     assert snapshot["content_id"].startswith("profilesnap_")
     conn.close()
 
@@ -55,7 +56,7 @@ def test_create_job_from_source_record_creates_job_kind_workspace_only(tmp_path)
         source_record={"schema_version": "job-source-record.v0", "source": "manual",
                         "captured_at": "2026-08-18T00:00:00Z", "company": "Acme", "title": "Backend Engineer",
                         "requirements": [{"text": "5 years Python", "kind": "required"}]},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert result["workspace"]["kind"] == "job"
     assert result["workspace"]["id"] != PROFILE_WORKSPACE_ID
     assert result["artifact"]["artifact_type"] == "job_posting_snapshot"
@@ -71,7 +72,7 @@ def test_create_job_from_source_record_threads_origin_into_snapshot_provenance(t
                         "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
                         "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42"},
         source_record_origin="manual_entry",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert (
         result["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
         == "user_supplied"
@@ -86,7 +87,7 @@ def test_create_job_from_source_record_defaults_origin_to_imported_source(tmp_pa
         source_record={"schema_version": "job-source-record.v0", "source": "manual",
                         "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
                         "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42"},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert (
         result["artifact"]["payload"]["metadata"]["ingestion"]["source_url_provenance"]
         == "imported_source"
@@ -100,7 +101,7 @@ def test_invalid_source_record_leaves_no_orphan_workspace(tmp_path):
         create_job_from_source_record(
             conn, company="Acme", title="Broken",
             source_record={"schema_version": "wrong-version"},
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
     assert conn.execute("SELECT COUNT(*) FROM workspaces WHERE kind='job'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 0
 
@@ -145,7 +146,7 @@ def test_run_job_understanding_persists_both_request_and_result(tmp_path):
         source_record={"schema_version": "job-source-record.v0", "source": "manual",
                         "captured_at": "2026-08-18T00:00:00Z", "company": "Acme", "title": "Backend Engineer",
                         "requirements": [{"text": "5 years Python", "kind": "required"}]},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     workspace_id = created["workspace"]["id"]
 
     saved_result = run_job_understanding(conn, workspace_id, _FakeJobUnderstandingProvider(), request_id="req_test_1")
@@ -164,7 +165,7 @@ def test_run_job_understanding_persists_controlled_result_when_all_quotes_are_un
         source_record={"schema_version": "job-source-record.v0", "source": "manual",
                        "captured_at": "2026-08-18T00:00:00Z", "company": "Acme",
                        "title": "Backend Engineer", "description": "Python is required."},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     workspace_id = created["workspace"]["id"]
 
     saved = run_job_understanding(
@@ -182,7 +183,7 @@ def test_run_job_understanding_persists_controlled_result_when_all_quotes_are_un
 def test_run_job_understanding_without_job_snapshot_raises_pipeline_error(tmp_path):
     conn = _conn(tmp_path)
     from webapp.persistence.workspaces import create_workspace
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     with pytest.raises(PipelineError):
         run_job_understanding(conn, ws["id"], _FakeJobUnderstandingProvider(), request_id="req_test_2")
     conn.close()
@@ -207,7 +208,7 @@ def test_provider_failure_raises_pipeline_error_and_leaves_no_new_artifact(tmp_p
                         # UNAVAILABLE result without ever calling the provider, and this
                         # test would not actually exercise the provider-failure path.
                         "description": "We need someone with 5 years of Python experience."},
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     workspace_id = created["workspace"]["id"]
 
     with pytest.raises(PipelineError):
