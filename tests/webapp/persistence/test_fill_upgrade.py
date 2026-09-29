@@ -91,7 +91,7 @@ def test_fresh_database_gets_twenty_migrations_and_a_rerun_is_a_noop(tmp_path):
     init_db(db)
     c = connect(db)
     ids, schema = _migrations(c), _schema(c)
-    assert len(ids) == 20 and ids[-1] == FILL_MIGRATION_ID
+    assert len(ids) == 21 and ids[-2] == FILL_MIGRATION_ID  # 021 (6E-A) follows
     init_db(db)
     assert _migrations(c) == ids and _schema(c) == schema
     c.close()
@@ -131,11 +131,17 @@ def test_a_6da_database_upgrades_to_020_with_6da_rows_and_triggers_unchanged(bas
 
     init_db(db)
     c = connect(db)
-    assert _migrations(c) == [*before_ids, FILL_MIGRATION_ID]
+    assert _migrations(c) == [*before_ids, FILL_MIGRATION_ID, "021_human_submit"]
     assert {t: _rows(c, t) for t in SIX_D_A_TABLES} == rows_before
     assert {t: _objects_on(c, t) for t in SIX_D_A_TABLES} == objects_before
     tables_after = {r[0]: r[1] for r in c.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
-    assert {k: v for k, v in tables_after.items() if k in tables_before} == tables_before  # no table DDL changed
+    # No table DDL changed, except 6E-A's declared 021 rebuild of
+    # submission_intents, which only adds the HUMAN_AUTHORIZED source.
+    rebuilt = "submission_intents"
+    assert {k: v for k, v in tables_after.items() if k in tables_before and k != rebuilt} == \
+        {k: v for k, v in tables_before.items() if k != rebuilt}
+    assert tables_after[rebuilt].replace('"submission_intents"', "submission_intents").replace(
+        ", 'HUMAN_AUTHORIZED'", "") == tables_before[rebuilt]
     new_tables = set(tables_after) - set(tables_before)
     assert set(FILL_APPEND_ONLY_TABLES) <= new_tables
     for table in FILL_APPEND_ONLY_TABLES:  # every fill evidence table is append-only from the start

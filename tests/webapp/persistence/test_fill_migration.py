@@ -34,7 +34,7 @@ def _sixda_schema(c):
 
 def test_fresh_database_has_twenty_migrations_ending_019_020_and_rerun_is_a_noop(tmp_path, conn):
     ids = _ids(conn)
-    assert len(ids) == 20 and ids[-2:] == [REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID]
+    assert len(ids) == 21 and ids[-3:-1] == [REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID]  # 021 (6E-A) follows
     init_db(tmp_path / "db.sqlite3")
     assert _ids(conn) == ids
 

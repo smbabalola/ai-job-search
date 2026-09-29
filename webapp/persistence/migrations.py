@@ -54,6 +54,16 @@ FILL_APPEND_ONLY_TABLES = (
     "fill_run_grant_bindings", "fill_action_events", "fill_quarantine_events", "fill_detection_events",
     "fill_results",
 )
+HUMAN_SUBMIT_MIGRATION_ID = "021_human_submit"
+SUBMIT_OBSERVATION_PHASES = ("REVIEW", "PRE_SUBMIT", "CHALLENGE_CLEARED", "POST_SUBMIT")
+SUBMIT_EVENTS = (
+    "PRE_CLICK_REFUSED", "CHALLENGE_BEFORE_SUBMIT", "CANCELLED_BEFORE_DISPATCH", "EGRESS_INSTALLED",
+    "EGRESS_VERIFY_FAILED", "CLICK_PERFORMED", "SUBMIT_CONTROL_MISSING", "CHALLENGE_DETECTED",
+    "CHALLENGE_CLEARED", "CONTENT_CHANGED_DURING_ATTEMPT", "SIGNAL_OBSERVED", "TOTAL_RESTORED",
+    "TOTAL_RESTORE_FAILED", "EXECUTOR_RESTARTED", "RESULT_REPORTED",
+)
+SUBMIT_APPEND_ONLY_TABLES = ("human_submit_authorizations", "submit_reobservation_requests",
+                             "submit_observations", "submit_events", "submission_results")
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -103,6 +113,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (AUTONOMY_PREPARE_MIGRATION_ID, _migrate_autonomy_prepare, False),
         (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, True),
         (FILL_MIGRATION_ID, _migrate_fill, False),
+        (HUMAN_SUBMIT_MIGRATION_ID, _migrate_human_submit, True),
     )
     for migration_id, operation, disable_foreign_keys in migrations:
         if conn.execute(
@@ -1967,3 +1978,102 @@ def _migrate_fill(conn: sqlite3.Connection) -> None:
         for action in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
                          f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+
+
+# ---- Bundle 6E-A: human-authorized SUBMIT (021) ----
+
+def _migrate_human_submit(conn: sqlite3.Connection) -> None:
+    """Spec §17. New append-only submit evidence tables with closed
+    vocabularies, and submission_intents rebuilt ONLY to add the
+    HUMAN_AUTHORIZED source (rows, seq, the live-intent index and FKs
+    preserved). No 6D-A or 6D-B table, CHECK or trigger is touched."""
+    phases = ", ".join(f"'{p}'" for p in SUBMIT_OBSERVATION_PHASES)
+    events = ", ".join(f"'{e}'" for e in SUBMIT_EVENTS)
+    _execute_statements(conn, f"""
+        CREATE TABLE human_submit_authorizations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            fill_run_id TEXT NOT NULL UNIQUE REFERENCES fill_runs(id),
+            review_hash TEXT NOT NULL,
+            review_json TEXT NOT NULL,
+            grant_id TEXT NOT NULL UNIQUE REFERENCES autonomy_grants(id),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_human_submit_authorizations_ws ON human_submit_authorizations(application_workspace_id, seq);
+
+        CREATE TABLE submit_reobservation_requests (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            requested_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_reobservation_requests_run ON submit_reobservation_requests(fill_run_id, seq);
+
+        CREATE TABLE submit_observations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            attempt_id TEXT REFERENCES submission_attempts(id),
+            phase TEXT NOT NULL CHECK (phase IN ({phases})),
+            structure_fingerprint TEXT NOT NULL,
+            observation_fingerprint TEXT NOT NULL,
+            observation_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_observations_run ON submit_observations(fill_run_id, phase, seq);
+
+        CREATE TABLE submit_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            authorization_id TEXT NOT NULL REFERENCES human_submit_authorizations(id),
+            attempt_id TEXT REFERENCES submission_attempts(id),
+            event TEXT NOT NULL CHECK (event IN ({events})),
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_events_authorization ON submit_events(authorization_id, seq);
+
+        CREATE TABLE submission_results (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            attempt_id TEXT NOT NULL UNIQUE REFERENCES submission_attempts(id),
+            result_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    """)
+    for table in SUBMIT_APPEND_ONLY_TABLES:
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
+                         f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+    _rebuild_submission_intents_with_human_authorized(conn)
+
+
+def _rebuild_submission_intents_with_human_authorized(conn: sqlite3.Connection) -> None:
+    """The 019 12-step rebuild pattern: rows, seq values, indexes and
+    triggers preserved; FKs checked afterwards."""
+    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'submission_intents'"
+                             ).fetchone()[0]
+    old_check = "CHECK (source IN ('AUTONOMOUS', 'HUMAN_HANDOFF', 'HUMAN_APPLIED'))"
+    assert old_check in table_sql, "submission_intents source CHECK changed; update the 021 rebuild"
+    extras = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = 'submission_intents' AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL").fetchall()]
+    new_sql = table_sql.replace(
+        old_check, "CHECK (source IN ('AUTONOMOUS', 'HUMAN_HANDOFF', 'HUMAN_APPLIED', 'HUMAN_AUTHORIZED'))")
+    new_sql = new_sql.replace("CREATE TABLE submission_intents", "CREATE TABLE submission_intents_021", 1)
+    conn.execute(new_sql)
+    conn.execute("INSERT INTO submission_intents_021 SELECT * FROM submission_intents")
+    conn.execute("DROP TABLE submission_intents")  # drops its indexes and triggers too
+    conn.execute("ALTER TABLE submission_intents_021 RENAME TO submission_intents")
+    for statement in extras:
+        conn.execute(statement)
+    problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if problems:
+        raise RuntimeError(f"021 submission_intents rebuild broke foreign keys: {problems}")

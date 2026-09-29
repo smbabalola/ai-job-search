@@ -6,17 +6,19 @@ from unittest import mock
 
 from webapp.persistence import migrations
 from webapp.persistence.db import connect, init_db
-from webapp.persistence.migrations import FILL_MIGRATION_ID, REVIEW_APPROVAL_MIGRATION_ID
+from webapp.persistence.migrations import FILL_MIGRATION_ID, HUMAN_SUBMIT_MIGRATION_ID, REVIEW_APPROVAL_MIGRATION_ID
 
 
 def pre_019_db_with_answers(tmp_path):
     db = tmp_path / "pre019.sqlite3"
     # A true pre-019 database: 020 (which references 019's tables) is skipped too.
     with (mock.patch.object(migrations, "_migrate_review_approval", lambda conn: None),
-          mock.patch.object(migrations, "_migrate_fill", lambda conn: None)):
+          mock.patch.object(migrations, "_migrate_fill", lambda conn: None),
+          mock.patch.object(migrations, "_migrate_human_submit", lambda conn: None)):
         init_db(db)
     c = connect(db)
-    c.execute("DELETE FROM schema_migrations WHERE id IN (?, ?)", (REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID))
+    c.execute("DELETE FROM schema_migrations WHERE id IN (?, ?, ?)",
+              (REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID, HUMAN_SUBMIT_MIGRATION_ID))
     for answer_id, supersedes in (("ans_a", None), ("ans_b", "ans_a")):
         c.execute(
             "INSERT INTO approved_answers (id, account_id, subject, answer_kind, value_json, reach, scope_id, "
