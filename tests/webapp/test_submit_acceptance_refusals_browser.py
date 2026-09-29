@@ -22,7 +22,10 @@ def test_a_challenge_after_the_click_is_completed_by_the_person_then_submitted(s
     assert h.wait_status({"CHALLENGE_WAITING"})["status"] == "CHALLENGE_WAITING"
     assert h.submit_posts() == []  # nothing left yet: the page is waiting for the person
     page.click("#challenge_done")  # the person completes the check (a trusted click)
-    assert h.wait_status({"SUBMITTED", "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED"})["status"] == "SUBMITTED"
+    status = h.wait_status({"SUBMITTED", "SUBMISSION_UNCLEAR", "SUBMISSION_FAILED"})
+    auth_id = sp.authorizations_for_application(h.w.conn, h.w.ws)[0]["id"]
+    trail = [(e["event"], e["detail"]) for e in sp.submit_events(h.w.conn, auth_id)]
+    assert status["status"] == "SUBMITTED", (status, trail, h.recorder.requests)
     assert h.submit_posts() == [SUBMIT_POST]
     events = [e["event"] for e in sp.submit_events(h.w.conn, sp.authorizations_for_application(h.w.conn, h.w.ws)[0]["id"])]
     assert "CHALLENGE_DETECTED" in events and "CHALLENGE_CLEARED" in events

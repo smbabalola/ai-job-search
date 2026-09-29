@@ -295,9 +295,9 @@ def _result_evidence(evidence: dict[str, Any], events: list[dict[str, Any]]) -> 
 
 def _record_applied(conn, *, attempt: dict[str, Any], auth: dict[str, Any], now: datetime) -> dict[str, Any]:
     """E19: the tracker's 'applied' status for this exact pack, linked to the
-    attempt's intent. The tracker's own preconditions may refuse (e.g. the
-    workspace is no longer 'drafted'); the submission result stands either
-    way and records whether the tracker was updated."""
+    attempt's intent. The tracker may refuse (its preconditions, e.g. the
+    workspace is no longer 'drafted') or fail outright; the submission result
+    stands either way and records whether the tracker was updated."""
     grant = get_grant(conn, attempt["grant_id"])
     conn.execute("SAVEPOINT human_submit_applied")
     try:
@@ -306,7 +306,7 @@ def _record_applied(conn, *, attempt: dict[str, Any], auth: dict[str, Any], now:
                                      note="Submitted via the extension (human-authorized)",
                                      submitted_pack_artifact_id=grant["binding"].get("pack_artifact_id"),
                                      commit=False, account_id=auth["account_id"])
-    except ValueError as exc:
+    except Exception as exc:  # any tracker failure; the submission result is authoritative
         conn.execute("ROLLBACK TO SAVEPOINT human_submit_applied")
         conn.execute("RELEASE SAVEPOINT human_submit_applied")
         return {"workflow_applied": False, "workflow_reason": str(exc)[:200]}

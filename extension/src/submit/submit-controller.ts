@@ -120,6 +120,7 @@ export class SubmitController {
   private busy = false;
   private cancelRequested = false;
   private dispatchStarted = false;
+  private active: { auth: AuthorizationDirective; record: StoredSubmit } | null = null;
 
   constructor(private readonly ports: SubmitPorts, private readonly ctx: SubmitContext,
               private readonly onView: (view: SubmitView) => void = () => undefined) {}
@@ -159,8 +160,17 @@ export class SubmitController {
     this.handledGrants.add(auth.grant_id);
     this.cancelRequested = false;
     this.dispatchStarted = false;
+    this.active = null;
     try {
       return await this.steps(auth);
+    } catch {
+      // Fail closed on anything unexpected (J4/J5): before dispatch nothing
+      // was opened; after it, restore TOTAL and report an unknown click.
+      const active = this.active as { auth: AuthorizationDirective; record: StoredSubmit } | null;
+      if (!this.dispatchStarted || active === null) return this.set("NOT_SUBMITTED", "EXTENSION_ERROR");
+      return this.finish(active.auth, active.record, { success: false, failure: false, content: false,
+                                                      cause: "EXTENSION_ERROR" }, "UNKNOWN")
+        .catch(() => this.set("UNCLEAR", "EXTENSION_ERROR"));
     } finally {
       this.busy = false;
     }
@@ -214,6 +224,7 @@ export class SubmitController {
     const record: StoredSubmit = { tabId: this.ctx.tabId, runId: this.ctx.runId, sessionId: this.ctx.sessionId,
       sessionToken: this.ctx.sessionToken, attemptId, phase: "DISPATCHING", dispatchedAt: browser.now(),
       totalHash: auth.expected.ruleset_hash };
+    this.active = { auth, record };
     await store.set(this.key, record);
     this.set("DISPATCHING", null);
     const dispatched = await server.dispatch(this.ctx.runId, attemptId).then((r) => r.dispatched, () => false);
@@ -291,13 +302,19 @@ export class SubmitController {
           return { success: false, failure: false, content: false, cause: "QUARANTINE_CHANGED" };
         }
         if (signals.rootPresent) {
+          // The observer reads the DOM synchronously, so an observation is
+          // wholly before or wholly after the page swaps its form out: no
+          // observation, or one without the application root, means the
+          // form is GONE (the page moved on) -- not changed. Only a present
+          // form that differs from the authorized one is a content change.
           const observation = await page.observe().catch(() => null);
-          const local = observation !== null
-            && await observationFingerprint(observation) === auth.expected.observation_fingerprint;
-          const server = observation !== null && await this.ports.server
-            .observation(this.ctx.runId, "CHALLENGE_CLEARED", observation, attemptId)
-            .then((r) => (r as { matches_review?: unknown }).matches_review === true, () => false);
-          if (!local || !server) return this.contentChangedStop(auth, attemptId);
+          if (observation !== null && observation.context.application_root_found) {
+            const local = await observationFingerprint(observation) === auth.expected.observation_fingerprint;
+            const server = await this.ports.server
+              .observation(this.ctx.runId, "CHALLENGE_CLEARED", observation, attemptId)
+              .then((r) => (r as { matches_review?: unknown }).matches_review === true, () => false);
+            if (!local || !server) return this.contentChangedStop(auth, attemptId);
+          }
         }
       }
       if (signals.success) {
@@ -320,7 +337,7 @@ export class SubmitController {
   }
 
   private async finish(auth: AuthorizationDirective, record: StoredSubmit, outcome: WatchOutcome,
-                       clickPerformed: boolean): Promise<SubmitView> {
+                       clickPerformed: boolean | "UNKNOWN"): Promise<SubmitView> {
     const { server, page, egress, store } = this.ports;
     const restored = await egress.restoreTotal(auth.expected.ruleset_hash).catch(() => false);
     await this.event(record.attemptId, restored ? "TOTAL_RESTORED" : "TOTAL_RESTORE_FAILED");

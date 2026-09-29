@@ -374,3 +374,62 @@ describe("a challenge that clears and succeeds in the same poll (browser finding
     expect(w.results[0]).toMatchObject({ success_observed: false, cause: "QUARANTINE_CHANGED" });
   });
 });
+
+describe("an unexpected failure after the egress opened (J5: bounded egress)", () => {
+  it("restores TOTAL and reports an unknown click instead of leaving the allow rules installed", async () => {
+    const w = world();
+    const setOrig = w.ports.store.set.bind(w.ports.store);
+    w.ports.store.set = async (k, v) => {
+      if ((v as StoredSubmit).phase === "CLICKED") throw new Error("storage quota");
+      return setOrig(k, v);
+    };
+    const c = new SubmitController(w.ports, CTX);
+    const view = await c.run(directive());
+    expect(w.calls).not.toContain("clickSubmit");
+    expect(w.calls).toContain("restoreTotal");
+    expect(w.results[0]).toMatchObject({ click_performed: "UNKNOWN", cause: "EXTENSION_ERROR" });
+    expect(view.phase).toBe("UNCLEAR");
+  });
+
+  it("an unexpected failure before any dispatch ends NOT_SUBMITTED without touching the egress", async () => {
+    const w = world();
+    w.ports.page.observe = async () => { throw new Error("frame gone"); };
+    const view = await new SubmitController(w.ports, CTX).run(directive());
+    expect(view).toMatchObject({ phase: "NOT_SUBMITTED", reason: "EXTENSION_ERROR" });
+    expect(w.calls).not.toContain("dispatch");
+    expect(w.calls).not.toContain("install");
+  });
+});
+
+describe("the form vanishing during the clearance re-observation (browser finding, 1 in 4 runs)", () => {
+  // [pre-click check, poll 1: challenge, poll 2: cleared with the form still seen, poll 3: success]
+  const race = [{}, { challenge: true }, { challenge: false, rootPresent: true }, { success: true, rootPresent: false }];
+
+  it("a re-observation that finds no application root means the form is gone, not changed", async () => {
+    const gone = structuredClone(OBS);
+    gone.context.application_root_found = false;
+    gone.elements = [];
+    const w = world({ signals: [...race], observations: [OBS, gone] });
+    const { view } = await run(w);
+    expect(w.calls).not.toContain("event:CONTENT_CHANGED_DURING_ATTEMPT");
+    expect(view.phase).toBe("SUBMITTED");
+  });
+
+  it("a re-observation that fails because the page is mid-swap is treated the same way", async () => {
+    const w = world({ signals: [...race] });
+    let n = 0;
+    const observe = w.ports.page.observe;
+    w.ports.page.observe = async () => { n += 1; if (n === 2) throw new Error("frame replaced"); return observe(); };
+    const { view } = await run(w);
+    expect(w.calls).not.toContain("event:CONTENT_CHANGED_DURING_ATTEMPT");
+    expect(view.phase).toBe("SUBMITTED");
+  });
+
+  it("a PRESENT form that differs is still a content change", async () => {
+    const changed = structuredClone(OBS);
+    changed.elements[1].value_state = { state: "NONBLANK", current_value_hash: "sha256:" + "8".repeat(64) } as never;
+    const w = world({ signals: [...race], observations: [OBS, changed] });
+    await run(w);
+    expect(w.calls).toContain("event:CONTENT_CHANGED_DURING_ATTEMPT");
+  });
+});

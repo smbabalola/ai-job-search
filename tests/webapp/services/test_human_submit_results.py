@@ -208,3 +208,21 @@ def test_no_click_after_the_egress_opened_is_not_proven_by_matched_rules(filled_
     out = report(filled_world, attempt, click_performed=False, matched_rule_ids=[], matched_rules_available=True,
                  cause="SUBMIT_CONTROL_MISSING")
     assert (out["state"], out["proven_not_submitted"]) == ("SUBMISSION_AMBIGUOUS", False)
+
+
+def test_any_tracker_failure_never_discards_the_submission_result(filled_world, monkeypatch):
+    """User condition: submission result persistence is authoritative even if
+    the tracker update fails -- for ANY failure, not only its precondition
+    ValueErrors."""
+    from webapp.services import human_submit
+    def broken(*args, **kwargs):
+        raise RuntimeError("tracker down")
+    monkeypatch.setattr(human_submit, "record_status_change", broken)
+    _, attempt = dispatched(filled_world)
+    assert report(filled_world, attempt, success_observed=True)["state"] == "CONFIRMED_SUCCESS"
+    from webapp.persistence import submit as sp_
+    assert sp_.get_submission_result(filled_world.conn, attempt)["result"]["state"] == "CONFIRMED_SUCCESS"
+    last = filled_world.conn.execute("SELECT evidence_json FROM submission_attempt_events WHERE attempt_id = ? "
+                                     "ORDER BY seq DESC LIMIT 1", (attempt,)).fetchone()[0]
+    assert '"workflow_applied":false' in last.replace(" ", "") and "tracker down" in last
+    assert intents(filled_world) == [("HUMAN_AUTHORIZED", "CONFIRMED")]
