@@ -76,8 +76,10 @@ def test_no_submission_action_or_route_exists(ui):
         assert actions <= ALLOWED_ACTIONS, actions
         assert not re.search(r'<form[^>]*action="[^"]*submit', html, re.IGNORECASE)
         assert COPY in html or path.startswith("/applications")
+    # 6E-A: the only submit routes are the Phase 3 confirmation and the human-authorized inventory.
+    from tests.webapp.test_submit_structure import CONFIRM_SUBMISSION, SUBMIT_ROUTES_6E_A
     submit_routes = {r.path for r in client.app.routes if "submit" in getattr(r, "path", "").lower()}
-    assert submit_routes <= {"/api/handoff/sessions/{session_id}/confirm-submission"}, submit_routes
+    assert submit_routes <= {CONFIRM_SUBMISSION} | SUBMIT_ROUTES_6E_A, submit_routes
 
 
 def test_prepared_page_lists_applications_with_bulk_control(ui):

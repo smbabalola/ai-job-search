@@ -39,8 +39,10 @@ def _routes(tmp_path):
     return [(sorted(getattr(r, "methods", None) or []), r.path) for r in app.routes]
 
 
-def test_no_route_path_submits_except_the_pre_existing_confirmation(tmp_path):
-    offenders = [p for _, p in _routes(tmp_path) if "submit" in p.lower() and not p.endswith("/confirm-submission")]
+def test_no_route_path_submits_except_the_confirmation_and_the_6e_a_human_routes(tmp_path):
+    from tests.webapp.test_submit_structure import SUBMIT_ROUTES_6E_A
+    offenders = [p for _, p in _routes(tmp_path) if "submit" in p.lower() and not p.endswith("/confirm-submission")
+                 and p not in SUBMIT_ROUTES_6E_A]
     assert offenders == []
 
 

@@ -165,8 +165,10 @@ def test_no_submit_or_release_control_on_the_fill_pages(ui):
     controls = re.findall(r"<button[^>]*>([^<]*)</button>", html)
     assert not [c for c in controls if re.search(r"submit|release|lift|unquarantine", c, re.IGNORECASE)], controls
     assert not re.search(r'<form[^>]*action="', html, re.IGNORECASE)
+    # 6E-A: the only submit routes are the Phase 3 confirmation and the human-authorized inventory.
+    from tests.webapp.test_submit_structure import CONFIRM_SUBMISSION, SUBMIT_ROUTES_6E_A
     submit_routes = {r.path for r in client.app.routes if "submit" in getattr(r, "path", "").lower()}
-    assert submit_routes <= {"/api/handoff/sessions/{session_id}/confirm-submission"}
+    assert submit_routes <= {CONFIRM_SUBMISSION} | SUBMIT_ROUTES_6E_A
 
 
 def test_new_and_modified_templates_never_use_the_global_data_action_hook():

@@ -25,10 +25,16 @@ def _enclosing_function(tree: ast.AST, node: ast.AST) -> str | None:
     return None
 
 
-def test_private_pre_click_core_has_no_production_caller():
+def test_private_pre_click_core_is_reached_only_through_the_human_pre_click():
+    # 6E-A: the one caller is human_submit.human_pre_click_commit (HUMAN_SUBMIT
+    # authority); the autonomous pre_click_commit stays an unconditional refusal.
+    human = ROOT / "webapp" / "services" / "human_submit.py"
     for path in PRODUCTION:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         uses = _name_uses(tree, "_pre_click_commit_core")
+        if path == human:
+            assert {_enclosing_function(tree, u) for u in uses} == {"human_pre_click_commit"}
+            continue
         assert uses == [], f"{path.relative_to(ROOT)} references _pre_click_commit_core"
 
 
@@ -39,7 +45,8 @@ def test_private_grant_core_is_reached_only_through_the_public_fill_wrapper():
         if path != AUTONOMY:
             assert uses == [], f"{path.relative_to(ROOT)} references _request_grant_core"
             continue
-        assert {_enclosing_function(tree, u) for u in uses} == {"request_grant"}
+        # 6E-A adds exactly one more: the human SUBMIT grant entry point.
+        assert {_enclosing_function(tree, u) for u in uses} == {"request_grant", "request_human_submit_grant"}
     wrapper = next(n for n in ast.walk(ast.parse(AUTONOMY.read_text(encoding="utf-8")))
                    if isinstance(n, ast.FunctionDef) and n.name == "request_grant")
     first = wrapper.body[1] if isinstance(wrapper.body[0], ast.Expr) else wrapper.body[0]  # after the docstring

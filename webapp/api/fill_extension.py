@@ -4,7 +4,8 @@ A run belongs to the handoff session that started it: a foreign session, or
 a run of another session/account, is 404. FillRefused/ReviewRefused are 409
 with the exact reason; invalid bodies and observations are 422. The intent
 response is the only body that may carry a cleartext value. No route
-submits, lifts a quarantine or accepts a SUBMIT stage."""
+here submits, lifts a quarantine or accepts a SUBMIT stage (6E-A's submit routes live in
+webapp/api/submit_extension.py)."""
 from __future__ import annotations
 
 import sqlite3
@@ -200,7 +201,16 @@ def post_unknown(session_id: str, run_id: str, action_index: int, conn: sqlite3.
 def post_heartbeat(session_id: str, run_id: str, conn: sqlite3.Connection = Depends(get_conn),
                    scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
-    return call(lambda: fill_runs.heartbeat(conn, run_id=run_id, now=_now()))
+    now = _now()
+    out = call(lambda: fill_runs.heartbeat(conn, run_id=run_id, now=now))
+    # 6E-A (spec E12): additive directives -- a pending Submit Review
+    # re-observation request, and an issued human SUBMIT authorization.
+    from webapp.services.human_submit import pending_authorization
+    from webapp.services.submit_review import pending_reobservation
+    request = pending_reobservation(conn, run_id)
+    out["reobserve"] = {"request_id": request["id"]} if request else None
+    out["authorization"] = pending_authorization(conn, run_id, now)
+    return out
 
 
 @router.post("/runs/{run_id}/detections")

@@ -412,3 +412,28 @@ def submission_status(conn, *, settings: Settings, account_id: str, application_
     if not _lease_live(conn, run["id"], now):
         return {"status": "NOT_READY", "attempt_id": None, "reason": "lease_expired"}
     return {"status": "SUBMIT_READY", "attempt_id": None, "reason": None}
+
+
+def pending_authorization(conn, run_id: str, now: datetime) -> dict[str, Any] | None:
+    """The heartbeat directive (spec E12): an ISSUED, unexpired human SUBMIT
+    grant for this run, with everything the extension must prove against
+    and the certified egress resolved for the bound target. None otherwise."""
+    from product.submit_certification import confirmation_url, resolve_egress
+    auth = sp.authorization_for_run(conn, run_id)
+    if auth is None:
+        return None
+    grant = get_grant(conn, auth["grant_id"])
+    if grant["status"] != "ISSUED" or parse_utc(grant["expires_at"]) <= now:
+        return None
+    review = auth["review"]
+    target = review["target"]
+    cert = submit_certified(target["adapter_id"], target["adapter_version"])
+    bound = {"origin": target["origin"], "tenant_key": target["tenant_key"], "ats_job_id": target["ats_job_id"]}
+    return {"authorization_id": auth["id"], "grant_id": grant["id"], "review_hash": auth["review_hash"],
+            "expires_at": grant["expires_at"], "certification_id": cert.certification_id,
+            "egress": resolve_egress(cert, **bound), "confirmation_url": confirmation_url(cert, **bound),
+            "e1_rule_id": E1_RULE_ID,
+            "expected": {"canonical_url": target["canonical_url"],
+                         "observation_fingerprint": review["observation"]["observation_fingerprint"],
+                         "submit_control_fingerprint": review["submit_control"]["control_fingerprint"],
+                         "ruleset_hash": review["fill"]["ruleset_hash_total"]}}
