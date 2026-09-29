@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="panel form-panel auth-panel">
+  <h1>Sign in</h1>
+  {% if errors %}<ul class="form-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="/auth/login">
+    <label>Email <input name="email" type="email" autocomplete="email" required></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="button" type="submit">Sign in</button>
+  </form>
+  <p class="form-note"><a href="/reset-password">Forgot your password?</a> · <a href="/signup">Create an account</a></p>
+</section>
+{% endblock %}

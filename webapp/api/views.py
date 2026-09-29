@@ -73,6 +73,8 @@ def dashboard(
     conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
+    if request.app.state.settings.auth_enabled and not getattr(request.state, "user", None):
+        return request.app.state.templates.TemplateResponse(request, "landing.html", {})
     if filter not in {"all", "active", "drafted", "applied", "interview", "offer", "final"}:
         filter = "active"
     pending_replay = request.query_params.get("onboarding_replay")

@@ -159,7 +159,9 @@ class DatabaseProfileSourceStore:
 
 
 def profile_source_store_from_settings(settings: Any):
-    if settings.is_hosted:
+    """Signed-up accounts keep their sources in the database; only the legacy
+    local single-user mode reads and writes files under profile_root."""
+    if settings.auth_enabled:
         return DatabaseProfileSourceStore()
     return FilesystemProfileSourceStore(settings.profile_root)
 

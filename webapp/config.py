@@ -156,9 +156,21 @@ class Settings:
 
     writer_lock_timeout_ms: int = field(default_factory=_parse_writer_lock_timeout)
 
+    # Test/journey switch (Bundle 7 Task 8): local mode with real sign-in.
+    auth_required_in_local: bool = False
+
     @property
     def is_hosted(self) -> bool:
         return self.deployment == "hosted"
+
+    @property
+    def auth_enabled(self) -> bool:
+        """Real users and sessions: always in hosted mode, opt-in locally."""
+        return self.is_hosted or self.auth_required_in_local
+
+    @property
+    def app_origin(self) -> str:
+        return self.public_origin or f"http://{self.host}:{self.port}"
 
     def __post_init__(self) -> None:
         self.plan_catalog_path = Path(self.plan_catalog_path)

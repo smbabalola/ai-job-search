@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from webapp.api.applications import router as applications_router
+from webapp.api.auth import AuthContextMiddleware, router as auth_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -89,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     app.state.error_reporter = LogErrorReporter()
     app.add_exception_handler(Exception, unhandled_error_handler)
+    app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
     app.add_middleware(RequestContextMiddleware)  # outermost: every response carries the request id
     app.state.templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
@@ -104,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    app.include_router(auth_router)
     app.include_router(profile_router)
     app.include_router(application_documents_router)
     app.include_router(reusable_router)
