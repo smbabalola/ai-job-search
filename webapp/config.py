@@ -46,6 +46,25 @@ def _parse_step_cost_max(raw: str | None) -> dict[str, Decimal]:
     return out
 
 
+def _parse_csv(raw: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_json_object(raw: str | None) -> dict:
+    """A malformed or non-object value yields {} so validation reports it."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_object_store(raw: str | None) -> dict:
+    return _parse_json_object(raw) if raw else {"kind": "local"}
+
+
 @dataclass
 class Settings:
     db_path: Path = field(default_factory=lambda: Path(".jobsearch/jobsearch.sqlite3"))
@@ -102,8 +121,38 @@ class Settings:
     autonomy_dispatch_result_timeout: float = 600.0
     autonomy_retry_delays: tuple = (60.0, 300.0, 900.0)
     review_approval_ttl_days: int = field(default_factory=_parse_review_ttl)
+    # Bundle 7 (spec H1). "local" is the single-user development mode;
+    # "hosted" is the multi-tenant production mode and is validated by
+    # webapp.deployment.validate_settings before the app starts.
+    deployment: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_DEPLOYMENT", "local"))
+    database_url: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_DATABASE_URL") or None)
+    secret_key: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_SECRET_KEY") or None)
+    public_origin: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_PUBLIC_ORIGIN") or None)
+    extension_ids: tuple[str, ...] = field(
+        default_factory=lambda: _parse_csv(os.environ.get("JOBSEARCH_EXTENSION_IDS", ""))
+    )
+    object_store: dict = field(default_factory=lambda: _parse_object_store(os.environ.get("JOBSEARCH_OBJECT_STORE")))
+    billing_provider: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_BILLING_PROVIDER", "fake"))
+    email_provider: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_EMAIL_PROVIDER", "console"))
+    smtp: dict = field(default_factory=lambda: _parse_json_object(os.environ.get("JOBSEARCH_SMTP")))
+    metrics_token: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_METRICS_TOKEN") or None)
+    plan_catalog_path: Path = field(
+        default_factory=lambda: Path(os.environ.get("JOBSEARCH_PLAN_CATALOG", "product/plans/plan-catalog.dev.json"))
+    )
+    retention_policy_path: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("JOBSEARCH_RETENTION_POLICY", "product/policies/retention-policy.dev.json")
+        )
+    )
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.deployment == "hosted"
 
     def __post_init__(self) -> None:
+        self.plan_catalog_path = Path(self.plan_catalog_path)
+        self.retention_policy_path = Path(self.retention_policy_path)
+        self.extension_ids = tuple(self.extension_ids)
         self.db_path = Path(self.db_path)
         self.extensions_dir = Path(self.extensions_dir)
         self.documents_root = Path(self.documents_root)

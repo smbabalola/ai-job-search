@@ -31,6 +31,7 @@ from webapp.api.user_profile import router as user_profile_router
 from webapp.api.workspaces import router as workspaces_router
 from webapp.api.views import router as views_router
 from webapp.config import Settings
+from webapp.deployment import require_valid_settings
 from webapp.persistence.db import init_db
 from product.onboarding_walkthroughs import register_default_walkthroughs
 
@@ -44,7 +45,8 @@ def _start_autonomy_driver(app: FastAPI, settings: Settings):
     from datetime import datetime, timezone
 
     app.state.autonomy_driver = {"running": False}
-    if not settings.autonomy_scheduler_enabled:
+    # Hosted mode runs the 6C driver only inside the worker process (spec O1).
+    if settings.is_hosted or not settings.autonomy_scheduler_enabled:
         return None, None
     from webapp.services.autonomy_providers import providers_from_app_state
     from webapp.services.autonomy_scheduler import run_driver
@@ -65,6 +67,7 @@ def _start_autonomy_driver(app: FastAPI, settings: Settings):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
+    require_valid_settings(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
