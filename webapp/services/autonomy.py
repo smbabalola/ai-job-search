@@ -259,13 +259,22 @@ def _settle_reservations(conn, grant_id: str, status: str, now: datetime) -> Non
 
 def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
                      requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
-                     run_id: str | None = None) -> PreClickResult:
+                     run_id: str | None = None, authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                     intent_source: str = "AUTONOMOUS", submit_origin: str | None = None,
+                     in_transaction: bool = False) -> PreClickResult:
     """Spec §10.3: one BEGIN IMMEDIATE transaction re-checks the kill switch and
     sentinel, re-evaluates against current state, compares with the grant
     binding and the verification snapshot, reserves limits, consumes the
     single-use grant, claims the intent and creates the AUTHORIZED attempt.
     Commit is the authorization point of no return -- not proof of submission.
-    Any exception rolls back every write of the transaction."""
+    Any exception rolls back every write of the transaction.
+
+    authority=HUMAN_SUBMIT (6E-A §8.3, reached only from
+    human_submit.human_pre_click_commit, which proves the page itself): no
+    autonomy run, no 6B verification snapshot and no autonomous limit
+    reservations; the human authorization keys bound in the grant are
+    carried into the drift comparison; the intent source is the caller's."""
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     initial = get_grant(conn, grant_id)
     if initial is None or initial["stage"] != "SUBMIT":
         raise ValueError(f"{grant_id!r} is not a SUBMIT grant")
@@ -273,18 +282,23 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
 
     def work() -> PreClickResult:
         _check_not_paused(conn, account_id=account_id, application_workspace_id=ws)
-        _require_active_run(conn, account_id=account_id, run_id=run_id)
+        if not human:
+            _require_active_run(conn, account_id=account_id, run_id=run_id)
         sentinel = _observe_sentinel_in_transaction(conn, settings=settings, account_id=account_id, now=now)
         grant = get_grant(conn, grant_id)
         fill_manifest = grant["binding"]["fill_manifest"]
         ctx = build_context(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
                             requested_stage=Capability.SUBMIT, mode=Mode.LIVE, now=now, sentinel_present=sentinel,
-                            requirements=requirements, observation=observation, run_id=run_id)
+                            requirements=requirements, observation=observation, run_id=run_id,
+                            authority=authority, submit_origin=submit_origin)
         target_url = autonomy_context.apply_target_url(conn, workspace_id=ws, account_id=account_id)
         current = build_binding(ctx, stage=Capability.SUBMIT, fill_manifest=fill_manifest,
                                 observation=observation, target_url=target_url)
+        if human:
+            current = {**current, **{k: grant["binding"].get(k)
+                                     for k in ("authority", "human_authorization_id", "review_hash")}}
         drift = list(binding_drift(grant["binding"], current))
-        if not _verification_matches(fill_manifest, verification):
+        if not human and not _verification_matches(fill_manifest, verification):
             drift.append("verification_snapshot")
         ctx = dataclasses.replace(ctx, grant_binding_drift=tuple(drift))
         decision = evaluate_authorization(ctx)
@@ -296,14 +310,14 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
         if grant["status"] != "ISSUED" or parse_utc(grant["expires_at"]) <= now:
             return PreClickResult(False, None, row["id"], "grant_not_consumable")
         doc = ctx.standing_policy
-        day, _ = day_window(now, doc["timezone"])
-        limits = doc["limits"]
-        reservations = [
+        day, _ = day_window(now, doc["timezone"]) if not human else (None, None)
+        limits = doc["limits"] if not human else {}
+        reservations = [] if human else [
             ("submit_per_day", day, min(limits["submit_per_day"], settings.autonomy_live_submit_daily_cap), None),
             ("submit_per_employer_30d", ctx.employer_key, limits["submit_per_employer_30d"],
              now - timedelta(days=30)),
         ]
-        if "submit_per_run" in limits:
+        if not human and "submit_per_run" in limits:
             reservations.append(("submit_per_run", run_id, limits["submit_per_run"], None))
         for name, key, limit, since in reservations:
             if try_reserve(conn, account_id=account_id, counter_name=name, window_key=key, limit=limit,
@@ -312,12 +326,16 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
         if not consume_grant(conn, grant_id=grant_id, now=now):
             raise RuntimeError("grant consumption failed after it was checked consumable")
         intent = claim_intent(conn, account_id=account_id, job_identity_key=ctx.identity_key,
-                              application_workspace_id=ws, source="AUTONOMOUS", now=now)
+                              application_workspace_id=ws, source=intent_source, now=now)
         attempt = create_attempt(conn, grant_id=grant_id, intent_id=intent["id"], application_workspace_id=ws,
                                  run_id=run_id, now=now)
         set_intent_state(conn, intent_id=intent["id"], state="CLAIMED", now=now, attempt_id=attempt["id"])
         return PreClickResult(True, attempt["id"], row["id"], None)
 
+    if in_transaction:
+        if not conn.in_transaction:
+            raise RuntimeError("in_transaction=True needs the caller's open BEGIN IMMEDIATE transaction")
+        return work()
     return run_immediate(conn, work)
 
 
@@ -347,6 +365,10 @@ def _confirm(conn, attempt: dict[str, Any], now: datetime) -> None:
 def record_click_dispatched(conn, *, attempt_id: str, now: datetime) -> bool:
     """Server acknowledgement that CLICK_DISPATCHED is durable. The executor
     must not click unless this returns True."""
+    return run_immediate(conn, lambda: record_click_dispatched_in_transaction(conn, attempt_id=attempt_id, now=now))
+
+
+def record_click_dispatched_in_transaction(conn, *, attempt_id: str, now: datetime) -> bool:
     def work() -> bool:
         attempt = _attempt(conn, attempt_id)
         if attempt_state(conn, attempt_id) != "AUTHORIZED":
@@ -364,7 +386,7 @@ def record_click_dispatched(conn, *, attempt_id: str, now: datetime) -> bool:
         append_attempt_event(conn, attempt_id=attempt_id, state="CLICK_DISPATCHED", source="EXECUTOR",
                              evidence={}, now=now)
         return True
-    return run_immediate(conn, work)
+    return work()
 
 
 def _attempts_in_state(conn, state: str) -> list[dict[str, Any]]:
