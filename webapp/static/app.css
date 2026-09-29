@@ -22,3 +22,4 @@
 .selected-document { background: #edf7f2; border-radius: 6px; padding: .6rem; }
 .blocked-note.informational { color: #5b4b16; }
 @media(max-width:640px){.document-version{grid-template-columns:minmax(0,1fr)}.document-version>div:last-child{justify-content:flex-start}}
+.pairing-code{font-family:monospace;font-size:1.25rem;user-select:all}

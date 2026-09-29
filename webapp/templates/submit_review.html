@@ -69,7 +69,7 @@
     {% if review.state != "READY" %}disabled{% endif %}>Submit application</button>
 </section>
 {% endif %}
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const base = "/api/workspaces/{{ ws }}/submit";
   const stateUrl = "/api/workspaces/{{ ws }}/submit/state";

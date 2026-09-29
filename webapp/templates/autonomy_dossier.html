@@ -74,7 +74,7 @@
     {% endfor %}{% endfor %}</ul>{% endif %}</div></article>
   {% else %}<p>No grants issued.</p>{% endfor %}
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const base = "/api/workspaces/{{ dossier.application_workspace_id }}/autonomy/";
   async function post(path) {

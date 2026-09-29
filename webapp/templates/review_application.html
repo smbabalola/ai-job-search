@@ -90,7 +90,7 @@
   <button class="button" type="button" data-review-action="approve"{% if displayed_binding_hash %} data-displayed-binding-hash="{{ displayed_binding_hash }}"{% else %} disabled{% endif %}>Approve for filling</button>
   <button class="button secondary" type="button" data-review-action="revoke">Revoke approval</button>
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const base = "/api/workspaces/{{ ws }}/review";
   async function send(path, init) {

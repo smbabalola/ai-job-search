@@ -559,10 +559,10 @@ class ApplyTarget:
 
 def _discovery_origin_url(conn: dbapi.Connection, *, workspace_id: str) -> str | None:
     row = conn.execute(
-        "SELECT do.source_url FROM application_workspace_origins awo "
-        "JOIN discovery_occurrences do "
-        "ON do.id = awo.discovery_occurrence_id "
-        "AND do.search_workspace_id = awo.search_workspace_id "
+        "SELECT dco.source_url FROM application_workspace_origins awo "
+        "JOIN discovery_occurrences dco "
+        "ON dco.id = awo.discovery_occurrence_id "
+        "AND dco.search_workspace_id = awo.search_workspace_id "
         "WHERE awo.application_workspace_id = ?",
         (workspace_id,),
     ).fetchone()

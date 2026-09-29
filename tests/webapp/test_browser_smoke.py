@@ -478,7 +478,7 @@ def test_browser_routes_do_not_expose_another_accounts_known_ids(page, live_serv
     )
     private_bytes = _edited_docx_bytes("Private Account B CV")
     blob = DocumentBlobStore(live_server.db_path.parent / "documents").publish(
-        private_bytes
+        private_bytes, account_id="account_browser_b"
     )
     private_document = create_document_version(conn, {
         "id": "docv_browser_private_b", "account_id": "account_browser_b",

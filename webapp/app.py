@@ -32,6 +32,8 @@ from webapp.api.workspaces import router as workspaces_router
 from webapp.api.views import router as views_router
 from webapp.config import Settings
 from webapp.deployment import require_valid_settings
+from webapp.observability import LogErrorReporter, RequestContextMiddleware, configure_logging, unhandled_error_handler
+from webapp.security_middleware import SecurityHeadersMiddleware
 from webapp.persistence.db import init_db
 from product.onboarding_walkthroughs import register_default_walkthroughs
 
@@ -83,6 +85,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Job Application Workspace", lifespan=lifespan)
     app.state.settings = settings
+    # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
+    configure_logging()
+    app.state.error_reporter = LogErrorReporter()
+    app.add_exception_handler(Exception, unhandled_error_handler)
+    app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
+    app.add_middleware(RequestContextMiddleware)  # outermost: every response carries the request id
     app.state.templates = Jinja2Templates(directory=str(Path(__file__).with_name("templates")))
     app.mount("/static", StaticFiles(directory=str(Path(__file__).with_name("static"))), name="static")
     if settings.handoff_fixtures_dir is not None:

@@ -30,7 +30,7 @@
     <button class="button" type="submit">Save policy</button></form>
   <ul id="autonomy-policy-errors" class="errors"></ul>
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   async function post(path, body, method) {
     const r = await fetch("/api/autonomy/" + path, {method: method || "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});

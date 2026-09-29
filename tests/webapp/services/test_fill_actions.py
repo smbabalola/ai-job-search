@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+
+from webapp.persistence.db import connect
 from datetime import timedelta
 
 import pytest
@@ -226,15 +228,12 @@ def test_a_retried_intent_after_the_ttl_stops_instead_of_reissuing(grant_world):
 def test_at_most_one_outcome_under_concurrent_reports(grant_world, tmp_path):
     run = filling(grant_world)
     env = intent(grant_world, run, 0).envelope
-    db = grant_world.conn.execute("PRAGMA database_list").fetchone()[2]
+    db = tmp_path / "jobsearch.sqlite3"  # the v2_chain database (a PostgreSQL database under --db postgres)
     post = page_after(grant_world, 1)  # built here: the fixture connection is never shared with the threads
     barrier, results = threading.Barrier(2), []
 
     def report(value):
-        conn = sqlite3.connect(db, timeout=30, isolation_level=None, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.isolation_level = ""
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = connect(db)
         barrier.wait()
         try:
             results.append(("ok", fa.record_outcome(conn, run_id=run["id"], action_index=0,

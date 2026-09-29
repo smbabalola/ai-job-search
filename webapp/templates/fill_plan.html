@@ -59,7 +59,7 @@
   {% endif %}
 </section>
 {% endif %}
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const base = "/api/workspaces/{{ ws }}/fill-plan";
   const observationId = {{ observation_id | tojson }};

@@ -39,7 +39,7 @@
       <p><a href="/workspaces/{{ e.subject_id }}/review">Review the application</a> · <a href="/workspaces/{{ e.subject_id }}/autonomy">Dossier</a></p></div>
   </article>{% else %}<p>Nothing new is ready.</p>{% endfor %}
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   async function post(url, body) {
     const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});

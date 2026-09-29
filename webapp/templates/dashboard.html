@@ -38,7 +38,7 @@
   </tr>{% endfor %}</tbody>
 </table></div>
 {% else %}<section class="empty-state"><h2>No {{ filter }} applications</h2><p>Add your first job posting to get started, or choose another filter above.</p><a class="button" href="/new-job">Add your first job</a></section>{% endif %}
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
   document.addEventListener("DOMContentLoaded", () => {
     if (window.Onboarding && window.Onboarding.appendReplayParamToLinks) {
       window.Onboarding.appendReplayParamToLinks('[data-onboarding-replay-target] a.row-link');

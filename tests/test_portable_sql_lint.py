@@ -21,8 +21,16 @@ SQL_PATTERNS = {
     "datetime('now'": re.compile(r"\bdatetime\s*\(\s*'now'", re.IGNORECASE),
     "AUTOINCREMENT": re.compile(r"\bAUTOINCREMENT\b", re.IGNORECASE),
     "GLOB": re.compile(r"\bGLOB\b"),
+    # a PostgreSQL reserved word used as a table alias (e.g. "JOIN discovery_occurrences do")
+    "reserved alias": re.compile(
+        # reserved words that can never start the clause following a table name
+        r"\b(?:FROM|JOIN)\s+\w+\s+(?:AS\s+)?(?:do|user|end|check|default|table|to|all|any|analyse|analyze|"
+        r"case|cast|collate|column|constraint|desc|asc|grant|into|leading|only|placing|primary|references|"
+        r"select|some|symmetric|then|trailing|unique|variadic|when)\b(?!\s*\()",
+        re.IGNORECASE),
 }
-NAMED_PARAM = re.compile(r"(?<![:\w]):[a-z_][a-z0-9_]*\b")
+SQL_STATEMENT = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|JOIN)\b")
+NAMED_PARAM =re.compile(r"(?<![:\w]):[a-z_][a-z0-9_]*\b")
 BANNED_ATTRIBUTES = {"lastrowid", "executescript", "total_changes"}
 
 
@@ -44,6 +52,8 @@ def test_no_sqlite_only_sql_outside_migrations():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in _string_constants(tree):
             for name, pattern in SQL_PATTERNS.items():
+                if name == "reserved alias" and not SQL_STATEMENT.search(node.value):
+                    continue  # prose such as "from 1 to 100" is not SQL
                 if pattern.search(node.value):
                     hits.append(f"{path.relative_to(ROOT.parent)}:{node.lineno}: {name}")
     assert hits == []
