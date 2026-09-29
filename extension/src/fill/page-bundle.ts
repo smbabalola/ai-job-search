@@ -8,12 +8,28 @@ import { CERTIFIED_ADAPTERS, certifiedAdapterFor, type CertifiedAdapter } from "
 import { installDetections, type DetectionHandle, type DetectionKind } from "./detections";
 import { executeAction } from "./executor";
 import { FILL_PAGE_KEY, type FillPageApi } from "./page-api";
-import { observe } from "./observer";
+import { observe, submitControlPayload } from "./observer";
+import { canonicalHash } from "./canonical";
+import { certificationById } from "../submit/certification";
+import { detectSignals } from "../submit/signals";
+import { submitClick } from "../submit/submit-executor";
 
 function adapterFor(adapterId: string): CertifiedAdapter {
   const adapter = CERTIFIED_ADAPTERS.find((a) => a.id === adapterId);
   if (!adapter) throw new Error(`not a certified adapter: ${adapterId}`);
   return adapter;
+}
+
+// 6E-A: the certified submit control whose fill-submit-control v1
+// fingerprint equals the bound one -- exactly one, or none.
+async function boundSubmitControl(certificationId: string, fingerprint: string): Promise<Element | null> {
+  const cert = certificationById(certificationId);
+  if (!cert) return null;
+  const matches: Element[] = [];
+  for (const el of document.querySelectorAll(cert.submitControlSelector)) {
+    if (await canonicalHash("fill-submit-control", "v1", submitControlPayload(el)) === fingerprint) matches.push(el);
+  }
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function install(): void {
@@ -46,6 +62,20 @@ function install(): void {
     detected: () => detections?.reported() ?? [],
     enablePostFill(adapterId) {
       detections?.enablePostFill(adapterFor(adapterId).applicationRoot(document) ?? document);
+    },
+    findSubmitControl: async (certificationId, fingerprint) =>
+      (await boundSubmitControl(certificationId, fingerprint)) !== null,
+    async clickSubmit(certificationId, fingerprint) {
+      const el = await boundSubmitControl(certificationId, fingerprint);
+      if (el === null) return "SUBMIT_CONTROL_MISSING";
+      submitClick(el);
+      return "CLICKED";
+    },
+    signals(adapterId, certificationId, context) {
+      const cert = certificationById(certificationId);
+      if (!cert) return { success: false, failure: false, challenge: false };
+      return detectSignals(document, cert, { ...context, url: location.href,
+        rootPresent: adapterFor(adapterId).applicationRoot(document) !== null });
     },
   };
   scope[FILL_PAGE_KEY] = api;
