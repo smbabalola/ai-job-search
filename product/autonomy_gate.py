@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from product.autonomy_contract import (
     CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ENGINE_VERSION, REACH_ORDER,
-    AnswerCandidate, ApplyTargetFacts, AuthorizationContext, AuthorizationDecision,
+    AnswerCandidate, ApplyTargetFacts, AuthorityKind, AuthorizationContext, AuthorizationDecision,
     BudgetState, CanonicalHashError, Capability, CompletionBlocker, CounterState,
     EmployerKeyStrength, IdentityStrength, Mode, ProvenanceTier, Reach, Reason,
     RepresentationRequirement, RequireUserItem, ResultKind, RuleAcknowledgement,
@@ -103,6 +103,12 @@ def _context_errors(ctx: AuthorizationContext) -> list[str]:
         errors.append("requested_stage_invalid")
     elif ctx.requested_stage == Capability.NONE:
         errors.append("requested_stage_none")
+
+    authority = getattr(ctx, "authority", AuthorityKind.STANDING_POLICY)
+    if not isinstance(authority, AuthorityKind):
+        errors.append("authority_invalid")
+    elif authority is AuthorityKind.HUMAN_SUBMIT and ctx.requested_stage != Capability.SUBMIT:
+        errors.append("human_authority_stage")
 
     for name, value in (
         ("deployment_ceiling", ctx.deployment_ceiling),
@@ -459,12 +465,25 @@ def _evaluate(ctx: AuthorizationContext) -> AuthorizationDecision:
     subject_hash = subject_policy_hash(ctx.subject_policy)
     policy_version_hash = policy_hash(ctx.standing_policy) if ctx.standing_policy is not None else None
 
-    acc = _Acc(min(ctx.deployment_ceiling, ctx.account_max, ctx.workspace_ceiling))
-    acc.note("ceiling", deployment=ctx.deployment_ceiling.name,
-             account=ctx.account_max.name, workspace=ctx.workspace_ceiling.name)
+    human = ctx.authority is AuthorityKind.HUMAN_SUBMIT
+    if human:
+        # 6E-A §8.2: the human's one-time authorization replaces the account
+        # and workspace autonomy ceilings; only the deployment ceiling caps it.
+        acc = _Acc(ctx.deployment_ceiling)
+        acc.note("ceiling", deployment=ctx.deployment_ceiling.name, account=ctx.account_max.name,
+                 workspace=ctx.workspace_ceiling.name, authority=AuthorityKind.HUMAN_SUBMIT.value)
+        if ctx.deployment_ceiling < Capability.SUBMIT:
+            acc.note("human_submit_disabled")
+    else:
+        acc = _Acc(min(ctx.deployment_ceiling, ctx.account_max, ctx.workspace_ceiling))
+        acc.note("ceiling", deployment=ctx.deployment_ceiling.name,
+                 account=ctx.account_max.name, workspace=ctx.workspace_ceiling.name)
     if ctx.mode is not Mode.LIVE:
         acc.note("non_live_mode", mode=ctx.mode.value)
-    _apply_standing_policy(ctx, acc)
+    if human:
+        acc.note("standing_policy_not_applied")
+    else:
+        _apply_standing_policy(ctx, acc)
     _apply_identity(ctx, acc)
     _apply_target(ctx, acc)
     if ctx.employer_key_strength is EmployerKeyStrength.UNKNOWN or not ctx.employer_key:
@@ -791,6 +810,9 @@ def _apply_stops(ctx: AuthorizationContext, acc: _Acc) -> None:
         else:
             acc.denies.add("duplicate")
             acc.note("duplicate_intent", state=ctx.existing_intent_state)
+    if ctx.authority is AuthorityKind.HUMAN_SUBMIT:
+        # 6E-A §8.2: autonomous counters and budgets govern autonomy only.
+        return
     for counter in ctx.counters:
         if counter.stage == ctx.requested_stage and counter.used >= counter.limit:
             acc.temporary.append(("limit", counter.retry_at))

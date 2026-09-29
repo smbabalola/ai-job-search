@@ -74,6 +74,15 @@ class Settings:
         )
     )
     autonomy_live_submit_daily_cap: int = 1
+    # Bundle 6E-A (spec §3 E5/E6). Human-authorized submission is off by
+    # default; the fixture-origin switch is honoured only for loopback
+    # origins (product.submit_certification.submission_permitted).
+    human_submit_enabled: bool = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_HUMAN_SUBMIT_ENABLED") == "1"
+    )
+    submit_fixture_origins_enabled: bool = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_SUBMIT_FIXTURE_ORIGINS") == "1"
+    )
     autonomy_shadow_enabled: bool = field(
         default_factory=lambda: os.environ.get("JOBSEARCH_AUTONOMY_SHADOW") == "1"
     )
@@ -106,6 +115,10 @@ class Settings:
             return Capability[self.autonomy_max_capability]
         except KeyError:
             return Capability.NONE  # fail closed on a mistyped setting
+
+    def human_submit_ceiling(self) -> Capability:
+        """The deployment ceiling for a HUMAN_SUBMIT evaluation (6E-A §8.2)."""
+        return Capability.SUBMIT if self.human_submit_enabled else Capability.FILL
 
     @property
     def autonomy_sentinel_path(self) -> Path:

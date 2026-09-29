@@ -25,12 +25,13 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from product.autonomy_contract import (
-    UNKNOWN, AnswerCandidate, ApplyTargetFacts, AuthorizationContext, BudgetState, Capability,
+    UNKNOWN, AnswerCandidate, ApplyTargetFacts, AuthorityKind, AuthorizationContext, BudgetState, Capability,
     CounterState, EmployerKeyStrength, IdentityStrength, Mode, ProvenanceTier, Reach,
     RepresentationRequirement, RuleAcknowledgement, canonical_hash, normalized_employer_key, parse_utc,
     to_utc_iso,
 )
 from product.job_identity import job_identity
+from product.submit_certification import submission_permitted, submit_certified
 from product.semantic_subject_policy import load_subject_policy
 from product.standing_policy import normalize_employment_type
 from webapp.config import Settings
@@ -300,8 +301,15 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   executor_hard_stops: Sequence[str] = (), run_id: str | None = None,
                   grant_binding_drift: Sequence[str] = (),
-                  cost_estimates: Mapping[str, Decimal] | None = None) -> AuthorizationContext:
+                  cost_estimates: Mapping[str, Decimal] | None = None,
+                  authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                  submit_origin: str | None = None) -> AuthorizationContext:
+    """authority=HUMAN_SUBMIT (6E-A spec §8.2) takes the deployment ceiling
+    from settings.human_submit_ceiling() and the adapter's submit capability
+    from the submit certification for `submit_origin` (§9.5), never from the
+    6B JOBSEARCH_AUTONOMY_SUBMIT_ADAPTERS list."""
     ws = application_workspace_id
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     search_ws = get_search_workspace_for_application(conn, ws)
     account_max, workspace_ceiling = resolve_authority(conn, account_id=account_id, search_workspace_id=search_ws)
     policy = current_policy(conn, account_id)
@@ -338,7 +346,10 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     else:
         apply_target = ApplyTargetFacts(
             provenance=provenance, adapter_id=observation.adapter_id,
-            adapter_submit_capable=observation.adapter_id in settings.autonomy_submit_capable_adapters,
+            adapter_submit_capable=(
+                submission_permitted(submit_certified(observation.adapter_id, observation.adapter_version),
+                                     submit_origin or "", fixture_origins_enabled=settings.submit_fixture_origins_enabled)[0]
+                if human else observation.adapter_id in settings.autonomy_submit_capable_adapters),
             landing_within_redirect_set=observation.landing_within_redirect_set,
             tenant_matches_employer=observation.tenant_matches_employer,
             ats_job_id_matches=observation.ats_job_id_matches,
@@ -381,8 +392,8 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     return AuthorizationContext(
         mode=mode, requested_stage=requested_stage, now=now, account_id=account_id,
         application_workspace_id=ws, search_workspace_id=search_ws,
-        deployment_ceiling=settings.autonomy_deployment_ceiling(), account_max=account_max,
-        workspace_ceiling=workspace_ceiling,
+        deployment_ceiling=settings.human_submit_ceiling() if human else settings.autonomy_deployment_ceiling(),
+        account_max=account_max, workspace_ceiling=workspace_ceiling,
         kill_switch_engaged=kill_switch["halted"], control_epoch=kill_switch["latest_engage_seq"],
         sentinel_present=sentinel_present,
         standing_policy=doc, subject_policy=load_subject_policy(), attributes=attributes,
@@ -392,5 +403,5 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
         identity_conflict=identity_conflict, existing_intent_state=intent_state, intent_overridden=overridden,
         employer_key=employer_key, employer_key_strength=employer_strength, counters=counters,
         budgets=budgets, rule_acknowledgements=acks, executor_hard_stops=tuple(executor_hard_stops),
-        grant_binding_drift=tuple(grant_binding_drift), run_id=run_id,
+        grant_binding_drift=tuple(grant_binding_drift), run_id=run_id, authority=authority,
     )

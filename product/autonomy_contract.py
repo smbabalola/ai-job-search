@@ -41,6 +41,14 @@ class Mode(str, Enum):
     DRY_RUN = "DRY_RUN"
 
 
+class AuthorityKind(str, Enum):
+    """Where SUBMIT authority comes from (6E-A spec §8.2). STANDING_POLICY is
+    the 6B/6C autonomous path; HUMAN_SUBMIT is one human's one-time
+    authorization of an exact reviewed application."""
+    STANDING_POLICY = "STANDING_POLICY"
+    HUMAN_SUBMIT = "HUMAN_SUBMIT"
+
+
 class ResultKind(str, Enum):
     ALLOW = "ALLOW"
     REQUIRE_USER = "REQUIRE_USER"
@@ -226,6 +234,9 @@ class AuthorizationContext:
     # evaluated by the engine; it is a material input so no decision is
     # reused across a halt/resume boundary (6C spec §2.8).
     control_epoch: int | None = None
+    # 6E-A (spec §8.2). Omitted from the canonical hash at its default, so
+    # every pre-6E-A context fingerprint is byte-identical.
+    authority: AuthorityKind = AuthorityKind.STANDING_POLICY
 
 
 @dataclass(frozen=True)
@@ -278,7 +289,8 @@ def _canonicalize(value: Any) -> Any:
     if isinstance(value, datetime):
         return to_utc_iso(value, error=CanonicalHashError)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _canonicalize(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        return {f.name: _canonicalize(getattr(value, f.name)) for f in dataclasses.fields(value)
+                if not (f.name == "authority" and getattr(value, f.name) is AuthorityKind.STANDING_POLICY)}
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for k, v in value.items():
