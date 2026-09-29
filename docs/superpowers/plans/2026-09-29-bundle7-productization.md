@@ -408,6 +408,7 @@ def issue_email_token(conn, *, user_id, purpose, now) -> str; def consume_email_
   - change email: the old address is notified, the change applies on confirm;
   - logout clears the cookie;
   - **Review Focus 3:** login with `" FOO@example.com"` succeeds.
+  - Hosted-auth signup with no published `legal_documents`, or with `SIGNUPS_ENABLED=false`, → `SIGNUP_UNAVAILABLE`, and no user row is created.
 - [ ] Commit `feat(auth): signup, verification, login, reset, email change and logout`.
 
 ### Task 9: CSRF, rate limiting and the audit log
@@ -485,7 +486,7 @@ def get_extension_scope(request, conn) -> ExtensionScope   # AccountScope + devi
 **Steps:**
 - [ ] Tests:
   - pairing code: single use; expires at 10 min; bound to its account.
-  - Refresh rotates; presenting the old refresh token again → `DeviceRevoked`, the device revoked, the audit row `EXTENSION_TOKEN_REUSE`, and the `security.token_reuse_detected` notification enqueued (stub until Task 20).
+  - Refresh rotates; presenting the old refresh token again → `DeviceRevoked`, the device revoked, the audit row `EXTENSION_TOKEN_REUSE`, and the `security.token_reuse_detected` notification enqueued. Until Task 20, `webapp/services/notifications.py` is a stub whose `notify(conn, *, account_id, kind, subject_type, subject_id, dedupe_key, detail, now)` records into an in-memory list. Task 20 replaces it with the real function, keeping the same signature.
   - An access token expires at 10 min.
   - Ticket: a wrong user → `AccountMismatch`; replay → `TicketInvalid`; a tampered HMAC → `TicketInvalid`; expiry at 5 min.
   - Password change revokes devices.
@@ -544,6 +545,7 @@ GAUGE_ALLOWANCES = frozenset({"library.cv_items", "storage.bytes", "discovery.sc
 def load_catalog(path) -> Catalog   # validates; CatalogError(list[str])
 @dataclass(frozen=True) class Entitlements: plan_id; catalog_version; features: Mapping[str,bool]; allowances: Mapping[str,int]; window: Window; source: str
 @dataclass(frozen=True) class Window: key: str; start: datetime; end: datetime
+@dataclass(frozen=True) class SubscriptionView: state: str; plan_id: str; catalog_version: str; current_period_start: datetime; current_period_end: datetime; past_due_since: datetime | None   # read from a subscriptions row (Task 14 writes them)
 def effective_entitlements(catalog, snapshot: SubscriptionView | None, grants: Sequence[Grant], controls: Mapping[str,bool], *, grace: timedelta, now: datetime) -> Entitlements
 class FeatureNotInPlan(Exception): feature; plan_id; upgrade_to: str | None
 class EntitlementGate:
@@ -974,6 +976,7 @@ def resolve_batch(conn, scope, *, items: list[tuple[str, str, dict | None]], now
   - **privacy canary:** plant `CANARY-7f3e` in every content table's text columns (profile sources, document filenames, artifacts payloads, answer values, observations, job text), then assert no admin page or API response body contains it;
   - announcements: the sanitized Markdown strips `<script>` and `javascript:` links, and the audience filter works;
   - platform controls: setting `AI_ENABLED=false` → prepare refused platform-wide.
+  - **Live submission gate (spec §8.6):** `Settings.human_submit_ceiling(conn)` in hosted mode returns `SUBMIT` only when all of these hold: `human_submit_enabled`, `SUBMIT_ENABLED`, `HOSTED_THREAT_MODEL_SIGNED_OFF`, and the adapter's certification `LIVE_CERTIFIED` with evidence. Test each of those four missing → `FILL`. Greenhouse in hosted mode → `FILL` even with every control on. Local mode behaves as at `b042e0e`. Modify `webapp/config.py` and the one caller in `webapp/services/autonomy_context.py` (pass `conn`).
 - [ ] Commit `feat(admin): least-privilege staff console with TOTP, platform controls, announcements and a content privacy boundary`.
 
 ### Task 28: Account deletion, purge, retention, data export
