@@ -180,7 +180,7 @@ Browser extension ──HTTPS bearer──► JobSearch web (/api/ext/*, /api/ha
 
 ## 6. Tenancy, identity and authorization model
 
-### 6.1 Tables (migration `022_identity`)
+### 6.1 Tables (migrations `023_identity`, `024_audit`; see §23.1)
 
 - **`users`** (id, email_normalized UNIQUE, email_display, display_name, status, email_verified_at, created_at, updated_at, last_login_at, password_changed_at)
   - `status` ∈ {`PENDING_VERIFICATION`, `ACTIVE`, `SUSPENDED`, `DELETION_REQUESTED`, `PURGED`}.
@@ -332,7 +332,7 @@ Greenhouse stays `FIXTURE_CERTIFIED`, so hosted production submits nothing in Bu
 
 ## 9. Extension ↔ backend security design
 
-### 9.1 Tables (migration `023_extension_devices`)
+### 9.1 Tables (migration `025_extension_devices`)
 
 - **`extension_devices`** (id, account_id, user_id, label, created_at, last_seen_at, revoked_at, revoke_reason).
 - **`extension_refresh_tokens`** (id, device_id, family_id, token_hash, issued_at, expires_at, rotated_at, revoked_at). Unique on token_hash.
@@ -449,7 +449,7 @@ It covers all 97 current tables and every new table. The registry drives purge (
 
 `GLOBAL` tables: `schema_migrations`, `discovery_source_settings`, `legal_documents`, `platform_controls`, `plan_catalog_versions`, `rate_limit_buckets`, `jobs` (rows carry an optional account_id, which purge honours).
 
-`user_profile_versions` gains `account_id` (migration `022`; backfilled through `search_workspace_user_profile_history`). The legacy singleton `current_user_profile` is classified `RETAIN`-local-only and is never read in hosted mode.
+`user_profile_versions` gains `account_id` (migration `022_storage`; backfilled through `search_workspace_user_profile_history`). The legacy singleton `current_user_profile` is classified `RETAIN`-local-only and is never read in hosted mode.
 
 ### 10.6 Cross-tenant isolation harness
 
@@ -566,7 +566,7 @@ Regardless of plan, billing state or allowance, these always work, and for a sus
 
 ## 12. Billing and subscriptions (7D)
 
-### 12.1 Tables (migration `024_billing_entitlements`)
+### 12.1 Tables (migrations `026_entitlements`, `027_billing`)
 
 - **`billing_customers`** (account_id PK, provider, provider_customer_id UNIQUE, created_at).
 - **`subscriptions`** (id, account_id, provider, provider_subscription_id UNIQUE, plan_id, interval, catalog_version, state, current_period_start, current_period_end, cancel_at_period_end, past_due_since, snapshot_json, snapshot_hash, updated_at). One non-terminal row per account (a partial unique index on account_id where state is not in (`ENDED`, `INCOMPLETE_EXPIRED`)).
@@ -610,7 +610,7 @@ Every processed event re-fetches the snapshot and runs `transition(current, snap
 
 ## 13. Usage accounting and quotas (7G)
 
-### 13.1 Tables (in `024`)
+### 13.1 Tables (migration `028_usage`)
 
 - **`usage_reservations`** (id, account_id, allowance, amount, subject_type, subject_id, idempotency_key UNIQUE, window_key, status, reserved_at, settled_at, expires_at, settlement_ref). `status` ∈ {`RESERVED`, `CONSUMED`, `RELEASED`}. The only permitted transitions are `RESERVED→CONSUMED` and `RESERVED→RELEASED` (trigger).
 - **`ai_cost_events`** (seq, id, account_id, subject_type, subject_id, provider, model, input_tokens, output_tokens, cost_micro_usd, request_ref, created_at). Append-only. Written by `MeteredProvider` from the provider response's usage and the `ai-pricing.v1.json` operator table.
@@ -635,7 +635,7 @@ Every processed event re-fetches the snapshot and runs `transition(current, snap
 
 ## 14. CV Library and CV Strategy (7A)
 
-### 14.1 Tables (migration `025_cv_library`)
+### 14.1 Tables (migrations `032_cv_library`, `033_cv_strategy`)
 
 - **`cv_library_items`** (id, account_id, title, description, status, created_at, updated_at). `status` ∈ {`ACTIVE`, `ARCHIVED`}.
 - **`cv_library_versions`** (seq, id, account_id, item_id, version_no, document_version_id, origin, parent_version_id, template_id, library_visible, note, created_by, created_at). Append-only.
@@ -689,7 +689,7 @@ Archiving an item never affects historical views.
 
 ## 15. Onboarding and profile (7B)
 
-### 15.1 Tables (migration `026_onboarding_profile`)
+### 15.1 Tables (migration `035_onboarding`)
 
 - **`account_onboarding`** (account_id PK, state_json, updated_at). This is mutable UI progress, not evidence. `state_json` = `{steps: {step_id: "TODO"|"DONE"|"SKIPPED"}, version: "onboarding.v1"}`.
 - **`profile_import_runs`** (id, account_id, document_version_id, status, provider_audit_id, reservation_id, error_code, created_at, completed_at). `status` ∈ {`QUEUED`, `RUNNING`, `PROPOSED`, `FAILED`}.
@@ -772,7 +772,7 @@ Preferences drive discovery search terms, filters and ranking. Nothing refuses a
 
 ## 17. Notifications and inbox (7F)
 
-### 17.1 Tables (migration `027_notifications_comms`)
+### 17.1 Tables (migration `031_notifications`)
 
 - **`notifications`** (id, account_id, kind, category, severity, subject_type, subject_id, dedupe_key, detail_json, created_at, read_at, archived_at). UNIQUE (account_id, dedupe_key).
   - `category` ∈ {`ACTION_REQUIRED`, `OUTCOME`, `ACCOUNT`, `SECURITY`, `BILLING`, `USAGE`, `ANNOUNCEMENT`, `DISCOVERY`}.
@@ -834,7 +834,7 @@ The header badge = the Action-required count + unread CRITICAL notifications. Th
 
 ## 18. Communications and consent (7C)
 
-### 18.1 Tables (in `027`)
+### 18.1 Tables (migration `030_comms`)
 
 - **`outbound_messages`** (id, account_id, user_id, channel, category, template_id, template_version, locale, to_address, payload_json, idempotency_key UNIQUE, status, attempts, next_attempt_at, provider, provider_message_id, last_error, created_at, sent_at).
   - `channel` ∈ {`EMAIL`} (vocabulary room: `SMS`, `WHATSAPP`).
@@ -927,7 +927,7 @@ The 6B file sentinel `AUTONOMY_HALT` keeps working in local mode. In hosted mode
 
 ## 20. Operational readiness (7H)
 
-### 20.1 Audit log (migration `028_ops`)
+### 20.1 Audit log (migration `024_audit`)
 
 - **`audit_log`** (seq, id, occurred_at, actor_type, actor_id, account_id, action, target_type, target_id, request_id, ip_hash, detail_json). Append-only.
   - `actor_type` ∈ {`USER`, `STAFF`, `EXTENSION_DEVICE`, `SYSTEM`, `PROVIDER`}.
@@ -984,7 +984,7 @@ The 6B file sentinel `AUTONOMY_HALT` keeps working in local mode. In hosted mode
      - `PSEUDONYMIZE`-class columns are overwritten: email → `deleted-{id}@invalid`, names → null, ip_hash → null.
      - `RETAIN`-class rows are left as they are and tagged with a retention class.
      - Finally the purge row is removed.
-     - Append-only DELETE triggers are recreated (migration `028`) with `WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)`. UPDATE triggers stay strict, except that pseudonymization runs through a dedicated `PSEUDONYMIZE` allowance with the same WHEN guard, limited to the registry's listed columns.
+     - Append-only DELETE triggers are recreated (migration `037_purge`) with `WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)`. UPDATE triggers stay strict, except that pseudonymization runs through a dedicated `PSEUDONYMIZE` allowance with the same WHEN guard, limited to the registry's listed columns.
   4. Tombstone: `accounts.status = PURGED`, `users.status = PURGED`, `email_normalized` replaced by `purged:{sha256(email)}` so the address can sign up again; audit `ACCOUNT_PURGED`; service email `account.deletion_completed` to the address captured before the purge.
 - **Retention classes (DP-4 periods):**
 
@@ -1118,6 +1118,10 @@ Domain refusals return JSON `{"error": CODE, "message": str, "detail": {...}}` w
 - `RATE_LIMITED` (429)
 - `DATABASE_BUSY` (503)
 - `CSRF_FAILED` (403)
+- `PLAN_UNAVAILABLE` (409; the paid plan has no resolved provider price)
+- `RULE_ACKNOWLEDGEMENT_REQUIRED` (409)
+- `REAUTH_REQUIRED` (403; staff destructive action)
+- `SIGNUP_UNAVAILABLE` (503; `SIGNUPS_ENABLED` is off, or no published legal documents, DP-5)
 
 Pages render the same codes as human messages with an action (upgrade, verify, onboarding link).
 
@@ -1160,19 +1164,28 @@ Unchanged from Bundles 6D–6E. Bundle 7 adds no application state. It only adds
 
 ## 23. Migrations and compatibility with Bundle 6 data
 
-### 23.1 SQLite chain (dev databases)
+### 23.1 Migration chain (one migration per introducing task, numbered in task order)
 
-| Migration | Contents |
-|---|---|
-| `022_identity` | §6.1 tables; `user_profile_versions.account_id` backfill |
-| `023_extension_devices` | §9.1; revokes legacy extension credentials |
-| `024_billing_entitlements` | §12.1, §13.1 |
-| `025_cv_library` | §14.1, including `document_version_references` (backfilled from existing approvals, fill runs and results) and its delete-refusal trigger; legacy reusable CVs → items |
-| `026_onboarding_profile` | §15.1; `profile_source_revisions`. In local mode, `account_onboarding` is seeded as all steps DONE for `account_local` when the profile is already configured |
-| `027_notifications_comms` | §17.1, §18.1; 6C notifications back-projected into `notifications` (dedupe by key) |
-| `028_ops` | `audit_log`, `jobs`, `search_schedules`, `purge_in_progress`, `platform_controls`; append-only DELETE triggers recreated with the purge guard (`rate_limit_buckets` is created in `022`) |
+| Migration | Contents | Plan task |
+|---|---|---|
+| `022_storage` | `profile_source_revisions`; `user_profile_versions.account_id` backfill | 4 |
+| `023_identity` | `users`, `user_identities`, `accounts` columns, `account_memberships`, `web_sessions`, `email_tokens`, `platform_role_assignments`, `staff_totp`, `legal_documents`, `legal_acceptances`, `rate_limit_buckets` | 7 |
+| `024_audit` | `audit_log` | 9 |
+| `025_extension_devices` | §9.1; revokes legacy extension credentials | 11 |
+| `026_entitlements` | `plan_catalog_versions`, `entitlement_grants`, `platform_controls` | 13 |
+| `027_billing` | `billing_customers`, `subscriptions`, `subscription_events`, `billing_webhook_events`, `checkout_sessions` | 14 |
+| `028_usage` | `usage_reservations`, `ai_cost_events` | 16 |
+| `029_jobs` | `jobs` | 18 |
+| `030_comms` | `outbound_messages`, `email_suppressions`, `email_provider_events`, `communication_consents`, `announcements` | 19 |
+| `031_notifications` | `notifications`, `notification_preferences`; 6C notifications back-projected (dedupe by key) | 20 |
+| `032_cv_library` | `cv_library_items`, `cv_library_versions`, `document_version_references` (backfilled from existing approvals, fill runs and results) and its delete-refusal trigger; `media_type` CHECK widened; legacy reusable CVs → items | 21 |
+| `033_cv_strategy` | `account_policy_documents`, `application_cv_resolutions` | 22 |
+| `034_rules_v2` | data only: each account's current standing policy re-saved as v2 | 23 |
+| `035_onboarding` | `account_onboarding`, `profile_import_runs`, `profile_proposals`, `profile_proposal_resolutions`. In local mode, `account_local` onboarding is seeded as all DONE when the profile is already configured | 24 |
+| `036_search_schedules` | `search_schedules` | 26 |
+| `037_purge` | `purge_in_progress`; append-only DELETE triggers recreated with the purge guard; the PSEUDONYMIZE UPDATE allowances | 28 |
 
-Each migration also has a PostgreSQL body. The parity test covers both.
+Every migration has a `sqlite` and a `postgres` body. The parity test covers both. A migration is never edited after the task that introduces it has been committed.
 
 ### 23.2 Existing data semantics
 
