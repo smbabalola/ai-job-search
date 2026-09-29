@@ -97,8 +97,14 @@ def test_the_kill_switch_after_authorization_refuses_the_pre_click(submit_harnes
     from webapp.services.autonomy_controls import engage_kill_switch
     h = submit_harness("happy")
     h.filled()
-    h.authorize(h.ready())
+    auth = h.authorize(h.ready())
+    # Engaging the kill switch revokes every issued grant at once (6B), the
+    # human SUBMIT grant included: the extension is never even offered it.
     engage_kill_switch(h.w.conn, account_id=V2_ACCOUNT, actor="u", reason="stop", now=datetime.now(timezone.utc))
     events, grant = h.wait_authorization_used()
-    assert events == ["PRE_CLICK_REFUSED"] and grant == "REVOKED"
+    assert grant == "REVOKED" and events in ([], ["PRE_CLICK_REFUSED"])
+    reason = h.w.conn.execute("SELECT revoked_reason FROM autonomy_grants WHERE id = ?",
+                              (auth["grant_id"],)).fetchone()[0]
+    assert reason in ("kill_switch", "pre_click:kill_switch", "pre_click:review_changed")
+    time.sleep(12)  # a heartbeat later: still nothing
     assert h.attempts() == [] and h.submit_posts() == []
