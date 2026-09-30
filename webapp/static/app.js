@@ -526,3 +526,16 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
     } catch (error) { showMessage(error.message, true); button.disabled = false; }
   });
 })();
+
+// Bundle 7 §14.3: choose a library CV for this application (recorded as a user choice).
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-cv-choice]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(button.dataset.workspaceId)}/cv-choice`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version_id: button.dataset.cvChoice})});
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); button.disabled = false; }
+});

@@ -333,9 +333,19 @@ def workspace_detail_page(
             **view,
             "cv_quality_v2_enabled": request.app.state.settings.cv_quality_v2_enabled,
             "onboarding_replay_expected": onboarding_replay_expected,
+            **_cv_library_context(conn, scope.account_id, workspace_id),
             **_search_context(conn, scope.account_id),
         }
     )
+
+
+def _cv_library_context(conn, account_id: str, workspace_id: str) -> dict:
+    """Bundle 7 §14.4/§14.6: which library CV this application uses, and the CVs it could use."""
+    from webapp.services import cv_library, cv_strategy
+    items = [i for i in cv_library.list_items(conn, account_id=account_id)
+             if i["status"] == "ACTIVE" and i["latest_version_id"]]
+    return {"cv_used": cv_strategy.cv_used_label(conn, account_id=account_id, workspace_id=workspace_id),
+            "library_cvs": items}
 
 
 @router.get("/walkthroughs", response_class=HTMLResponse)

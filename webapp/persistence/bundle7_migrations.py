@@ -977,3 +977,50 @@ def _cv_library(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("032_cv_library", sqlite=_cv_library("sqlite"), postgres=_cv_library("postgres")))
+
+
+# ---- 033_cv_strategy (Task 22): account policy documents and the recorded
+# per-application CV resolution (spec §14.1) ----------------------------------
+
+_CV_STRATEGY_DDL = """
+CREATE TABLE account_policy_documents (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    doc_type TEXT NOT NULL CHECK (doc_type IN ('job-families', 'cv-strategy')),
+    schema_version TEXT NOT NULL,
+    doc_json TEXT NOT NULL,
+    doc_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_account_policy_documents_current ON account_policy_documents(account_id, doc_type, seq);
+CREATE TABLE application_cv_resolutions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    job_families_hash TEXT,
+    cv_strategy_hash TEXT,
+    family_id TEXT NOT NULL,
+    family_match_json TEXT NOT NULL,
+    rule_json TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('RESOLVED_VERSION', 'TAILOR_REQUESTED', 'NEEDS_USER_CHOICE')),
+    item_id TEXT,
+    version_id TEXT REFERENCES cv_library_versions(id),
+    overridden_by_user INTEGER NOT NULL DEFAULT 0 CHECK (overridden_by_user IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_application_cv_resolutions_ws ON application_cv_resolutions(application_workspace_id, seq)
+"""
+
+
+def _cv_strategy(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _CV_STRATEGY_DDL)
+        _append_only(conn, dialect, "account_policy_documents", "application_cv_resolutions")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("033_cv_strategy", sqlite=_cv_strategy("sqlite"),
+                                    postgres=_cv_strategy("postgres")))

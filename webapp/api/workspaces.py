@@ -126,12 +126,52 @@ def post_understand(
 ):
     provider = _providers(request, scope, workspace_id).understanding
     try:
-        return {"artifact": _prepare_stage(request, conn, scope, workspace_id, "understand", lambda: understand_job(
+        artifact = _prepare_stage(request, conn, scope, workspace_id, "understand", lambda: understand_job(
             conn, workspace_id, provider, request_id=body.request_id,
             account_id=scope.account_id,
-        ))}
+        ))
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    _resolve_cv(request, conn, scope, workspace_id)
+    return {"artifact": artifact}
+
+
+def _resolve_cv(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str) -> None:
+    """Bundle 7 §14.3: which CV this application uses, recorded after understanding.
+    Best effort: a resolution problem never fails the understanding stage."""
+    from datetime import datetime, timezone
+    from webapp.services import cv_strategy
+    try:
+        cv_strategy.resolve_for_workspace(conn, scope, workspace_id=workspace_id,
+                                          metering=request.app.state.metering, now=datetime.now(timezone.utc))
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        import logging
+        logging.getLogger("webapp.cv_strategy").exception("cv_resolution_failed workspace=%s", workspace_id)
+
+
+def _fulfil_tailoring(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str) -> None:
+    """Bundle 7 §14.3 step 4: a pending tailoring runs after the intelligence stage (it needs the fit)."""
+    from datetime import datetime, timezone
+    from webapp.services import cv_strategy
+    settings = request.app.state.settings
+
+    def generate(conn, scope, *, workspace_id, base_version, template_id, documents_root):
+        from webapp.services.application_documents import generate_application_documents
+        generated = generate_application_documents(conn, workspace_id, documents_root=documents_root,
+                                                   extensions_dir=settings.extensions_dir,
+                                                   account_id=scope.account_id)
+        return next(d["id"] for d in generated["documents"] if d["document_kind"] == "cv")
+    try:  # best effort: the intelligence stage already succeeded; the pending tailoring stays visible
+        cv_strategy.fulfil_tailoring(conn, scope, workspace_id=workspace_id, metering=request.app.state.metering,
+                                     generator=generate, documents_root=settings.documents_root,
+                                     now=datetime.now(timezone.utc))
+    except Exception:  # noqa: BLE001
+        if conn.in_transaction:
+            conn.rollback()
+        import logging
+        logging.getLogger("webapp.cv_strategy").exception("cv_tailoring_failed workspace=%s", workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/fit")
@@ -170,6 +210,7 @@ def post_application_intelligence(
             ))
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    _fulfil_tailoring(request, conn, scope, workspace_id)
     _notify_prepared(conn, scope, workspace_id, artifact)
     return {"artifact": artifact}
 

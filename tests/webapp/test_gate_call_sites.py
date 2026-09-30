@@ -302,3 +302,22 @@ def test_a_completed_prepare_notifies_prepared_and_review_required(world, monkey
                                               "AND kind LIKE 'application.%'", (ids["workspace_id"],)))
     conn.close()
     assert kinds == ["application.prepared", "application.review_required"]
+
+
+def test_understanding_records_the_cv_resolution_and_intelligence_fulfils_tailoring(world, monkeypatch):
+    """Bundle 7 §14.3: resolution runs after job understanding; a pending tailoring after intelligence."""
+    from webapp.services import cv_strategy
+    _, client, settings, ids, _, _ = world
+    monkeypatch.setattr(workspaces_api, "understand_job", lambda *a, **k: {"id": "art_u"})
+    monkeypatch.setattr(workspaces_api, "generate_application_intelligence", lambda *a, **k: {"id": "art_i"})
+    fulfilled = []
+    monkeypatch.setattr(cv_strategy, "fulfil_tailoring", lambda conn, scope, **kw: fulfilled.append(kw["workspace_id"]))
+    ws = ids["workspace_id"]
+    assert _post(client, f"/api/workspaces/{ws}/understand", json={"request_id": "u1"}).status_code == 200
+    conn = connect(settings)
+    outcomes = [r[0] for r in conn.execute("SELECT outcome FROM application_cv_resolutions WHERE "
+                                           "application_workspace_id = ?", (ws,))]
+    conn.close()
+    assert outcomes == ["NEEDS_USER_CHOICE"]  # no CV strategy yet
+    assert _post(client, f"/api/workspaces/{ws}/application-intelligence", json={"request_id": "i1"}).status_code == 200
+    assert fulfilled == [ws]

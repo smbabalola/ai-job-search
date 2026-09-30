@@ -194,6 +194,9 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "cv_library_versions": A,
     "document_version_references": TableSpec(("application_document_versions", "document_version_id"),
                                              export=False),
+    # CV strategy (Bundle 7, 033_cv_strategy)
+    "account_policy_documents": A,
+    "application_cv_resolutions": A,
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global
