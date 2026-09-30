@@ -2,6 +2,7 @@
 // the same handoff session token as the 6D-B fill routes.
 import type { ObservationV1 } from "../fill/observation-types";
 import { FILL_SERVER_BASE_URL } from "../fill/server";
+import { authHeaders } from "../shared/backend";
 
 export class SubmitServerError extends Error {
   constructor(readonly status: number, readonly reason: string) {
@@ -35,7 +36,8 @@ export class HttpSubmitServer implements SubmitServer {
 
   private async call<T>(path: string, body?: unknown): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/handoff/sessions/${this.sessionId}/fill${path}`, {
-      method: "POST", headers: { "X-Handoff-Session-Token": this.sessionToken, "Content-Type": "application/json" },
+      method: "POST", headers: { ...(await authHeaders()), "X-Handoff-Session-Token": this.sessionToken,
+                                 "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const payload = await response.json().catch(() => ({}));

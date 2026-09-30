@@ -5,8 +5,9 @@
 
 import type { ObservationV1 } from "./observation-types";
 import type { ActionKind, Envelope, Outcome, PlanDocument } from "./executor";
+import { BACKEND_ORIGIN, authHeaders } from "../shared/backend";
 
-export const FILL_SERVER_BASE_URL = "http://127.0.0.1:8420";
+export const FILL_SERVER_BASE_URL = BACKEND_ORIGIN;
 
 export class FillServerError extends Error {
   constructor(readonly status: number, readonly detail: string) {
@@ -87,7 +88,8 @@ export class HttpFillServer implements FillServer {
 
   private async call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const response = await this.fetchImpl(this.url(path), {
-      method, headers: { "X-Handoff-Session-Token": this.sessionToken, "Content-Type": "application/json" },
+      method, headers: { ...(await authHeaders()), "X-Handoff-Session-Token": this.sessionToken,
+                         "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const payload = await response.json().catch(() => ({}));
@@ -154,7 +156,7 @@ export class HttpFillServer implements FillServer {
   async document(kind: string): Promise<LocalDocument> {
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/handoff/sessions/${this.sessionId}/documents/${kind}`,
-      { headers: { "X-Handoff-Session-Token": this.sessionToken } });
+      { headers: { ...(await authHeaders()), "X-Handoff-Session-Token": this.sessionToken } });
     if (!response.ok) throw new FillServerError(response.status, `document ${kind}`);
     const disposition = response.headers.get("content-disposition") ?? "";
     const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);

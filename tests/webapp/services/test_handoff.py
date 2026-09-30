@@ -4,9 +4,6 @@ from webapp.persistence.accounts import create_account
 from webapp.persistence.db import connect, init_db
 from webapp.services.handoff import (
     PairingSecretInvalid,
-    exchange_pairing_secret_for_credential,
-    generate_pairing_secret,
-    resolve_account_scope_from_extension_credential,
 )
 
 
@@ -16,131 +13,9 @@ def _conn(tmp_path):
     return connect(db_path)
 
 
-def test_generate_pairing_secret_produces_unique_high_entropy_values(tmp_path):
-    conn = _conn(tmp_path)
-    a = generate_pairing_secret(conn, account_id="account_local")
-    b = generate_pairing_secret(conn, account_id="account_local")
-    assert a != b
-    assert len(a) >= 32
-    conn.close()
-
-
-def test_exchange_pairing_secret_returns_durable_credential(tmp_path):
-    conn = _conn(tmp_path)
-    one_time_secret = generate_pairing_secret(conn, account_id="account_local")
-    result = exchange_pairing_secret_for_credential(
-        conn, one_time_secret=one_time_secret,
-    )
-    assert "credential_id" in result
-    assert "durable_secret" in result
-    assert result["durable_secret"] != one_time_secret
-    conn.close()
-
-
-def test_resolve_account_scope_from_valid_durable_credential(tmp_path):
-    conn = _conn(tmp_path)
-    one_time_secret = generate_pairing_secret(conn, account_id="account_local")
-    exchanged = exchange_pairing_secret_for_credential(
-        conn, one_time_secret=one_time_secret,
-    )
-    scope = resolve_account_scope_from_extension_credential(
-        conn, presented_secret=exchanged["durable_secret"],
-        base_profile_root=str(tmp_path),
-    )
-    assert scope.account_id == "account_local"
-    conn.close()
-
-
-def test_resolve_account_scope_rejects_unknown_credential(tmp_path):
-    conn = _conn(tmp_path)
-    try:
-        resolve_account_scope_from_extension_credential(
-            conn, presented_secret="not-a-real-credential",
-            base_profile_root=str(tmp_path),
-        )
-        assert False, "expected PairingSecretInvalid"
-    except PairingSecretInvalid:
-        pass
-    conn.close()
-
-
-def test_resolve_account_scope_rejects_revoked_credential(tmp_path):
-    from webapp.persistence.handoff import revoke_extension_credential
-
-    conn = _conn(tmp_path)
-    one_time_secret = generate_pairing_secret(conn, account_id="account_local")
-    exchanged = exchange_pairing_secret_for_credential(
-        conn, one_time_secret=one_time_secret,
-    )
-    revoke_extension_credential(conn, exchanged["credential_id"])
-
-    try:
-        resolve_account_scope_from_extension_credential(
-            conn, presented_secret=exchanged["durable_secret"],
-            base_profile_root=str(tmp_path),
-        )
-        assert False, "expected PairingSecretInvalid"
-    except PairingSecretInvalid:
-        pass
-    conn.close()
-
-
 from datetime import datetime, timedelta, timezone
 
 from webapp.services.handoff import PairingSecretExpired
-
-
-def test_generate_pairing_secret_persists_row_with_expiry(tmp_path):
-    conn = _conn(tmp_path)
-    secret = generate_pairing_secret(conn, account_id="account_local")
-    row = conn.execute(
-        "SELECT * FROM pairing_secrets WHERE account_id = ?", ("account_local",)
-    ).fetchone()
-    assert row is not None
-    assert row["secret_hash"] != secret
-    assert row["consumed_at"] is None
-    assert row["expires_at"] > row["created_at"]
-    conn.close()
-
-
-def test_exchange_rejects_unrecognized_code(tmp_path):
-    conn = _conn(tmp_path)
-    try:
-        exchange_pairing_secret_for_credential(conn, one_time_secret="not-a-real-code")
-        assert False, "expected PairingSecretInvalid"
-    except PairingSecretInvalid:
-        pass
-    conn.close()
-
-
-def test_exchange_rejects_already_used_code(tmp_path):
-    conn = _conn(tmp_path)
-    secret = generate_pairing_secret(conn, account_id="account_local")
-    exchange_pairing_secret_for_credential(conn, one_time_secret=secret)
-    try:
-        exchange_pairing_secret_for_credential(conn, one_time_secret=secret)
-        assert False, "expected PairingSecretInvalid on reuse"
-    except PairingSecretInvalid:
-        pass
-    conn.close()
-
-
-def test_exchange_rejects_expired_code(tmp_path):
-    conn = _conn(tmp_path)
-    secret = generate_pairing_secret(conn, account_id="account_local")
-    # Force expiry by rewriting expires_at into the past.
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-    conn.execute(
-        "UPDATE pairing_secrets SET expires_at = ? WHERE account_id = ?",
-        (past, "account_local"),
-    )
-    conn.commit()
-    try:
-        exchange_pairing_secret_for_credential(conn, one_time_secret=secret)
-        assert False, "expected PairingSecretExpired"
-    except PairingSecretExpired:
-        pass
-    conn.close()
 
 
 from webapp.persistence.artifacts import save_artifact

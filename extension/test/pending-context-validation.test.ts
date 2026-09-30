@@ -15,6 +15,7 @@ function validMessage(overrides: Record<string, unknown> = {}) {
     packArtifactId: "art_1",
     targetUrl: "https://boards.greenhouse.io/acme/jobs/1",
     requestedAt: Date.now(),
+    handoffTicket: "v1.ticket_0001.nonce-abc.mac123",
     ...overrides,
   };
 }
@@ -30,7 +31,16 @@ describe("extractValidPendingContext", () => {
       workspaceId: "ws_1", packArtifactId: "art_1",
       targetUrl: "https://boards.greenhouse.io/acme/jobs/1",
       requestedAt: expect.any(Number),
+      handoffTicket: "v1.ticket_0001.nonce-abc.mac123",
     });
+  });
+
+  it("rejects a launch without a well-formed server ticket (spec X4)", () => {
+    const { handoffTicket: _omitted, ...withoutTicket } = validMessage();
+    expect(extract(withoutTicket, LOOPBACK_SENDER)).toBeNull();
+    for (const bad of ["", "v2.x.y.z", "v1.<script>", 42, "v1." + "a".repeat(400)]) {
+      expect(extract(validMessage({ handoffTicket: bad }), LOOPBACK_SENDER)).toBeNull();
+    }
   });
 
   it("rejects a message with no sender.tab (not a real content-script sender)", () => {
@@ -131,10 +141,15 @@ describe("extractValidPendingContext", () => {
     expect(extract(null, LOOPBACK_SENDER)).toBeNull();
   });
 
-  it("never stores candidate data, credentials, or session tokens - the extracted shape has exactly four fields", () => {
-    const result = extract(validMessage(), LOOPBACK_SENDER);
-    expect(result && Object.keys(result).sort()).toEqual(
-      ["packArtifactId", "requestedAt", "targetUrl", "workspaceId"],
+  // Bundle 7: the fifth field is the handoff ticket, a single-use 5-minute
+  // capability bound to the signed-in user (session storage only), never a
+  // durable credential or a session token.
+  it("never stores candidate data, credentials, or session tokens - the extracted shape has exactly five fields", () => {
+    const result = extract(validMessage({ sessionToken: "tok", candidate: { name: "x" } }), LOOPBACK_SENDER);
+    expect(result).toBeNull();  // unknown keys refuse the whole message
+    const ok = extract(validMessage(), LOOPBACK_SENDER);
+    expect(ok && Object.keys(ok).sort()).toEqual(
+      ["handoffTicket", "packArtifactId", "requestedAt", "targetUrl", "workspaceId"],
     );
   });
 

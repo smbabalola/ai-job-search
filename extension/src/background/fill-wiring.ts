@@ -222,6 +222,13 @@ export async function fillPermissionsGranted(): Promise<boolean> {
   return chrome.permissions.contains({ permissions: [...SAFE_FILL_OPTIONAL_PERMISSIONS] });
 }
 
+// Restores TOTAL and ends every recorded run: used after a worker restart and
+// when the device is revoked (Bundle 7 spec §9.2).
+export function recoverFillRuns(): Promise<void> {
+  return recoverAfterRestart(sessionStore, (sessionId, token) => new HttpFillServer(sessionId, token))
+    .then(() => undefined);
+}
+
 export function registerFillListeners(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     const controller = controllers.get(tabId);
@@ -239,7 +246,7 @@ export function registerFillListeners(): void {
     }
   });
   // A run is never resumed after the worker restarts (spec §11.3, §11.4).
-  void recoverAfterRestart(sessionStore, (sessionId, token) => new HttpFillServer(sessionId, token));
+  void recoverFillRuns();
   // 6E-A: a restarted worker never clicks again (spec J3).
   void recoverSubmits(sessionStore);
 }

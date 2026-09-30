@@ -10,6 +10,7 @@ export interface PendingContextLaunchMessage {
   packArtifactId: string;
   targetUrl: string;
   requestedAt: number;
+  handoffTicket: string;
 }
 
 export interface PendingContextLaunchAck {
@@ -41,9 +42,10 @@ export function isHttpUrl(value: string): boolean {
 // the background's own validation).
 export function buildPendingContextMessage(
   button: ApplyButtonLike,
+  handoffTicket: string,
 ): PendingContextLaunchMessage | null {
   const { workspaceId, packArtifactId, targetUrl } = button.dataset;
-  if (!workspaceId || !packArtifactId || !targetUrl) return null;
+  if (!workspaceId || !packArtifactId || !targetUrl || !handoffTicket) return null;
   if (!isHttpUrl(targetUrl)) return null;
   return {
     type: "set_pending_handoff_context",
@@ -51,8 +53,13 @@ export function buildPendingContextMessage(
     packArtifactId,
     targetUrl,
     requestedAt: Date.now(),
+    handoffTicket,
   };
 }
+
+// Bundle 7 spec X4: a fresh server-signed ticket for this workspace, fetched
+// same-origin with the signed-in user's cookie and the page's CSRF token.
+export type FetchTicket = (workspaceId: string) => Promise<string | null>;
 
 export type SendLaunchMessage = (
   message: PendingContextLaunchMessage,
@@ -67,8 +74,17 @@ export type SendLaunchMessage = (
 export async function handleApplyClick(
   button: ApplyButtonLike,
   sendLaunchMessage: SendLaunchMessage,
+  fetchTicket: FetchTicket,
 ): Promise<{ shouldNavigate: boolean; targetUrl?: string }> {
-  const message = buildPendingContextMessage(button);
+  if (!button.dataset.workspaceId) return { shouldNavigate: false };
+  let ticket: string | null;
+  try {
+    ticket = await fetchTicket(button.dataset.workspaceId);
+  } catch {
+    return { shouldNavigate: false };
+  }
+  if (!ticket) return { shouldNavigate: false };
+  const message = buildPendingContextMessage(button, ticket);
   if (!message) return { shouldNavigate: false };
 
   try {

@@ -10,7 +10,7 @@ import type { DiscoveredSession, ServerClient } from "../src/background/server-c
 
 const PENDING_CONTEXT: PendingHandoffContext = {
   workspaceId: "ws_1", packArtifactId: "art_1",
-  targetUrl: "https://boards.greenhouse.io/acme/jobs/1", requestedAt: Date.now(),
+  targetUrl: "https://boards.greenhouse.io/acme/jobs/1", requestedAt: Date.now(), handoffTicket: "v1.t.n.m",
 };
 const TARGET_DOMAIN = "boards.greenhouse.io";
 const ADAPTER = { atsAdapterId: "generic", atsAdapterVersion: "generic@1" };

@@ -109,9 +109,21 @@ class Harness:
         return self.worker.evaluate(
             "async (u) => (await chrome.tabs.query({})).find((t) => t.url === u).id", url or self.url)
 
+    def install_device(self) -> None:
+        """Bundle 7 spec X2: runs need a paired device. Seed the extension's
+        storage with a device and a live access token for the session's
+        account (paired server-side by tests.webapp.extension_helpers)."""
+        bearer = getattr(self.token, "bearer", None)
+        if bearer:
+            self.worker.evaluate(
+                "async (b) => { await chrome.storage.local.set({handoff_device: {deviceId: 'dev_test', "
+                "refreshToken: 'unused', accountLabel: 'test'}}); await chrome.storage.session.set("
+                "{handoff_access: {token: b, expiresAt: Date.now() + 9 * 60 * 1000}}); return true; }", bearer)
+
     def start(self, tab: int) -> None:
+        self.install_device()
         assert self.worker.evaluate("([t, s, k]) => globalThis.__fillTest.startFill(t, s, k, 'greenhouse')",
-                                    [tab, self.session_id, self.token]) is True
+                                    [tab, self.session_id, str(self.token)]) is True
 
     def view(self, tab: int):
         return self.worker.evaluate("(t) => globalThis.__fillTest.fillView(t)", tab)

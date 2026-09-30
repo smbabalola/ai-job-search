@@ -100,3 +100,41 @@ def test_production_build_has_no_test_hook_or_spike_artifact():
     # evidence (spike S-E2 fallback), so production never requests it.
     assert manifest["permissions"] == ["storage", "activeTab", "scripting", "declarativeNetRequest"]
     assert "getMatchedRules" not in background
+
+
+# ---- Bundle 7 spec X1: the backend origin is a build-time constant ----------
+
+HOSTED_ROOT = EXTENSION_ROOT / "dist" / "extension-hosted"
+EXPECTED_PERMISSIONS = ["storage", "activeTab", "scripting", "declarativeNetRequest"]
+
+
+def _node_build(*args: str) -> subprocess.CompletedProcess:
+    node = shutil.which("node")
+    assert node is not None, "node is required to build the extension"
+    return subprocess.run([node, "scripts/build.mjs", *args], cwd=EXTENSION_ROOT, capture_output=True, text=True)
+
+
+def test_default_build_talks_only_to_the_local_development_server():
+    manifest = json.loads((BUILD_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["host_permissions"] == ["http://127.0.0.1:8420/*"]
+    assert [s["matches"] for s in manifest["content_scripts"]] == [["http://127.0.0.1:8420/*"]]
+    assert manifest["permissions"] == EXPECTED_PERMISSIONS
+
+
+def test_hosted_build_is_scoped_to_exactly_its_https_origin():
+    assert _node_build("--origin", "https://app.example.test").returncode == 0
+    manifest = json.loads((HOSTED_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["host_permissions"] == ["https://app.example.test/*"]
+    assert [s["matches"] for s in manifest["content_scripts"]] == [["https://app.example.test/*"]]
+    assert manifest["permissions"] == EXPECTED_PERMISSIONS
+    assert manifest["optional_permissions"] == ["tabs", "webNavigation"]
+    background = (HOSTED_ROOT / "background" / "index.js").read_text(encoding="utf-8")
+    assert "https://app.example.test" in background and "127.0.0.1:8420" not in background
+    assert "X-Handoff-Credential" not in background
+
+
+@pytest.mark.parametrize("origin", ["http://app.example.test", "https://app.example.test/path", "not a url"])
+def test_hosted_build_refuses_a_non_https_or_pathful_origin(origin):
+    result = _node_build("--origin", origin)
+    assert result.returncode != 0
+    assert "--origin" in (result.stderr + result.stdout)

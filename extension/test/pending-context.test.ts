@@ -9,7 +9,7 @@ describe("PendingContextStore", () => {
     vi.stubGlobal("chrome", { storage: { session: { set: setMock, get: getMock, remove: vi.fn() } } });
     const context = {
       workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply",
-      requestedAt: Date.now(),
+      requestedAt: Date.now(), handoffTicket: "v1.t.n.m",
     };
     getMock.mockResolvedValue({ handoff_pending_context: context });
 
@@ -25,8 +25,8 @@ describe("PendingContextStore", () => {
     const setMock = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("chrome", { storage: { session: { set: setMock, get: vi.fn(), remove: vi.fn() } } });
 
-    const first = { workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://a.test", requestedAt: 1 };
-    const second = { workspaceId: "ws_2", packArtifactId: "art_2", targetUrl: "https://b.test", requestedAt: 2 };
+    const first = { workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://a.test", requestedAt: 1, handoffTicket: "v1.t.n.m" };
+    const second = { workspaceId: "ws_2", packArtifactId: "art_2", targetUrl: "https://b.test", requestedAt: 2, handoffTicket: "v1.t.n.m" };
     await store.set(first);
     await store.set(second);
 
@@ -38,7 +38,7 @@ describe("PendingContextStore", () => {
   it("survives a simulated service-worker recreation (a fresh PendingContextStore instance still reads the same persisted value)", async () => {
     const context = {
       workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply",
-      requestedAt: Date.now(),
+      requestedAt: Date.now(), handoffTicket: "v1.t.n.m",
     };
     const getMock = vi.fn().mockResolvedValue({ handoff_pending_context: context });
     vi.stubGlobal("chrome", { storage: { session: { set: vi.fn(), get: getMock, remove: vi.fn() } } });
@@ -76,7 +76,7 @@ describe("PendingContextStore", () => {
     const removeMock = vi.fn().mockResolvedValue(undefined);
     const fresh = {
       workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply",
-      requestedAt: Date.now(),
+      requestedAt: Date.now(), handoffTicket: "v1.t.n.m",
     };
     vi.stubGlobal("chrome", { storage: { session: {
       get: vi.fn().mockResolvedValue({ handoff_pending_context: fresh }), remove: removeMock, set: vi.fn(),
