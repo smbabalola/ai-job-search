@@ -1,0 +1,126 @@
+"""Worker handlers (Bundle 7 spec §20.2). Each is idempotent. Kinds whose
+domain arrives in later tasks (outbox, notifications, discovery schedules,
+purge, export) register their handlers there."""
+from __future__ import annotations
+
+import logging
+import random
+from datetime import datetime, timedelta
+from typing import Any, Callable
+
+from webapp.persistence import dbapi
+from webapp.services.autonomy_scheduler import tick_once
+from webapp.worker.runner import Handler, JobContext, PermanentFailure, RetryLater, ts
+
+logger = logging.getLogger("webapp.worker")
+
+RATE_LIMIT_BUCKET_RETENTION = timedelta(days=1)
+
+# (table, expiry column) — rows past expiry can never be used again.
+_EXPIRING = (
+    ("pairing_codes", "expires_at"),
+    ("handoff_tickets", "expires_at"),
+    ("extension_access_tokens", "expires_at"),
+    ("extension_refresh_tokens", "expires_at"),
+    ("email_tokens", "expires_at"),
+    ("web_sessions", "absolute_expires_at"),
+)
+
+
+def _iso(moment: datetime) -> str:
+    # the token modules store datetime.isoformat(); comparing in that form keeps text order correct
+    return moment.isoformat()
+
+
+def sweep_tokens(conn: dbapi.Connection, *, now: datetime) -> int:
+    """Delete expired credentials and stale rate-limit windows (no commit)."""
+    deleted = 0
+    for table, column in _EXPIRING:
+        deleted += conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (_iso(now),)).rowcount
+    deleted += conn.execute("DELETE FROM rate_limit_buckets WHERE window_start < ?",
+                            (_iso(now - RATE_LIMIT_BUCKET_RETENTION),)).rowcount
+    return deleted
+
+
+def _usage_sweep(ctx: JobContext, payload: dict) -> None:
+    from webapp.services.usage import sweep_expired
+    conn = ctx.connect()
+    try:
+        released = sweep_expired(conn, ctx.clock())
+        conn.commit()
+        if released:
+            logger.info("usage_sweep_released count=%s", released)
+    finally:
+        conn.close()
+
+
+def _tokens_sweep(ctx: JobContext, payload: dict) -> None:
+    conn = ctx.connect()
+    try:
+        sweep_tokens(conn, now=ctx.clock())
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _billing_webhook_handler(webhooks: Any) -> Handler:
+    def handle(ctx: JobContext, payload: dict) -> None:
+        row_id = payload.get("event_row_id")
+        if not isinstance(row_id, str):
+            raise PermanentFailure("billing.webhook.process needs event_row_id")
+        conn = ctx.connect()
+        try:
+            webhooks.process_event(conn, row_id, now=ctx.clock())
+            conn.commit()
+            row = conn.execute("SELECT processed_at FROM billing_webhook_events WHERE id = ?", (row_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise PermanentFailure(f"billing webhook event {row_id} does not exist")
+        if row[0] is None:
+            raise RetryLater("billing webhook event is not applicable yet (e.g. its checkout is not recorded)")
+    return handle
+
+
+def _autonomy_tick_handler(providers_factory: Callable[[], Any]) -> Handler:
+    providers: list[Any] = []
+
+    def handle(ctx: JobContext, payload: dict) -> None:
+        if not providers:
+            providers.append(providers_factory())
+        conn = ctx.connect()
+        try:
+            tick_once(conn, ctx.settings, providers[0], clock=ctx.clock, rng=random.Random(),
+                      worker_id=ctx.worker_id)
+        finally:
+            conn.close()
+    return handle
+
+
+def _billing_webhooks(settings: Any) -> Any:
+    from product.entitlements import load_catalog
+    from webapp.billing.registry import provider_for
+    from webapp.services.billing_webhooks import BillingWebhooks
+    from webapp.app import _project_path
+    catalog = load_catalog(_project_path(settings.plan_catalog_path))
+    provider = provider_for(settings, catalog)
+    return None if provider is None else BillingWebhooks(provider, catalog_version=catalog.catalog_version)
+
+
+def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | None = None,
+                     billing_webhooks: Any = None) -> dict[str, Handler]:
+    if providers_factory is None:
+        from webapp.services.autonomy_providers import default_providers
+        providers_factory = default_providers
+    handlers: dict[str, Handler] = {
+        "usage.sweep": _usage_sweep,
+        "tokens.sweep": _tokens_sweep,
+        "autonomy.tick": _autonomy_tick_handler(providers_factory),
+    }
+    webhooks = billing_webhooks if billing_webhooks is not None else _billing_webhooks(settings)
+    if webhooks is not None:
+        handlers["billing.webhook.process"] = _billing_webhook_handler(webhooks)
+    return handlers
+
+
+__all__ = ["default_handlers", "sweep_tokens", "ts"]

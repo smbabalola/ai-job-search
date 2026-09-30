@@ -647,6 +647,19 @@ def wake_all_on_start(conn, *, now: datetime) -> int:
     return run_immediate(conn, work)
 
 
+def tick_once(conn, settings: Settings, providers: ProviderSet, *, clock: Callable[[], datetime],
+              rng: random.Random, worker_id: str, status: dict[str, Any] | None = None) -> TickReport | None:
+    """One driver tick when the scheduler gate is on (the worker's autonomy.tick
+    and the in-app/CLI loop share it)."""
+    if not settings.autonomy_scheduler_enabled:
+        return None
+    report = run_tick(conn, settings=settings, providers=providers, now=clock(), rng=rng, worker_id=worker_id,
+                      clock=clock)
+    if status is not None:
+        status["last_tick_at"] = clock().isoformat()
+    return report
+
+
 def run_driver(settings: Settings, providers: ProviderSet, *, stop: threading.Event,
                clock: Callable[[], datetime], rng: random.Random, worker_id: str,
                status: dict[str, Any] | None = None) -> None:
@@ -659,13 +672,10 @@ def run_driver(settings: Settings, providers: ProviderSet, *, stop: threading.Ev
     try:
         wake_all_on_start(conn, now=clock())
         while not stop.is_set():
-            if settings.autonomy_scheduler_enabled:
-                try:
-                    run_tick(conn, settings=settings, providers=providers, now=clock(), rng=rng,
-                             worker_id=worker_id, clock=clock)
-                    status["last_tick_at"] = clock().isoformat()
-                except Exception:
-                    logger.exception("autonomy driver tick failed")
+            try:
+                tick_once(conn, settings, providers, clock=clock, rng=rng, worker_id=worker_id, status=status)
+            except Exception:
+                logger.exception("autonomy driver tick failed")
             stop.wait(settings.autonomy_tick_interval)
     finally:
         status["running"] = False

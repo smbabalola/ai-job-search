@@ -641,3 +641,43 @@ def _metered_actions(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("028b_metered_actions", sqlite=_metered_actions("sqlite"),
                                     postgres=_metered_actions("postgres")))
+
+
+# ---- 029_jobs (Task 18): durable jobs for the worker (spec §20.2) -----------
+
+JOB_KINDS = (
+    "outbox.dispatch", "billing.webhook.process", "email.webhook.process", "usage.sweep", "tokens.sweep",
+    "notify.digest", "notify.approval_expiry_scan", "discovery.scheduled_run", "account.purge", "account.export",
+    "autonomy.tick",
+)
+
+_JOBS_DDL = """
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ({kinds})),
+    account_id TEXT REFERENCES accounts(id),
+    payload_json TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE,
+    run_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
+    lease_holder TEXT,
+    lease_expires_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'DEAD')),
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX idx_jobs_due ON jobs(status, run_at);
+CREATE INDEX idx_jobs_account ON jobs(account_id)
+""".replace("{kinds}", ", ".join(f"'{kind}'" for kind in JOB_KINDS))
+
+
+def _jobs(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _JOBS_DDL)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("029_jobs", sqlite=_jobs("sqlite"), postgres=_jobs("postgres")))

@@ -178,6 +178,8 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "usage_reservations": A,
     "ai_cost_events": TableSpec("account_id", export=False),
     "metered_actions": TableSpec("account_id", export=False),
+    # worker (Bundle 7, 029_jobs): account_id is NULL for platform jobs (sweeps, ticks)
+    "jobs": _internal("account_id"),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

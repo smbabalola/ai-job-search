@@ -1,6 +1,7 @@
-"""Provider webhooks (Bundle 7 spec §12.1, §21.2): verified, stored once, then
-processed. Processing runs right after the commit until the worker (Task 18)
-takes over; a failure there leaves the event pending for retry, never lost."""
+"""Provider webhooks (Bundle 7 spec §12.1, §21.2): verified, stored once with a
+durable billing.webhook.process job, then processed. The route also processes
+right after the commit (fast path); a failure or an early event is left to the
+worker's job, which retries it — never lost."""
 from __future__ import annotations
 
 import logging

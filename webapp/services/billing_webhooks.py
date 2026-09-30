@@ -83,6 +83,11 @@ class BillingWebhooks:
         except dbapi.IntegrityError:  # a concurrent delivery of the same event stored it first
             return conn.execute("SELECT id FROM billing_webhook_events WHERE provider_event_id = ?",
                                 (event.provider_event_id,)).fetchone()[0]
+        # Durable processing (Task 18): the worker retries until the event applies
+        # (e.g. an early webhook whose checkout is not recorded yet).
+        from webapp.worker.runner import enqueue
+        enqueue(conn, kind="billing.webhook.process", payload={"event_row_id": row_id},
+                dedupe_key=f"billing-webhook:{row_id}", now=now)
         return row_id
 
     # ---- processing ---------------------------------------------------------------

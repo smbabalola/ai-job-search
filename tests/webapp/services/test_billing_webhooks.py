@@ -206,3 +206,40 @@ def test_the_webhook_route_verifies_and_processes(tmp_path):
         assert forged.status_code == 400
         assert client.post("/webhooks/billing/stripe", content=b"{}").status_code == 404
         assert provider.outbox == []
+
+
+def test_the_worker_job_retries_an_early_event_until_it_applies(world, tmp_path):
+    """Review Focus 1 through the Task 18 worker: ingest enqueues one durable
+    job; the job is requeued while the customer is unknown and succeeds once
+    it exists; a duplicate delivery adds no second job."""
+    from webapp.worker.handlers import default_handlers
+    from webapp.worker.runner import Worker
+    conn, scope, provider, service, webhooks, inbox, clock = world
+    session_id = service.start_checkout(conn, scope, plan_id="pro", interval="month", now=NOW).split("/")[-1]
+    provider.simulate(session_id, "pay")
+    conn.execute("DELETE FROM checkout_sessions")
+    conn.execute("DELETE FROM billing_customers")
+    delivered = list(inbox)
+    for headers, body in delivered + delivered:  # the provider redelivers
+        webhooks.ingest(conn, headers=headers, body=body, now=NOW)
+    conn.commit()
+    jobs = conn.execute("SELECT COUNT(*) FROM jobs WHERE kind = 'billing.webhook.process'").fetchone()[0]
+    assert jobs == len(delivered)
+    db_path = tmp_path / "db.sqlite3"  # the world fixture's database (redirected under --db postgres)
+    worker = Worker(Settings(db_path=db_path), default_handlers(Settings(db_path=db_path), billing_webhooks=webhooks,
+                                                                providers_factory=lambda: None),
+                    clock=clock, worker_id="w1")
+    worker.run_once()
+    conn.rollback()
+    statuses = {r[0] for r in conn.execute("SELECT status FROM jobs WHERE kind = 'billing.webhook.process'")}
+    assert statuses == {"QUEUED"}  # retried later, not failed
+    customer_id = provider.fetch_subscription(provider.subscription_for_session(session_id)).provider_customer_id
+    conn.execute("INSERT INTO billing_customers (account_id, provider, provider_customer_id, created_at) "
+                 "VALUES (?, 'fake', ?, ?)", (scope.account_id, customer_id, NOW.isoformat()))
+    conn.commit()
+    clock.now = NOW + timedelta(hours=7)  # past every backoff
+    worker.run_once()
+    conn.rollback()
+    statuses = {r[0] for r in conn.execute("SELECT status FROM jobs WHERE kind = 'billing.webhook.process'")}
+    assert statuses == {"SUCCEEDED"}
+    assert _subscription(conn, scope.account_id)["state"] == "TRIALING"
