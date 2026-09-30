@@ -71,3 +71,8 @@ async def fair_use_limit_handler(request: Request, exc: Exception) -> JSONRespon
     return error_response("FAIR_USE_LIMIT_REACHED",
                           "You've reached the fair-use limit for AI features this period. "
                           "It resets at the start of your next billing period.", 429)
+
+
+async def document_rejected_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Bundle 7 Review Focus 4: a refused upload names its reason; nothing was stored."""
+    return error_response("DOCUMENT_REJECTED", exc.message, 400, detail={"code": exc.code})

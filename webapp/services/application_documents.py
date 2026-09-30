@@ -47,11 +47,11 @@ def _require_writable_workspace(conn: dbapi.Connection, workspace_id: str, accou
     return workspace
 
 
-def _document_row(*, document_id: str, workspace_id: str, account_id: str, kind: str, origin: str, filename: str, blob: dict[str, Any], generation_id: str | None) -> dict[str, Any]:
+def _document_row(*, document_id: str, workspace_id: str, account_id: str, kind: str, origin: str, filename: str, blob: dict[str, Any], generation_id: str | None, media_type: str = DOCX_MEDIA_TYPE) -> dict[str, Any]:
     return {
         "id": document_id, "account_id": account_id,
         "source_workspace_id": workspace_id, "document_kind": kind, "origin": origin,
-        "original_filename": filename, "media_type": DOCX_MEDIA_TYPE,
+        "original_filename": filename, "media_type": media_type,
         "byte_length": blob["byte_length"], "sha256": blob["sha256"],
         "storage_key": blob["storage_key"],
         "source_generation_artifact_id": generation_id, "created_at": _now(),
@@ -251,17 +251,17 @@ def store_upload_blob(*, kind: str, filename: str, content: bytes, documents_roo
     an orphaned blob after a later rollback is harmless."""
     if kind not in DOCUMENT_KINDS:
         raise PipelineError("invalid application document kind")
-    metadata = validate_docx_package(content, original_filename=filename)
-    blob = DocumentBlobStore(documents_root).publish(content, account_id=account_id)
-    assert metadata.byte_length == blob["byte_length"] and metadata.sha256 == blob["sha256"]
-    return blob
+    from webapp.services.cv_library import validate_upload  # Bundle 7 §14: DOCX or PDF, sniffed and validated
+    media_type = validate_upload(content, filename)
+    blob = DocumentBlobStore(documents_root).publish(content, account_id=account_id, media_type=media_type)
+    return {**blob, "media_type": media_type}
 
 
 def record_uploaded_version(conn: dbapi.Connection, workspace_id: str, *, kind: str, filename: str,
                             blob: dict[str, Any], account_id: str) -> dict[str, Any]:
     """The DB write of an upload, inside the caller's transaction (no commit)."""
     _require_writable_workspace(conn, workspace_id, account_id)
-    row = _document_row(document_id=new_document_version_id(), workspace_id=workspace_id, account_id=account_id, kind=kind, origin="user_uploaded", filename=filename, blob=blob, generation_id=None)
+    row = _document_row(document_id=new_document_version_id(), workspace_id=workspace_id, account_id=account_id, kind=kind, origin="user_uploaded", filename=filename, blob=blob, generation_id=None, media_type=blob.get("media_type", DOCX_MEDIA_TYPE))
     return create_document_version(conn, row, commit=False)
 
 
@@ -294,7 +294,7 @@ def apply_selection(conn: dbapi.Connection, workspace_id: str, *, kind: str, doc
     document = get_document_version(conn, document_version_id, account_id=account_id)
     if document is None or document["document_kind"] != kind:
         raise PipelineError("application document not found")
-    eligible = document["source_workspace_id"] == workspace_id or conn.execute("SELECT 1 FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone()
+    eligible = document["source_workspace_id"] == workspace_id or conn.execute("SELECT 1 FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone() or conn.execute("SELECT 1 FROM cv_library_versions WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone()  # Bundle 7: any CV library version
     if not eligible:
         raise PipelineError("application document is not available to this workspace")
     return set_selection(conn, workspace_id=workspace_id, account_id=account_id, kind=kind, document_version_id=document_version_id, expected_revision=expected_revision, commit=False)

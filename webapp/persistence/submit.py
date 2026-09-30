@@ -95,9 +95,13 @@ def submit_events(conn, authorization_id: str) -> list[dict[str, Any]]:
 
 def insert_submission_result(conn, *, attempt_id: str, result: dict[str, Any], result_hash: str,
                              now: datetime) -> dict[str, Any]:
-    return _decode(_insert(conn, "submission_results", {
+    row = _decode(_insert(conn, "submission_results", {
         "id": _id("sres"), "attempt_id": attempt_id, "result_hash": result_hash, "result_json": _json(result),
         "created_at": to_utc_iso(now)}), "result_json")
+    from webapp.persistence.cv_library import add_references, fill_run_documents  # Bundle 7 L3
+    add_references(conn, document_version_ids=fill_run_documents(conn, result.get("fill_run_id")),
+                   referrer_type="SUBMISSION_RESULT", referrer_id=row["id"], now=now)
+    return row
 
 
 def get_submission_result(conn, attempt_id: str) -> dict[str, Any] | None:

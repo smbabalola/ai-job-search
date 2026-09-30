@@ -11,6 +11,9 @@ DOCUMENT_ORIGINS = frozenset({"ai_generated", "user_uploaded"})
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+PDF_MEDIA_TYPE = "application/pdf"
+# Bundle 7 §14.1: the two allowed document types and their filename extensions.
+MEDIA_TYPE_EXTENSIONS = {DOCX_MEDIA_TYPE: ".docx", PDF_MEDIA_TYPE: ".pdf"}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _VERSION_KEYS = {
     "id", "account_id", "source_workspace_id", "document_kind", "origin",
@@ -23,14 +26,18 @@ class ApplicationDocumentContractError(ValueError):
     """Raised when immutable application-document metadata is invalid."""
 
 
-def validate_display_filename(value: Any) -> str:
+def validate_display_filename(value: Any, media_type: str = DOCX_MEDIA_TYPE) -> str:
     if not isinstance(value, str):
         raise ApplicationDocumentContractError("original filename must be a string")
     value = unicodedata.normalize("NFC", value).strip()
     if not value or len(value) > 255 or any(ord(ch) < 32 or ch in "\r\n" for ch in value):
         raise ApplicationDocumentContractError("original filename is invalid")
-    if "/" in value or "\\" in value or not value.casefold().endswith(".docx"):
-        raise ApplicationDocumentContractError("original filename must be a safe DOCX name")
+    extension = MEDIA_TYPE_EXTENSIONS.get(media_type)
+    if extension is None:
+        raise ApplicationDocumentContractError("document media type is invalid")
+    if "/" in value or "\\" in value or not value.casefold().endswith(extension):
+        label = "DOCX" if media_type == DOCX_MEDIA_TYPE else "PDF"
+        raise ApplicationDocumentContractError(f"original filename must be a safe {label} name")
     return value
 
 def validate_document_version(value: Any) -> dict[str, Any]:
@@ -43,9 +50,9 @@ def validate_document_version(value: Any) -> dict[str, Any]:
         raise ApplicationDocumentContractError("document kind is invalid")
     if value["origin"] not in DOCUMENT_ORIGINS:
         raise ApplicationDocumentContractError("document origin is invalid")
-    if value["media_type"] != DOCX_MEDIA_TYPE:
+    if value["media_type"] not in MEDIA_TYPE_EXTENSIONS:
         raise ApplicationDocumentContractError("document media type is invalid")
-    validate_display_filename(value["original_filename"])
+    validate_display_filename(value["original_filename"], value["media_type"])
     if not isinstance(value["byte_length"], int) or isinstance(value["byte_length"], bool) or value["byte_length"] <= 0:
         raise ApplicationDocumentContractError("byte length must be a positive integer")
     if not isinstance(value["sha256"], str) or _SHA256.fullmatch(value["sha256"]) is None:

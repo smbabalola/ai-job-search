@@ -23,6 +23,7 @@ from webapp.services.billing_webhooks import BillingWebhooks
 from webapp.api.webhooks import router as webhooks_router
 from webapp.api.email_webhooks import router as email_webhooks_router
 from webapp.api.notifications import router as notifications_router
+from webapp.api.cv_library import router as cv_library_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -48,7 +49,8 @@ from webapp.observability import LogErrorReporter, RequestContextMiddleware, con
 from webapp.security_middleware import SecurityHeadersMiddleware
 from webapp.api.errors import (
     action_in_progress_handler, allowance_exhausted_handler, csrf_failed_handler, database_busy_handler,
-    fair_use_limit_handler, feature_not_in_plan_handler, rate_limited_handler, scope_refused_handler,
+    document_rejected_handler, fair_use_limit_handler, feature_not_in_plan_handler, rate_limited_handler,
+    scope_refused_handler,
 )
 from webapp.api.usage import router as usage_router
 from webapp.persistence.dbapi import DatabaseBusy
@@ -174,6 +176,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(AllowanceExhausted, allowance_exhausted_handler)
     app.add_exception_handler(ActionInProgress, action_in_progress_handler)
     app.add_exception_handler(FairUseLimitReached, fair_use_limit_handler)
+    from webapp.services.cv_library import DocumentRejected
+    app.add_exception_handler(DocumentRejected, document_rejected_handler)
     app.add_exception_handler(DatabaseBusy, database_busy_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
@@ -197,6 +201,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webhooks_router)
     app.include_router(email_webhooks_router)
     app.include_router(notifications_router)
+    app.include_router(cv_library_router)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)

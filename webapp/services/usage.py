@@ -72,8 +72,14 @@ def prepare_key(workspace_id: str, window_key: str) -> str:
 
 # Gauges are computed live from their source tables (§13.2). Later tasks
 # register theirs: library.cv_items (Task 21), discovery.scheduled_searches (Task 26).
+def _cv_items(conn: dbapi.Connection, account_id: str) -> int:
+    from webapp.persistence.cv_library import active_item_count
+    return active_item_count(conn, account_id)
+
+
 GAUGE_READERS: dict[str, Callable[[dbapi.Connection, str], int]] = {
     "storage.bytes": rows.storage_bytes,
+    "library.cv_items": _cv_items,  # Task 21: ACTIVE library items
 }
 
 

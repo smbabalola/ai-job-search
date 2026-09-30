@@ -49,6 +49,15 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
                                      pack_artifact_id=posting["id"], target_url="https://jobs.example.test/1",
                                      target_domain="jobs.example.test", ats_adapter_id="generic",
                                      ats_adapter_version="1")
+    from types import SimpleNamespace
+    from webapp.services import cv_library
+    cv_scope = SimpleNamespace(account_id=account_id, user_id=None)
+    cv_item = cv_library.create_item(conn, cv_scope, title=f"{canary} CV library item", now=datetime.now(timezone.utc))
+    cv_version = cv_library.add_version(conn, cv_scope, item_id=cv_item["id"], content=docx_bytes(f"{canary} library CV"),
+                                        filename=f"{canary}-library.docx", media_type_hint=None,
+                                        documents_root=documents_root, note=f"{canary} note",
+                                        now=datetime.now(timezone.utc))
+    conn.commit()
     from webapp.services.notifications import notify
     notify(conn, account_id=account_id, kind="fill.failed", subject_type="workspace", subject_id=job["id"],
            dedupe_key=f"{canary}-notification", detail={"message": f"{canary} notification"},
@@ -65,6 +74,6 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
         "ids": {
             "workspace_id": job["id"], "search_workspace_id": search["id"], "document_version_id": document["id"],
             "session_id": session["id"], "pack_artifact_id": posting["id"], "kind": "cv",
-            "notification_id": notification_id,
+            "notification_id": notification_id, "item_id": cv_item["id"], "version_id": cv_version["id"],
         },
     }

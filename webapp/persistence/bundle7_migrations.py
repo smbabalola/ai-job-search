@@ -832,3 +832,148 @@ def _notifications(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("031_notifications", sqlite=_notifications("sqlite"),
                                     postgres=_notifications("postgres")))
+
+
+# ---- 032_cv_library (Task 21): named CVs with immutable versions, document
+# references protecting history, DOCX/PDF media types (spec §14.1, L3) ------
+
+DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PDF_MEDIA = "application/pdf"
+REFERRER_TYPES = ("APPROVAL", "FILL_RUN", "SUBMISSION_RESULT")
+
+_CV_LIBRARY_DDL = """
+CREATE TABLE cv_library_items (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'ARCHIVED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (id, account_id)
+);
+CREATE INDEX idx_cv_library_items_account ON cv_library_items(account_id, status);
+CREATE TABLE cv_library_versions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    item_id TEXT NOT NULL,
+    version_no INTEGER NOT NULL CHECK (version_no >= 1),
+    document_version_id TEXT NOT NULL,
+    document_kind TEXT NOT NULL DEFAULT 'cv' CHECK (document_kind = 'cv'),
+    origin TEXT NOT NULL CHECK (origin IN ('USER_UPLOAD', 'AI_GENERATED', 'AI_TAILORED', 'IMPORTED_LEGACY')),
+    parent_version_id TEXT REFERENCES cv_library_versions(id),
+    template_id TEXT,
+    library_visible INTEGER NOT NULL CHECK (library_visible IN (0, 1)),
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (item_id, version_no),
+    FOREIGN KEY (item_id, account_id) REFERENCES cv_library_items(id, account_id),
+    FOREIGN KEY (document_version_id, account_id, document_kind)
+        REFERENCES application_document_versions(id, account_id, document_kind)
+);
+CREATE INDEX idx_cv_library_versions_document ON cv_library_versions(document_version_id);
+CREATE TABLE document_version_references (
+    {SEQ},
+    document_version_id TEXT NOT NULL REFERENCES application_document_versions(id),
+    referrer_type TEXT NOT NULL CHECK (referrer_type IN ('APPROVAL', 'FILL_RUN', 'SUBMISSION_RESULT')),
+    referrer_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (document_version_id, referrer_type, referrer_id)
+)
+"""
+
+_REFERENCED = "EXISTS (SELECT 1 FROM document_version_references WHERE document_version_id = OLD.id)"
+_BAD_MEDIA = f"NEW.media_type NOT IN ('{DOCX_MEDIA}', '{PDF_MEDIA}')"
+
+
+def _document_triggers(conn, dialect: str) -> None:
+    """The unconditional 'immutable delete' trigger becomes the L3 rule: a
+    version cannot be deleted while anything references it (updates stay
+    refused). Inserts must be one of the two media types."""
+    if dialect == "sqlite":
+        conn.execute("DROP TRIGGER application_document_versions_immutable_delete")
+        conn.execute("CREATE TRIGGER application_document_versions_referenced_delete BEFORE DELETE ON "
+                     f"application_document_versions WHEN {_REFERENCED} "
+                     "BEGIN SELECT RAISE(ABORT, 'application document version is referenced'); END")
+        conn.execute("CREATE TRIGGER application_document_versions_media_type BEFORE INSERT ON "
+                     f"application_document_versions WHEN {_BAD_MEDIA} "
+                     "BEGIN SELECT RAISE(ABORT, 'application document media type is not allowed'); END")
+        return
+    conn.execute('DROP TRIGGER "application_document_versions_immutable_delete" ON "application_document_versions"')
+    conn.execute(
+        "CREATE OR REPLACE FUNCTION jobsearch_document_version_delete() RETURNS trigger LANGUAGE plpgsql AS $$ "
+        f"BEGIN IF {_REFERENCED} THEN RAISE EXCEPTION 'application document version is referenced' "
+        "USING ERRCODE = '23000'; END IF; RETURN OLD; END $$")
+    conn.execute('CREATE TRIGGER "application_document_versions_referenced_delete" BEFORE DELETE ON '
+                 '"application_document_versions" FOR EACH ROW EXECUTE FUNCTION jobsearch_document_version_delete()')
+    conn.execute('CREATE TRIGGER "application_document_versions_media_type" BEFORE INSERT ON '
+                 f'"application_document_versions" FOR EACH ROW WHEN ({_BAD_MEDIA}) '
+                 "EXECUTE FUNCTION jobsearch_raise('application document media type is not allowed')")
+
+
+def binding_documents(binding: dict) -> list[str]:
+    """The document version ids an approval binding carries (6D-A format)."""
+    return sorted({d["document_version_id"] for d in (binding or {}).get("documents", [])
+                   if d.get("document_version_id")})
+
+
+def _backfill_references(conn) -> None:
+    import datetime as _dt
+    import json
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+
+    def add(document_ids: list[str], referrer_type: str, referrer_id: str) -> None:
+        for document_id in document_ids:
+            conn.execute("INSERT INTO document_version_references (document_version_id, referrer_type, referrer_id, "
+                         "created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                         (document_id, referrer_type, referrer_id, now))
+
+    approvals = {r[0]: binding_documents(json.loads(r[1] or "{}")) for r in conn.execute(
+        "SELECT id, binding_json FROM application_approvals").fetchall()}
+    for approval_id, documents in approvals.items():
+        add(documents, "APPROVAL", approval_id)
+    runs = {r[0]: r[1] for r in conn.execute("SELECT fill_run_id, approval_id FROM fill_run_grant_bindings").fetchall()}
+    for run_id, approval_id in runs.items():
+        add(approvals.get(approval_id, []), "FILL_RUN", run_id)
+    for result_id, result_json in conn.execute("SELECT id, result_json FROM submission_results").fetchall():
+        run_id = json.loads(result_json or "{}").get("fill_run_id")
+        add(approvals.get(runs.get(run_id), []), "SUBMISSION_RESULT", result_id)
+
+
+def _convert_legacy_reusable_cvs(conn) -> None:
+    """Each reusable CV becomes a library item with v1 IMPORTED_LEGACY
+    (idempotent: a document already in the library is skipped). The legacy
+    table stays readable and is no longer written."""
+    import datetime as _dt
+    import uuid
+    rows = conn.execute(
+        "SELECT r.account_id, r.document_version_id, r.label, r.saved_at, d.original_filename "
+        "FROM reusable_application_documents r JOIN application_document_versions d "
+        "ON d.id = r.document_version_id AND d.account_id = r.account_id WHERE d.document_kind = 'cv' "
+        "AND NOT EXISTS (SELECT 1 FROM cv_library_versions v WHERE v.document_version_id = r.document_version_id) "
+        "ORDER BY r.saved_at, r.document_version_id").fetchall()
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    for account_id, document_id, label, _saved_at, filename in rows:
+        item_id = f"cvi_{uuid.uuid4().hex[:20]}"
+        title = (label or filename.rsplit(".", 1)[0] or "My CV")[:120]
+        conn.execute("INSERT INTO cv_library_items (id, account_id, title, description, status, created_at, "
+                     "updated_at) VALUES (?, ?, ?, '', 'ACTIVE', ?, ?)", (item_id, account_id, title, now, now))
+        conn.execute("INSERT INTO cv_library_versions (id, account_id, item_id, version_no, document_version_id, "
+                     "origin, library_visible, note, created_by, created_at) VALUES (?, ?, ?, 1, ?, "
+                     "'IMPORTED_LEGACY', 1, 'Imported from your saved CVs', 'migration', ?)",
+                     (f"cvv_{uuid.uuid4().hex[:20]}", account_id, item_id, document_id, now))
+
+
+def _cv_library(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _CV_LIBRARY_DDL)
+        _append_only(conn, dialect, "cv_library_versions", "document_version_references")
+        _document_triggers(conn, dialect)
+        _backfill_references(conn)
+        _convert_legacy_reusable_cvs(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("032_cv_library", sqlite=_cv_library("sqlite"), postgres=_cv_library("postgres")))

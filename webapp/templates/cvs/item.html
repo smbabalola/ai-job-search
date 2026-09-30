@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }} · My CVs · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow"><a href="/cvs">My CVs</a></p><h1>{{ item.title }}</h1>
+  {% if item.status == "ARCHIVED" %}<p><span class="badge">archived</span> Archived CVs keep their history; applications that used them are unchanged.</p>{% endif %}</div></section>
+<section class="panel" data-cv-versions>
+  <div class="panel-heading"><h2>Versions</h2></div>
+  {% for version in versions | reverse %}<article class="evidence-row" data-cv-version="{{ version.version_no }}">
+    <div><strong>v{{ version.version_no }}</strong> · {{ version.original_filename }} · {{ (version.byte_length / 1024) | round(0) | int }} KB
+      {% if version.note %}<p>{{ version.note }}</p>{% endif %}
+      <p>Used by {{ version.used_by }} application record{{ "" if version.used_by == 1 else "s" }} · <a href="/api/cvs/{{ item.id }}/versions/{{ version.id }}/download">Download</a></p></div>
+  </article>{% else %}<p>No versions yet.</p>{% endfor %}
+</section>
+{% if item.status == "ACTIVE" %}
+<form class="panel" data-cv-add-version="{{ item.id }}" enctype="multipart/form-data">
+  <div class="panel-heading"><h2>Upload a new version</h2></div>
+  <label class="field"><span>File (Word .docx or PDF, up to {{ max_mb }} MB)</span><input type="file" name="file" accept=".docx,.pdf" required></label>
+  <label class="field"><span>What changed (optional)</span><input name="note" maxlength="500"></label>
+  <button class="button" type="submit">Upload version</button>
+</form>
+<button class="button secondary" type="button" data-cv-archive="{{ item.id }}" data-cv-action="archive">Archive this CV</button>
+{% else %}
+<button class="button" type="button" data-cv-archive="{{ item.id }}" data-cv-action="unarchive">Restore this CV</button>
+{% endif %}
+{% endblock %}

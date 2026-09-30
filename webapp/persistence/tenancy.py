@@ -189,6 +189,11 @@ TENANT_TABLES: dict[str, TableSpec] = {
     # notifications (Bundle 7, 031_notifications)
     "notifications": A,
     "notification_preferences": A,
+    # CV library (Bundle 7, 032_cv_library)
+    "cv_library_items": A,
+    "cv_library_versions": A,
+    "document_version_references": TableSpec(("application_document_versions", "document_version_id"),
+                                             export=False),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

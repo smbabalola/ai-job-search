@@ -165,6 +165,12 @@ def post_resume_session(
     return {"session_token": token}
 
 
+def download_filename(kind: str, media_type: str) -> str:
+    """The ASCII fallback filename: the kind plus the document's own extension (DOCX or PDF)."""
+    from product.application_document_contract import MEDIA_TYPE_EXTENSIONS
+    return f"{kind}{MEDIA_TYPE_EXTENSIONS.get(media_type, '.docx')}"
+
+
 @router.get("/sessions/{session_id}/documents/{kind}", dependencies=[Depends(EXTENSION)])
 def get_session_document(
     session_id: str, kind: str,
@@ -195,7 +201,7 @@ def get_session_document(
         headers={
             "Content-Disposition": (
                 f"attachment; filename*=UTF-8''{quote(rendered_file.filename)}; "
-                f'filename="{kind}.docx"'
+                f'filename="{download_filename(kind, rendered_file.mime_type)}"'
             ),
             "X-Content-Hash": rendered_file.content_hash,
         },

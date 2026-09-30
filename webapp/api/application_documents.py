@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from product.application_document_contract import DOCX_MEDIA_TYPE, ApplicationDocumentContractError
+from product.application_document_contract import MEDIA_TYPE_EXTENSIONS, ApplicationDocumentContractError
 from product.docx_package import DocxPackageError
 from webapp.api.cv_generation_v2 import require_owned_artifact
 from webapp.api.dependencies import get_account_scope, get_conn, get_documents_root, get_extensions_dir
@@ -17,6 +17,7 @@ from webapp.services.application_documents import (
     set_application_document_reusable, unset_application_document_reusable,
 )
 from webapp.persistence.application_documents import list_reusable
+from webapp.services.cv_library import DocumentRejected  # handled app-wide: DOCUMENT_REJECTED
 from webapp.services.document_blob_store import DocumentBlobError
 from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
@@ -84,7 +85,7 @@ def post_upload(workspace_id: str, kind: str, request: Request, file: UploadFile
     try:
         content = file.file.read(10 * 1024 * 1024 + 1)
         if file.file.read(1):
-            raise DocxPackageError("DOCX exceeds the compressed-size limit")
+            raise DocumentRejected("TOO_LARGE")
         # §13.2: the storage gauge is checked before any blob is written
         request.app.state.metering.gauge_check(conn, scope, "storage.bytes", adding=len(content))
         return upload_application_document(conn, workspace_id, kind=kind, filename=file.filename or "", content=content, documents_root=documents_root, account_id=scope.account_id)
@@ -109,9 +110,10 @@ def get_download(workspace_id: str, document_version_id: str, conn: dbapi.Connec
         document, content = download_application_document(conn, workspace_id, document_version_id, documents_root=documents_root, account_id=scope.account_id)
     except (PipelineError, DocumentBlobError) as exc:
         raise _error(exc) from exc
-    fallback = "CV.docx" if document["document_kind"] == "cv" else "Cover_Letter.docx"
+    extension = MEDIA_TYPE_EXTENSIONS.get(document["media_type"], ".docx")
+    fallback = ("CV" if document["document_kind"] == "cv" else "Cover_Letter") + extension
     disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(document['original_filename'])}"
-    return Response(content=content, media_type=DOCX_MEDIA_TYPE, headers={"Content-Disposition": disposition, "Content-Length": str(document["byte_length"]), "X-Content-Hash": "sha256:" + document["sha256"], "X-Document-Kind": document["document_kind"], "X-Document-Origin": document["origin"]})
+    return Response(content=content, media_type=document["media_type"], headers={"Content-Disposition": disposition, "Content-Length": str(document["byte_length"]), "X-Content-Hash": "sha256:" + document["sha256"], "X-Document-Kind": document["document_kind"], "X-Document-Origin": document["origin"]})
 
 
 @router.post("/{document_version_id}/save-for-reuse")

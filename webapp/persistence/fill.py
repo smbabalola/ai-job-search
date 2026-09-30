@@ -214,11 +214,15 @@ def runs_for_application(conn, application_workspace_id: str) -> list[dict[str, 
 def insert_grant_binding(conn, *, fill_run_id: str, grant_id: str, approval_id: str, approval_binding_hash: str,
                          plan_hash: str, structure_fingerprint: str, observation_fingerprint: str, ruleset_hash: str,
                          now: datetime) -> dict[str, Any]:
-    return _insert(conn, "fill_run_grant_bindings", {
+    row = _insert(conn, "fill_run_grant_bindings", {
         "id": _id("fgb"), "fill_run_id": fill_run_id, "grant_id": grant_id, "approval_id": approval_id,
         "approval_binding_hash": approval_binding_hash, "plan_hash": plan_hash,
         "structure_fingerprint": structure_fingerprint, "observation_fingerprint": observation_fingerprint,
         "ruleset_hash": ruleset_hash, "created_at": to_utc_iso(now)})
+    from webapp.persistence.cv_library import add_references, approval_documents  # Bundle 7 L3
+    add_references(conn, document_version_ids=approval_documents(conn, approval_id), referrer_type="FILL_RUN",
+                   referrer_id=fill_run_id, now=now)
+    return row
 
 
 def get_grant_binding(conn, fill_run_id: str) -> dict[str, Any] | None:

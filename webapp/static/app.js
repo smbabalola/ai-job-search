@@ -495,3 +495,34 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
     } catch (error) { showMessage(error.message, true); button.disabled = false; }
   });
 })();
+
+// Bundle 7 §14.6: the CV library forms (multipart uploads to the JSON API, then reload).
+(function () {
+  async function send(url, form) {
+    const response = await fetch(url, {method: "POST", body: form ? new FormData(form) : undefined});
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.message || body.detail || "Request failed");
+    return body;
+  }
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("form[data-cv-create], form[data-cv-add-version]");
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const url = form.dataset.cvAddVersion ? `/api/cvs/${encodeURIComponent(form.dataset.cvAddVersion)}/versions` : "/api/cvs";
+      const body = await send(url, form);
+      window.location.href = form.dataset.cvAddVersion ? window.location.pathname : `/cvs/${encodeURIComponent(body.item.id)}`;
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-cv-archive]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      await send(`/api/cvs/${encodeURIComponent(button.dataset.cvArchive)}/${button.dataset.cvAction}`);
+      window.location.reload();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+})();
