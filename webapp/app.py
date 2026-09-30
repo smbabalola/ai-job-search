@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -35,6 +35,9 @@ from webapp.config import Settings
 from webapp.deployment import require_valid_settings
 from webapp.observability import LogErrorReporter, RequestContextMiddleware, configure_logging, unhandled_error_handler
 from webapp.security_middleware import SecurityHeadersMiddleware
+from webapp.api.errors import csrf_failed_handler, rate_limited_handler
+from webapp.services.csrf import CsrfFailed, require_csrf
+from webapp.services.rate_limit import RateLimited
 from webapp.persistence.db import init_db
 from product.onboarding_walkthroughs import register_default_walkthroughs
 
@@ -84,12 +87,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stop.set()
                 thread.join(timeout=settings.autonomy_step_timeout + 5)
 
-    app = FastAPI(title="Job Application Workspace", lifespan=lifespan)
+    app = FastAPI(title="Job Application Workspace", lifespan=lifespan, dependencies=[Depends(require_csrf)])
     app.state.settings = settings
     # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
     configure_logging()
     app.state.error_reporter = LogErrorReporter()
     app.add_exception_handler(Exception, unhandled_error_handler)
+    app.add_exception_handler(CsrfFailed, csrf_failed_handler)
+    app.add_exception_handler(RateLimited, rate_limited_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
     app.add_middleware(RequestContextMiddleware)  # outermost: every response carries the request id

@@ -122,7 +122,12 @@ def test_dossier_has_pack_detail_system_items_and_labelled_sections(ready_chain)
     assert isinstance(dossier["system_review"], list)
     from jinja2 import Environment, FileSystemLoader
     env = Environment(loader=FileSystemLoader("webapp/templates"), autoescape=True)
-    html = env.get_template("autonomy_dossier.html").render(dossier=dossier, request=None)
+    from types import SimpleNamespace
+
+    # Pages always render with a request (CSP nonce, CSRF token, signed-in user).
+    request = SimpleNamespace(state=SimpleNamespace(csp_nonce="n", csrf_token="t", user=None),
+                              app=SimpleNamespace(state=SimpleNamespace(settings=s)))
+    html = env.get_template("autonomy_dossier.html").render(dossier=dossier, request=request)
     assert "system-confirmed" in html and pack["content_hash"] in html
 
 

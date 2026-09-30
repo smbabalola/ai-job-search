@@ -157,6 +157,8 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "legal_acceptances": TableSpec(("USER", "user_id"), purge="RETAIN", retain_class="CONSENT_PROOF"),
     "legal_documents": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "rate_limit_buckets": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    # operations (Bundle 7)
+    "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global
     "schema_migrations": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "discovery_source_settings": TableSpec("GLOBAL", purge="GLOBAL", export=False),

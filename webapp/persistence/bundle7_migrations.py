@@ -260,3 +260,35 @@ def _identity(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("023_identity", sqlite=_identity("sqlite"), postgres=_identity("postgres")))
+
+
+# ---- 024_audit (Task 9): append-only audit log (spec §20.1) -----------------
+
+_AUDIT_DDL = """
+CREATE TABLE audit_log (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    occurred_at TEXT NOT NULL,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('USER', 'STAFF', 'EXTENSION_DEVICE', 'SYSTEM', 'PROVIDER')),
+    actor_id TEXT,
+    account_id TEXT,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    request_id TEXT,
+    ip_hash TEXT,
+    detail_json TEXT NOT NULL
+);
+CREATE INDEX idx_audit_log_account ON audit_log(account_id, seq);
+CREATE INDEX idx_audit_log_action ON audit_log(action, seq)
+"""
+
+
+def _audit(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _AUDIT_DDL)
+        _append_only(conn, dialect, "audit_log")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("024_audit", sqlite=_audit("sqlite"), postgres=_audit("postgres")))

@@ -11,6 +11,7 @@ from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.services import auth as auth_service
+from tests.webapp.auth_helpers import post
 
 PASSWORD = "correct horse battery staple"
 
@@ -33,7 +34,7 @@ def world(tmp_path):
 
 
 def _signup(client, email="ada@example.com", password=PASSWORD, name="Ada Lovelace"):
-    return client.post("/auth/signup", data={"email": email, "password": password, "display_name": name,
+    return post(client, "/auth/signup", data={"email": email, "password": password, "display_name": name,
                                              "accept_terms": "terms_v1", "accept_privacy": "privacy_v1"})
 
 
@@ -47,12 +48,12 @@ def _token(template_id, to=None):
 
 
 def _login(client, email="ada@example.com", password=PASSWORD):
-    return client.post("/auth/login", data={"email": email, "password": password}, follow_redirects=False)
+    return post(client, "/auth/login", data={"email": email, "password": password}, follow_redirects=False)
 
 
 def _verified(client, email="ada@example.com"):
     _signup(client, email=email)
-    client.post("/auth/verify-email", data={"token": _token("auth.verify_email", email)})
+    post(client, "/auth/verify-email", data={"token": _token("auth.verify_email", email)})
 
 
 def test_signup_is_uniform_for_new_and_existing_emails(world):
@@ -70,7 +71,7 @@ def test_signup_validation_errors_are_shown(world):
     client, _ = world
     weak = _signup(client, password="short")
     assert weak.status_code == 400 and "at least 12 characters" in weak.text
-    missing_terms = client.post("/auth/signup", data={"email": "b@example.com", "password": PASSWORD,
+    missing_terms = post(client, "/auth/signup", data={"email": "b@example.com", "password": PASSWORD,
                                                       "display_name": "B", "accept_privacy": "privacy_v1"})
     assert missing_terms.status_code == 400 and "Terms" in missing_terms.text
 
@@ -92,7 +93,7 @@ def test_login_before_verification_gives_an_unverified_session_then_verify_activ
     response = _login(client)
     assert response.status_code == 303 and response.headers["location"] == "/check-email"
     assert client.get("/auth/me").json()["email_verified"] is False
-    verify = client.post("/auth/verify-email", data={"token": _token("auth.verify_email")}, follow_redirects=False)
+    verify = post(client, "/auth/verify-email", data={"token": _token("auth.verify_email")}, follow_redirects=False)
     assert verify.status_code == 303
     me = client.get("/auth/me").json()
     assert (me["email_verified"], me["status"]) == (True, "ACTIVE")
@@ -101,7 +102,7 @@ def test_login_before_verification_gives_an_unverified_session_then_verify_activ
 def test_wrong_password_and_unknown_email_look_identical_and_both_verify_a_hash(world, monkeypatch):
     client, _ = world
     _verified(client)
-    client.post("/auth/logout")
+    post(client, "/auth/logout")
     calls = []
     real = auth_service.verify_password
     monkeypatch.setattr(auth_service, "verify_password", lambda h, p: calls.append(h) or real(h, p))
@@ -116,7 +117,7 @@ def test_wrong_password_and_unknown_email_look_identical_and_both_verify_a_hash(
 def test_login_accepts_an_equivalent_email(world):
     client, _ = world
     _verified(client, email="foo@example.com")
-    client.post("/auth/logout")
+    post(client, "/auth/logout")
     assert _login(client, email=" FOO@example.com").status_code == 303
     assert client.get("/auth/me").json()["email"] == "foo@example.com"
 
@@ -135,7 +136,7 @@ def test_logout_clears_the_cookie_and_revokes_the_session(world):
     _verified(client)
     _login(client)
     assert client.get("/auth/me").status_code == 200
-    response = client.post("/auth/logout", follow_redirects=False)
+    response = post(client, "/auth/logout", follow_redirects=False)
     assert response.status_code == 303
     assert client.get("/auth/me").status_code == 401
 
@@ -147,17 +148,17 @@ def test_password_reset_revokes_other_sessions_and_signs_in_fresh(world):
     other = TestClient(client.app)
     _login(other)
     assert other.get("/auth/me").status_code == 200
-    reset_request = client.post("/auth/password-reset/request", data={"email": "ada@example.com"})
-    unknown_request = client.post("/auth/password-reset/request", data={"email": "ghost@example.com"})
+    reset_request = post(client, "/auth/password-reset/request", data={"email": "ada@example.com"})
+    unknown_request = post(client, "/auth/password-reset/request", data={"email": "ghost@example.com"})
     assert reset_request.text == unknown_request.text
     new_password = "another long passphrase 42"
-    confirm = client.post("/auth/password-reset/confirm",
+    confirm = post(client, "/auth/password-reset/confirm",
                           data={"token": _token("auth.password_reset"), "password": new_password},
                           follow_redirects=False)
     assert confirm.status_code == 303
     assert other.get("/auth/me").status_code == 401  # other session revoked
     assert client.get("/auth/me").status_code == 200  # signed in fresh
-    client.post("/auth/logout")
+    post(client, "/auth/logout")
     assert _login(client, password=PASSWORD).status_code == 401
     assert _login(client, password=new_password).status_code == 303
     assert len(_mail("auth.password_changed", "ada@example.com")) == 1
@@ -169,10 +170,10 @@ def test_change_password_needs_the_current_one_and_revokes_other_sessions(world)
     _login(client)
     other = TestClient(client.app)
     _login(other)
-    refused = client.post("/settings/password", data={"current_password": "nope nope nope",
+    refused = post(client, "/settings/password", data={"current_password": "nope nope nope",
                                                       "new_password": "brand new passphrase 1"})
     assert refused.status_code == 400
-    ok = client.post("/settings/password", data={"current_password": PASSWORD,
+    ok = post(client, "/settings/password", data={"current_password": PASSWORD,
                                                  "new_password": "brand new passphrase 1"})
     assert ok.status_code == 200
     assert client.get("/auth/me").status_code == 200 and other.get("/auth/me").status_code == 401
@@ -182,20 +183,20 @@ def test_email_change_notifies_the_old_address_and_applies_on_confirm(world):
     client, _ = world
     _verified(client)
     _login(client)
-    response = client.post("/settings/email", data={"new_email": "ada.new@example.com", "password": PASSWORD})
+    response = post(client, "/settings/email", data={"new_email": "ada.new@example.com", "password": PASSWORD})
     assert response.status_code == 200
     assert len(_mail("auth.email_change_notice", "ada@example.com")) == 1
     assert client.get("/auth/me").json()["email"] == "ada@example.com"
     token = _token("auth.email_change_confirm", "ada.new@example.com")
-    assert client.post("/auth/email-change/confirm", data={"token": token}, follow_redirects=False).status_code == 303
+    assert post(client, "/auth/email-change/confirm", data={"token": token}, follow_redirects=False).status_code == 303
     assert client.get("/auth/me").json()["email"] == "ada.new@example.com"
 
 
 def test_resend_verification_is_uniform(world):
     client, _ = world
     _signup(client)
-    known = client.post("/auth/resend-verification", data={"email": "ada@example.com"})
-    unknown = client.post("/auth/resend-verification", data={"email": "ghost@example.com"})
+    known = post(client, "/auth/resend-verification", data={"email": "ada@example.com"})
+    unknown = post(client, "/auth/resend-verification", data={"email": "ghost@example.com"})
     assert known.status_code == unknown.status_code == 200 and known.text == unknown.text
     assert len(_mail("auth.verify_email", "ada@example.com")) == 2
 

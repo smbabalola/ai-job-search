@@ -2,6 +2,8 @@
 resolver that puts the signed-in user on ``request.state``."""
 from __future__ import annotations
 
+import secrets
+from datetime import datetime, timezone
 from typing import Any
 
 import anyio
@@ -12,6 +14,8 @@ from webapp.api.dependencies import get_conn
 from webapp.persistence import dbapi, identity
 from webapp.persistence.db import connect
 from webapp.services.auth import AuthService, SignupUnavailable, latest_legal_documents
+from webapp.services.csrf import presession_cookie_name
+from webapp.services.rate_limit import enforce
 from webapp.services.sessions import LIFETIMES
 
 router = APIRouter()
@@ -52,25 +56,49 @@ class AuthContextMiddleware:
         if scope["type"] != "http" or not self.settings.auth_enabled:
             await self.app(scope, receive, send)
             return
-        name = session_cookie_name(self.settings).encode()
-        raw = None
+        cookies: dict[str, str] = {}
         for key, value in scope.get("headers", []):
             if key == b"cookie":
                 for part in value.decode("latin-1").split(";"):
                     k, _, v = part.strip().partition("=")
-                    if k.encode() == name:
-                        raw = v
+                    cookies[k] = v
         state = scope.setdefault("state", {})
-        resolved = await anyio.to_thread.run_sync(self._resolve, raw)
+        resolved = await anyio.to_thread.run_sync(self._resolve, cookies.get(session_cookie_name(self.settings)))
         for key in ("session", "user", "account", "raw_session", "csrf_token"):
             state[key] = resolved.get(key)
         if state.get("account"):
             state["account_id"] = state["account"]["id"]
-        await self.app(scope, receive, send)
+        new_presession = None
+        if not state.get("csrf_token"):
+            # Signed out: the double-submit pre-session token (spec A5).
+            presession = cookies.get(presession_cookie_name(self.settings))
+            if not presession:
+                presession = new_presession = secrets.token_urlsafe(32)
+            state["csrf_token"] = presession
+
+        async def send_with_cookie(message):
+            if message["type"] == "http.response.start" and new_presession:
+                attributes = "Path=/; HttpOnly; SameSite=Lax" + ("; Secure" if self.settings.is_hosted else "")
+                cookie = f"{presession_cookie_name(self.settings)}={new_presession}; {attributes}"
+                message.setdefault("headers", []).append((b"set-cookie", cookie.encode("latin-1")))
+            await send(message)
+
+        await self.app(scope, receive, send_with_cookie)
 
 
 def _service(request: Request) -> AuthService:
-    return AuthService(request.app.state.settings)
+    return AuthService(request.app.state.settings, request_id=getattr(request.state, "request_id", None))
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _email_key(email: str) -> str:
+    try:
+        return identity.normalize_email(email)
+    except ValueError:
+        return "invalid"
 
 
 def _client_ip(request: Request) -> str | None:
@@ -144,6 +172,7 @@ def signup(request: Request, email: str = Form(""), password: str = Form(""), di
            accept_terms: str = Form(""), accept_privacy: str = Form(""),
            conn: dbapi.Connection = Depends(get_conn)):
     accepted = [value for value in (accept_terms, accept_privacy) if value]
+    enforce(conn, "signup", _client_ip(request) or "unknown", now=_utcnow())
     try:
         outcome = _service(request).signup(conn, email=email, password=password, display_name=display_name,
                                            accepted_legal_ids=accepted, ip=_client_ip(request))
@@ -158,6 +187,7 @@ def signup(request: Request, email: str = Form(""), password: str = Form(""), di
 @router.post("/auth/login")
 def login(request: Request, email: str = Form(""), password: str = Form(""),
           conn: dbapi.Connection = Depends(get_conn)):
+    enforce(conn, "login", f"{_client_ip(request)}:{_email_key(email)}", now=_utcnow())
     outcome = _service(request).login(conn, email=email, password=password, ip=_client_ip(request),
                                       user_agent=request.headers.get("user-agent"))
     if not outcome.ok:
@@ -186,12 +216,14 @@ def verify_email(request: Request, token: str = Form(""), conn: dbapi.Connection
 
 @router.post("/auth/resend-verification", response_class=HTMLResponse)
 def resend_verification(request: Request, email: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
+    enforce(conn, "verify_resend", _email_key(email), now=_utcnow())
     _service(request).resend_verification(conn, email=email)
     return _page(request, "auth/check_email.html")
 
 
 @router.post("/auth/password-reset/request", response_class=HTMLResponse)
 def password_reset_request(request: Request, email: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
+    enforce(conn, "password_reset", _email_key(email), now=_utcnow())
     _service(request).request_password_reset(conn, email=email)
     return _page(request, "auth/reset_request.html", sent=True)
 
@@ -243,6 +275,13 @@ def revoke_all(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     response = RedirectResponse("/login", status_code=303)
     _clear_session_cookie(request, response)
     return response
+
+
+@router.get("/auth/csrf")
+def csrf(request: Request):
+    """The token the caller's next unsafe request must carry (readable only
+    same-origin; cross-origin pages cannot read this response)."""
+    return {"csrf_token": getattr(request.state, "csrf_token", None)}
 
 
 @router.get("/auth/me")

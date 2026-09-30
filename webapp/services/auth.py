@@ -6,6 +6,7 @@ the same result whether or not the email exists; a login miss runs a full
 argon2 verification against a dummy hash, exactly like a hit."""
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from typing import Any, Callable
 
 from webapp import comms
 from webapp.persistence import dbapi, identity
+from webapp.persistence.audit import audit
 from webapp.services.passwords import (
     DUMMY_PASSWORD_HASH,
     hash_password,
@@ -63,10 +65,18 @@ def latest_legal_documents(conn: dbapi.Connection) -> dict[str, str]:
 
 
 class AuthService:
-    def __init__(self, settings: Any, *, clock: Callable[[], datetime] = _now) -> None:
+    def __init__(self, settings: Any, *, clock: Callable[[], datetime] = _now, request_id: str | None = None) -> None:
         self.settings = settings
         self.sessions = SessionService(settings.secret_key)
         self.clock = clock
+        self.request_id = request_id
+
+    def _audit(self, conn, action: str, *, user_id: str | None, ip: str | None = None,
+               detail: dict | None = None) -> None:
+        account = identity.get_owner_account(conn, user_id) if user_id else None
+        audit(conn, actor_type="USER", actor_id=user_id, account_id=account["id"] if account else None,
+              action=action, target_type="user" if user_id else None, target_id=user_id,
+              request_id=self.request_id, ip=ip, detail=detail, now=self.clock(), secret=self.settings.secret_key)
 
     # ---- helpers --------------------------------------------------------
     def _link(self, path: str, token: str) -> str:
@@ -132,6 +142,7 @@ class AuthService:
         conn.execute("UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?), updated_at = ?, "
                      "status = CASE WHEN status = 'PENDING_VERIFICATION' THEN 'ACTIVE' ELSE status END "
                      "WHERE id = ?", (now.isoformat(), now.isoformat(), row["user_id"]))
+        self._audit(conn, "EMAIL_VERIFIED", user_id=row["user_id"])
         conn.commit()
         return Outcome(True, user=identity.get_user(conn, row["user_id"]))
 
@@ -157,18 +168,27 @@ class AuthService:
         stored = identity.get_password_hash(conn, user["id"]) if user else None
         matched = verify_password(stored or DUMMY_PASSWORD_HASH, password or "")
         if not (user and stored and matched and user["status"] in LOGIN_STATUSES):
+            email_hash = hashlib.sha256(" ".join((email or "").split()).casefold().encode()).hexdigest()
+            self._audit(conn, "LOGIN_FAILED", user_id=user["id"] if user else None, ip=ip,
+                        detail={"email_sha256": email_hash, "known_account": user is not None})
+            conn.commit()
             return Outcome(False, ["That email and password don't match an account."])
         session = self._start_session(conn, user, ip=ip, user_agent=user_agent)
+        self._audit(conn, "LOGIN_SUCCEEDED", user_id=user["id"], ip=ip)
         conn.commit()
         return Outcome(True, session=session, user=user)
 
     def logout(self, conn, *, raw_session: str | None) -> None:
         if raw_session:
+            session = self.sessions.resolve(conn, raw_session, now=self.clock())
             self.sessions.revoke(conn, raw_session, reason="LOGOUT")
+            if session:
+                self._audit(conn, "LOGOUT", user_id=session["user_id"])
             conn.commit()
 
     def revoke_all(self, conn, *, user_id: str) -> None:
         self._revoke_everything(conn, user_id, reason="SIGN_OUT_EVERYWHERE")
+        self._audit(conn, "SESSIONS_REVOKED", user_id=user_id)
         conn.commit()
 
     # ---- passwords ---------------------------------------------------------------
@@ -198,6 +218,7 @@ class AuthService:
         identity.set_password_hash(conn, user["id"], hash_password(password), now=now)
         self._revoke_everything(conn, user["id"], reason="PASSWORD_RESET")
         session = self._start_session(conn, user, ip=ip, user_agent=user_agent)
+        self._audit(conn, "PASSWORD_RESET", user_id=user["id"], ip=ip)
         conn.commit()
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user["id"],
                    payload={})
@@ -214,6 +235,7 @@ class AuthService:
         now = self.clock()
         identity.set_password_hash(conn, user_id, hash_password(new_password), now=now)
         self._revoke_everything(conn, user_id, reason="PASSWORD_CHANGED", keep_session=keep_session)
+        self._audit(conn, "PASSWORD_CHANGED", user_id=user_id)
         conn.commit()
         user = identity.get_user(conn, user_id)
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user_id,
@@ -253,5 +275,6 @@ class AuthService:
         except dbapi.IntegrityError:
             conn.rollback()
             return Outcome(False, ["That email address is already in use."])
+        self._audit(conn, "EMAIL_CHANGED", user_id=row["user_id"])
         conn.commit()
         return Outcome(True, user=identity.get_user(conn, row["user_id"]))
