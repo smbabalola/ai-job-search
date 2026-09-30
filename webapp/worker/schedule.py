@@ -11,6 +11,7 @@ from webapp.worker.runner import enqueue
 # kind → period in seconds. Retention expiry (Task 28) is scheduled under
 # account.purge there: the spec's closed kind list has no retention kind.
 PERIODIC: tuple[tuple[str, int], ...] = (
+    ("outbox.dispatch", 60),  # wakes retries whose backoff elapsed; enqueue also kicks it at once
     ("usage.sweep", 5 * 60),
     ("tokens.sweep", 60 * 60),
     ("notify.approval_expiry_scan", 60 * 60),

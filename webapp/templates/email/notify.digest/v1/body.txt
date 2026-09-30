@@ -1,0 +1,4 @@
+{% extends "_layout.txt" %}{% block content %}Here's what happened {{ period }}:
+{% for item in items %}
+- {{ item.title }}: {{ item.action_url }}{% endfor %}
+{% endblock %}

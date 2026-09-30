@@ -681,3 +681,83 @@ def _jobs(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("029_jobs", sqlite=_jobs("sqlite"), postgres=_jobs("postgres")))
+
+
+# ---- 030_comms (Task 19): outbox, suppressions, provider events, consents,
+# announcements (spec §18.1) -------------------------------------------------
+
+_COMMS_DDL = """
+CREATE TABLE outbound_messages (
+    id TEXT PRIMARY KEY,
+    account_id TEXT REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    channel TEXT NOT NULL CHECK (channel IN ('EMAIL', 'SMS', 'WHATSAPP')),
+    category TEXT NOT NULL CHECK (category IN ('SERVICE', 'PRODUCT', 'MARKETING')),
+    template_id TEXT NOT NULL,
+    template_version TEXT NOT NULL,
+    locale TEXT NOT NULL,
+    to_address TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED', 'SUPPRESSED', 'CANCELED')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    next_attempt_at TEXT NOT NULL,
+    provider TEXT,
+    provider_message_id TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT
+);
+CREATE INDEX idx_outbound_messages_due ON outbound_messages(status, next_attempt_at);
+CREATE INDEX idx_outbound_messages_account ON outbound_messages(account_id, created_at);
+CREATE TABLE email_suppressions (
+    address_hash TEXT PRIMARY KEY,
+    reason TEXT NOT NULL CHECK (reason IN ('HARD_BOUNCE', 'COMPLAINT')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE email_provider_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    address_hash TEXT,
+    payload_json TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    processed_at TEXT
+);
+CREATE TABLE communication_consents (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    channel TEXT NOT NULL CHECK (channel IN ('EMAIL', 'SMS', 'WHATSAPP')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('MARKETING')),
+    state TEXT NOT NULL CHECK (state IN ('GRANTED', 'WITHDRAWN')),
+    wording_version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_communication_consents_user ON communication_consents(user_id, channel, purpose, seq);
+CREATE TABLE announcements (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body_markdown TEXT NOT NULL,
+    audience TEXT NOT NULL CHECK (audience IN ('ALL', 'PLAN:free', 'PLAN:pro', 'PLAN:power')),
+    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL')),
+    published_at TEXT,
+    expires_at TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    withdrawn_at TEXT
+)
+"""
+
+
+def _comms(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _COMMS_DDL)
+        _append_only(conn, dialect, "communication_consents")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("030_comms", sqlite=_comms("sqlite"), postgres=_comms("postgres")))

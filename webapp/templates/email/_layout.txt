@@ -1,0 +1,7 @@
+{% block content %}{% endblock %}
+
+--
+Account settings: {{ settings_url }}
+{% if category == "PRODUCT" %}Choose which emails you get: {{ preferences_url }}
+{% endif %}{% if category == "SERVICE" %}This is a service message about your JobSearch account. It is always sent.
+{% endif %}

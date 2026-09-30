@@ -27,6 +27,9 @@ def _origin_is_https_without_path(origin: str | None) -> bool:
             and not parts.query and not parts.fragment)
 
 
+EMAIL_PROVIDERS = ("console", "smtp")
+
+
 def validate_settings(settings: Settings) -> list[str]:
     if settings.deployment not in ("local", "hosted"):
         return ["JOBSEARCH_DEPLOYMENT must be 'local' or 'hosted'"]
@@ -45,6 +48,10 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append("hosted mode requires an s3 JOBSEARCH_OBJECT_STORE")
     if settings.email_provider == "console":
         problems.append("hosted mode requires a real JOBSEARCH_EMAIL_PROVIDER")
+    elif settings.email_provider not in EMAIL_PROVIDERS:
+        problems.append(f"JOBSEARCH_EMAIL_PROVIDER must be one of {', '.join(EMAIL_PROVIDERS)}")
+    elif settings.email_provider == "smtp" and not (settings.smtp.get("host") and settings.smtp.get("from_address")):
+        problems.append("the smtp email provider requires JOBSEARCH_SMTP with host and from_address")
     if settings.plan_catalog_path.name == DEV_PLAN_CATALOG_NAME:
         problems.append("hosted mode refuses the development plan catalog")
     if settings.ai_pricing_path.name == DEV_AI_PRICING_NAME:

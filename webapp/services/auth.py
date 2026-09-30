@@ -125,15 +125,16 @@ class AuthService:
             self._mail(conn, template_id="auth.account_exists", to=existing["email_normalized"],
                        user_id=existing["id"], payload={"login_url": f"{self.settings.app_origin}/login",
                                                         "reset_url": f"{self.settings.app_origin}/reset-password"})
+            conn.commit()
             return Outcome(True)
         created = identity.create_user_with_account(
             conn, email=email, password_hash=hash_password(password), display_name=display_name,
             legal_document_ids=sorted(legal.values()), now=self.clock(),
             profile_store=profile_source_store_from_settings(self.settings))
-        conn.commit()
         self._mail(conn, template_id="auth.verify_email", to=normalized, user_id=created["user"]["id"],
                    payload={"token": created["verify_token"],
                             "verify_url": self._link("/verify-email", created["verify_token"])})
+        conn.commit()  # the account and its verification mail commit together (§18.2)
         return Outcome(True, user=created["user"])
 
     def verify_email(self, conn, *, token: str) -> Outcome:
@@ -157,9 +158,9 @@ class AuthService:
         if user is None or user["email_verified_at"] is not None:
             return
         token = identity.issue_email_token(conn, user_id=user["id"], purpose="VERIFY_EMAIL", now=self.clock())
-        conn.commit()
         self._mail(conn, template_id="auth.verify_email", to=user["email_normalized"], user_id=user["id"],
                    payload={"token": token, "verify_url": self._link("/verify-email", token)})
+        conn.commit()
 
     # ---- login and logout ------------------------------------------------------
     def login(self, conn, *, email: str, password: str, ip: str | None = None,
@@ -203,9 +204,9 @@ class AuthService:
         if user is None or user["status"] == "PURGED":
             return
         token = identity.issue_email_token(conn, user_id=user["id"], purpose="PASSWORD_RESET", now=self.clock())
-        conn.commit()
         self._mail(conn, template_id="auth.password_reset", to=user["email_normalized"], user_id=user["id"],
                    payload={"token": token, "reset_url": self._link("/reset-password/confirm", token)})
+        conn.commit()
 
     def confirm_password_reset(self, conn, *, token: str, password: str, ip: str | None = None,
                                user_agent: str | None = None) -> Outcome:
@@ -222,9 +223,9 @@ class AuthService:
         self._revoke_everything(conn, user["id"], reason="PASSWORD_RESET")
         session = self._start_session(conn, user, ip=ip, user_agent=user_agent)
         self._audit(conn, "PASSWORD_RESET", user_id=user["id"], ip=ip)
-        conn.commit()
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user["id"],
                    payload={})
+        conn.commit()
         return Outcome(True, session=session, user=user)
 
     def change_password(self, conn, *, user_id: str, current_password: str, new_password: str,
@@ -239,10 +240,10 @@ class AuthService:
         identity.set_password_hash(conn, user_id, hash_password(new_password), now=now)
         self._revoke_everything(conn, user_id, reason="PASSWORD_CHANGED", keep_session=keep_session)
         self._audit(conn, "PASSWORD_CHANGED", user_id=user_id)
-        conn.commit()
         user = identity.get_user(conn, user_id)
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user_id,
                    payload={})
+        conn.commit()
         return Outcome(True, user=user)
 
     # ---- email change ----------------------------------------------------------
@@ -259,11 +260,11 @@ class AuthService:
             return Outcome(False, ["That is already your email address."])
         token = identity.issue_email_token(conn, user_id=user_id, purpose="EMAIL_CHANGE", now=self.clock(),
                                            new_email=normalized)
-        conn.commit()
         self._mail(conn, template_id="auth.email_change_confirm", to=normalized, user_id=user_id,
                    payload={"token": token, "confirm_url": self._link("/email-change/confirm", token)})
         self._mail(conn, template_id="auth.email_change_notice", to=user["email_normalized"], user_id=user_id,
                    payload={"new_email_hint": normalized[:2] + "…@" + normalized.split("@", 1)[1]})
+        conn.commit()
         return Outcome(True)
 
     def confirm_email_change(self, conn, *, token: str) -> Outcome:

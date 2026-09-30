@@ -1,0 +1,5 @@
+{% extends "_layout.txt" %}{% block content %}Welcome to JobSearch. Confirm your email address to finish creating your account:
+
+{{ verify_url }}
+
+This link expires in 48 hours. If you didn't sign up, you can ignore this message.{% endblock %}

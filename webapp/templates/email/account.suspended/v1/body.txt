@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}Your JobSearch account was suspended: {{ reason }}. You can still export or delete your data. Contact support to resolve this.{% endblock %}

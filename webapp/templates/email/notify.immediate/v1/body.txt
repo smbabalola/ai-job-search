@@ -1,0 +1,5 @@
+{% extends "_layout.txt" %}{% block content %}{{ title }}
+
+{{ body }}
+
+Open: {{ action_url }}{% endblock %}

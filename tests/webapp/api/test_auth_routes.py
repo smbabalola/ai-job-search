@@ -6,12 +6,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from webapp import comms
 from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.services import auth as auth_service
-from tests.webapp.auth_helpers import post
+from tests.webapp.auth_helpers import mail, post
 
 PASSWORD = "correct horse battery staple"
 
@@ -21,7 +20,7 @@ def world(tmp_path):
     settings = Settings(db_path=tmp_path / "db.sqlite3", documents_root=tmp_path / "documents",
                         extensions_dir=Path(__file__).parents[2] / "fixtures" / "extensions",
                         auth_required_in_local=True)
-    comms.reset_outbox_for_tests()
+    _CURRENT["settings"] = settings
     with TestClient(create_app(settings)) as client:
         conn = connect(settings.db_path)
         conn.execute("INSERT INTO legal_documents (id, kind, version, published_at, content_sha256) "
@@ -38,9 +37,12 @@ def _signup(client, email="ada@example.com", password=PASSWORD, name="Ada Lovela
                                              "accept_terms": "terms_v1", "accept_privacy": "privacy_v1"})
 
 
+_CURRENT: dict = {}  # the running test's settings (set by the world fixture)
+
+
 def _mail(template_id, to=None):
-    return [m for m in comms.outbox_for_tests() if m["template_id"] == template_id
-            and (to is None or m["to_address"] == to)]
+    """Real outbound_messages rows (Bundle 7 Task 19 replaced the Task 8 stub)."""
+    return mail(_CURRENT["settings"], template_id, to)
 
 
 def _token(template_id, to=None):

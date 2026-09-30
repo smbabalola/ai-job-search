@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}You asked us to delete your JobSearch account. It will be permanently deleted after {{ purge_after }}. To cancel, sign in before then: {{ cancel_url }}{% endblock %}

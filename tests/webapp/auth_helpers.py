@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 
-from webapp import comms
+import json
+
+from webapp.persistence.db import connect
 from webapp.persistence.db import connect
 
 PASSWORD = "correct horse battery staple"
@@ -33,13 +35,24 @@ def post(client, url, data=None, **kwargs):
     return client.post(url, data=data, headers=headers, **kwargs)
 
 
-def mail(template_id, to=None):
-    return [m for m in comms.outbox_for_tests() if m["template_id"] == template_id
-            and (to is None or m["to_address"] == to)]
+def outbox(settings) -> list[dict]:
+    """Real outbound_messages rows (Bundle 7 Task 19), oldest first, payload decoded."""
+    conn = connect(settings)
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM outbound_messages ORDER BY created_at, id")]
+    finally:
+        conn.close()
+    for row in rows:
+        row["payload"] = json.loads(row["payload_json"])
+    return rows
 
 
-def token_from_mail(template_id, to=None) -> str:
-    return mail(template_id, to)[-1]["payload"]["token"]
+def mail(settings, template_id, to=None):
+    return [m for m in outbox(settings) if m["template_id"] == template_id and (to is None or m["to_address"] == to)]
+
+
+def token_from_mail(settings, template_id, to=None) -> str:
+    return mail(settings, template_id, to)[-1]["payload"]["token"]
 
 
 def sign_up(client, email="ada@example.com", password=PASSWORD, name="Ada Lovelace"):
@@ -49,7 +62,8 @@ def sign_up(client, email="ada@example.com", password=PASSWORD, name="Ada Lovela
 
 def sign_up_and_verify(client, email="ada@example.com", password=PASSWORD, name="Ada Lovelace"):
     sign_up(client, email=email, password=password, name=name)
-    post(client, "/auth/verify-email", data={"token": token_from_mail("auth.verify_email", email.strip().lower())})
+    token = token_from_mail(client.app.state.settings, "auth.verify_email", email.strip().lower())
+    post(client, "/auth/verify-email", data={"token": token})
 
 
 def sign_in(client, email="ada@example.com", password=PASSWORD):

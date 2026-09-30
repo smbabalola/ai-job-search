@@ -1,0 +1,3 @@
+{% extends "_layout.html" %}{% block content %}<p>Someone tried to sign up with this email address, which already has an account.</p>
+<p><a href="{{ login_url }}">Sign in</a>{% if reset_url is defined %} · <a href="{{ reset_url }}">Reset your password</a>{% endif %}</p>
+<p>If this wasn't you, you can ignore this message.</p>{% endblock %}

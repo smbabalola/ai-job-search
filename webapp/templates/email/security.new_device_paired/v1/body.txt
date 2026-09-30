@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}The JobSearch extension "{{ device_label }}" was connected to your account. If this wasn't you, revoke it in your account settings and change your password.{% endblock %}

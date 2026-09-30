@@ -25,6 +25,7 @@ def hosted_settings(**overrides) -> Settings:
                       "region": "eu-west-2", "prefix": "prod"},
         billing_provider="fake",
         email_provider="smtp",
+        smtp={"host": "smtp.example.test", "port": 587, "from_address": "JobSearch <no-reply@example.test>"},
         plan_catalog_path=PRODUCTION_CATALOG,
         ai_pricing_path=Path("product/policies/ai-pricing.v1.json"),
     )
@@ -67,6 +68,9 @@ def test_hosted_settings_with_every_field_valid_have_no_problems():
         ({"extension_ids": ()}, "hosted mode requires JOBSEARCH_EXTENSION_IDS"),
         ({"object_store": {"kind": "local", "root": "documents"}}, "hosted mode requires an s3 JOBSEARCH_OBJECT_STORE"),
         ({"email_provider": "console"}, "hosted mode requires a real JOBSEARCH_EMAIL_PROVIDER"),
+        ({"email_provider": "carrier-pigeon"}, "JOBSEARCH_EMAIL_PROVIDER must be one of console, smtp"),
+        ({"smtp": {"host": "smtp.example.test"}},
+         "the smtp email provider requires JOBSEARCH_SMTP with host and from_address"),
         ({"plan_catalog_path": Path("product/plans/plan-catalog.dev.json")},
          "hosted mode refuses the development plan catalog"),
         ({"ai_pricing_path": Path("product/policies/ai-pricing.dev.json")},

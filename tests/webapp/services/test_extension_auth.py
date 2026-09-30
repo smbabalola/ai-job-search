@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from webapp import comms
 from webapp.persistence import identity
 from webapp.persistence.db import connect, init_db
 from webapp.services import extension_auth as ext
@@ -28,7 +27,6 @@ def world(tmp_path):
             now=NOW, profile_store=DatabaseProfileSourceStore())
         users.append((created["user"]["id"], created["account"]["id"]))
     conn.commit()
-    comms.reset_outbox_for_tests()
     notifications.reset_for_tests()
     yield conn, users
     conn.close()
@@ -61,7 +59,8 @@ def test_pairing_audits_and_sends_the_new_device_email(world):
     result = _pair(conn, users[0])
     conn.commit()
     assert result.account_label == "a***@example.com"
-    assert [m["template_id"] for m in comms.outbox_for_tests()] == ["security.new_device_paired"]
+    assert [r[0] for r in conn.execute("SELECT template_id FROM outbound_messages")] == [
+        "security.new_device_paired"]
     assert conn.execute("SELECT action FROM audit_log").fetchone()["action"] == "EXTENSION_DEVICE_PAIRED"
 
 

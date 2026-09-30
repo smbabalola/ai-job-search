@@ -97,6 +97,40 @@ def _autonomy_tick_handler(providers_factory: Callable[[], Any]) -> Handler:
     return handle
 
 
+def _outbox_dispatch_handler(settings: Any, email_provider: Any) -> Handler:
+    from webapp.comms.outbox import dispatch_batch, provider_from_settings
+    providers: list[Any] = [email_provider] if email_provider is not None else []
+
+    def handle(ctx: JobContext, payload: dict) -> None:
+        if not providers:
+            providers.append(provider_from_settings(settings))
+        conn = ctx.connect()
+        try:
+            dispatch_batch(conn, provider=providers[0], now=ctx.clock(), app_origin=settings.app_origin, limit=20)
+        finally:
+            conn.close()
+    return handle
+
+
+def _email_webhook_handler(ctx: JobContext, payload: dict) -> None:
+    """Events are applied as they are stored; this re-applies any left unprocessed."""
+    from webapp.comms.outbox import suppress
+    conn = ctx.connect()
+    try:
+        rows = conn.execute("SELECT id, kind, payload_json FROM email_provider_events WHERE processed_at IS NULL "
+                            "ORDER BY received_at LIMIT 100").fetchall()
+        for row in rows:
+            import json
+            address = json.loads(row["payload_json"]).get("address")
+            if row["kind"] in ("HARD_BOUNCE", "COMPLAINT") and address:
+                suppress(conn, address, reason=row["kind"], now=ctx.clock())
+            conn.execute("UPDATE email_provider_events SET processed_at = ? WHERE id = ?",
+                         (ts(ctx.clock()), row["id"]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _billing_webhooks(settings: Any) -> Any:
     from product.entitlements import load_catalog
     from webapp.billing.registry import provider_for
@@ -108,7 +142,7 @@ def _billing_webhooks(settings: Any) -> Any:
 
 
 def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | None = None,
-                     billing_webhooks: Any = None) -> dict[str, Handler]:
+                     billing_webhooks: Any = None, email_provider: Any = None) -> dict[str, Handler]:
     if providers_factory is None:
         from webapp.services.autonomy_providers import default_providers
         providers_factory = default_providers
@@ -116,6 +150,8 @@ def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | No
         "usage.sweep": _usage_sweep,
         "tokens.sweep": _tokens_sweep,
         "autonomy.tick": _autonomy_tick_handler(providers_factory),
+        "outbox.dispatch": _outbox_dispatch_handler(settings, email_provider),
+        "email.webhook.process": _email_webhook_handler,
     }
     webhooks = billing_webhooks if billing_webhooks is not None else _billing_webhooks(settings)
     if webhooks is not None:

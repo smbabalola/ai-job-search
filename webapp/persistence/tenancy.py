@@ -180,6 +180,12 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "metered_actions": TableSpec("account_id", export=False),
     # worker (Bundle 7, 029_jobs): account_id is NULL for platform jobs (sweeps, ticks)
     "jobs": _internal("account_id"),
+    # communications (Bundle 7, 030_comms); outbound_messages.account_id is NULL for pre-account mail
+    "outbound_messages": _internal("account_id"),
+    "communication_consents": TableSpec("account_id", purge="RETAIN", retain_class="CONSENT_PROOF"),
+    "email_suppressions": TableSpec("GLOBAL", purge="GLOBAL", retain_class="SUPPRESSION", export=False),
+    "email_provider_events": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    "announcements": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

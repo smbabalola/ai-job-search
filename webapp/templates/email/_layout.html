@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2933;">
+{% block content %}{% endblock %}
+<hr>
+<p style="font-size: 12px; color: #52606d;"><a href="{{ settings_url }}">Account settings</a>{% if category == "PRODUCT" %} · <a href="{{ preferences_url }}">Choose which emails you get</a>{% endif %}</p>
+{% if category == "SERVICE" %}<p style="font-size: 12px; color: #52606d;">This is a service message about your JobSearch account. It is always sent.</p>{% endif %}
+</body></html>
