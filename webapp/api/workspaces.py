@@ -51,12 +51,14 @@ class FitBody(ProcessingBody):
     extension_ids: list[str] = Field(default_factory=list)
 
 
-def _prepare_stage(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str, work):
+def _prepare_stage(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str, stage: str,
+                   work):
     """Bundle 7 §11.4: every AI prepare stage is gated (``ai.prepare``) and
-    metered (``applications.prepare``). Ownership is checked first, so a
-    foreign workspace is a 404 and never touches the ledger."""
+    metered (``applications.prepare``), and runs at most once at a time per
+    workspace (a duplicate in flight is ACTION_IN_PROGRESS). Ownership is
+    checked first, so a foreign workspace is a 404 and never touches the ledger."""
     get_job_workspace(conn, workspace_id, account_id=scope.account_id)
-    return request.app.state.metering.prepare(conn, scope, workspace_id, work)
+    return request.app.state.metering.prepare(conn, scope, workspace_id, work, stage=stage)
 
 
 def _service_error(exc: Exception) -> HTTPException:
@@ -123,7 +125,7 @@ def post_understand(
 ):
     provider = _job_understanding_provider(request)
     try:
-        return {"artifact": _prepare_stage(request, conn, scope, workspace_id, lambda: understand_job(
+        return {"artifact": _prepare_stage(request, conn, scope, workspace_id, "understand", lambda: understand_job(
             conn, workspace_id, provider, request_id=body.request_id,
             account_id=scope.account_id,
         ))}
@@ -139,7 +141,7 @@ def post_fit(
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
-        artifact = _prepare_stage(request, conn, scope, workspace_id, lambda: fit_job(
+        artifact = _prepare_stage(request, conn, scope, workspace_id, "fit", lambda: fit_job(
             conn, workspace_id, _semantic_adapter(request), request_id=body.request_id,
             extension_ids=body.extension_ids, extensions_dir=extensions_dir,
             account_id=scope.account_id,
@@ -159,7 +161,8 @@ def post_application_intelligence(
 ):
     try:
         return {
-            "artifact": _prepare_stage(request, conn, scope, workspace_id, lambda: generate_application_intelligence(
+            "artifact": _prepare_stage(
+                request, conn, scope, workspace_id, "application-intelligence", lambda: generate_application_intelligence(
                 conn, workspace_id, _application_intelligence_provider(request),
                 request_id=body.request_id,
                 account_id=scope.account_id,

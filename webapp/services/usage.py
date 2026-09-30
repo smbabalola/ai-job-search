@@ -38,6 +38,16 @@ class AllowanceExhausted(Exception):
         self.window_end = window_end
 
 
+class ActionInProgress(Exception):
+    """The same logical metered action is already executing (§13.2 single
+    flight): the duplicate is refused rather than run a second time."""
+
+    def __init__(self, action_key: str, retry_after: int = 5):
+        super().__init__(f"{action_key} is already in progress")
+        self.action_key = action_key
+        self.retry_after = retry_after
+
+
 @dataclass(frozen=True)
 class Reservation:
     id: str
@@ -164,38 +174,58 @@ class Metering:
             self.usage.gauge_check(conn, scope, allowance=allowance, adding=adding, now=self._now())
 
     def metered(self, conn: dbapi.Connection, scope: Any, *, feature: str, allowance: str, subject_type: str,
-                subject_id: str, key: Callable[[str], str], work: Callable[[], T]) -> T:
-        """Feature check → reserve (key built from the window key) → work →
-        consume on success / release on failure. A reservation already
-        CONSUMED in this window is reused at no charge; one RESERVED by a
-        concurrent caller is left to that caller to settle."""
+                subject_id: str, key: Callable[[str], str], action: str, work: Callable[[], T]) -> T:
+        """Feature check → claim ``action`` and reserve (key built from the
+        window key) in one account transaction → work → consume on success /
+        release on failure, and finish the claim.
+
+        Single flight: one logical action (``action``) executes at most once at
+        a time. A simultaneous duplicate is refused with ``ActionInProgress``
+        before any work, so it never causes a second provider execution; so is
+        one that arrived while the action ran but got the lock after it
+        succeeded (it asked for the same thing, which now exists). A
+        claim whose holder died is taken over once its lease (the reservation
+        TTL) has passed. A reservation already CONSUMED in this window is reused
+        at no charge (a later stage or a rerun, §11.3); one RESERVED by a
+        concurrent different action is left to its creator to settle."""
         if not self.enforced:
             return work()
         now = self._now()
         self.gate.require_feature(conn, scope, feature, now=now)
         with dbapi.account_transaction(conn, scope.account_id):
+            claimed_at = self._now()  # after the lock wait; ``now`` is the request's arrival
+            claim_id = rows.claim_action(conn, account_id=scope.account_id, action_key=action, now=claimed_at,
+                                         lease_expires_at=claimed_at + RESERVATION_TTL, arrived_at=now)
+            if claim_id is None:
+                raise ActionInProgress(action)
             window_key = self.gate.entitlements(conn, scope, now=now).window.key
             reservation = self.usage.reserve(conn, scope, allowance=allowance, subject_type=subject_type,
                                              subject_id=subject_id, idempotency_key=key(window_key), now=now)
-        if not reservation.created:
-            return work()
         try:
             result = work()
         except BaseException:
             if conn.in_transaction:
                 conn.rollback()  # the failed stage's uncommitted writes are not kept
             with dbapi.account_transaction(conn, scope.account_id):
-                self.usage.release(conn, reservation.id, now=self._now())
+                if reservation.created:
+                    self.usage.release(conn, reservation.id, now=self._now())
+                rows.finish_action(conn, claim_id, status="FAILED", now=self._now())
             raise
         if conn.in_transaction:
             conn.commit()  # the successful work's own writes
         with dbapi.account_transaction(conn, scope.account_id):
-            if not self.usage.consume(conn, reservation.id, settlement_ref=subject_id, now=self._now()):
+            if reservation.created and not self.usage.consume(conn, reservation.id, settlement_ref=subject_id,
+                                                              now=self._now()):
                 logger.warning("usage_consume_after_release reservation=%s", reservation.id)
+            if not rows.finish_action(conn, claim_id, status="SUCCEEDED", now=self._now()):
+                logger.warning("metered_action_finished_after_takeover action=%s", action)
         return result
 
-    def prepare(self, conn: dbapi.Connection, scope: Any, workspace_id: str, work: Callable[[], T]) -> T:
-        """Every AI prepare stage (understanding, fit, intelligence) of §11.3."""
+    def prepare(self, conn: dbapi.Connection, scope: Any, workspace_id: str, work: Callable[[], T], *,
+                stage: str) -> T:
+        """Every AI prepare stage (understanding, fit, intelligence) of §11.3.
+        The single-flight action is the stage of the workspace."""
         return self.metered(conn, scope, feature="ai.prepare", allowance="applications.prepare",
                             subject_type="workspace", subject_id=workspace_id,
-                            key=lambda window_key: prepare_key(workspace_id, window_key), work=work)
+                            key=lambda window_key: prepare_key(workspace_id, window_key),
+                            action=f"prepare:{stage}:{workspace_id}", work=work)

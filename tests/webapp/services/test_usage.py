@@ -16,7 +16,9 @@ from webapp.persistence import dbapi, identity
 from webapp.persistence.db import connect, init_db
 from webapp.services.entitlements import EntitlementGate
 from webapp.services.ownership import AccountScope
-from webapp.services.usage import AllowanceExhausted, Metering, UsageService, prepare_key, sweep_expired
+from webapp.services.usage import (
+    ActionInProgress, AllowanceExhausted, Metering, UsageService, prepare_key, sweep_expired,
+)
 from webapp.storage.profile_sources import DatabaseProfileSourceStore
 
 NOW = datetime(2026, 10, 15, 9, 0, tzinfo=timezone.utc)
@@ -199,11 +201,11 @@ def test_a_failed_stage_releases_and_the_next_success_consumes_once(world):
         raise RuntimeError("provider down")
 
     with pytest.raises(RuntimeError):
-        metering.prepare(conn, scope, "ws_1", fail)
+        metering.prepare(conn, scope, "ws_1", fail, stage="understand")
     assert _statuses(conn) == [(prepare_key("ws_1", "month:2026-10"), "RELEASED")]
-    assert metering.prepare(conn, scope, "ws_1", lambda: "understood") == "understood"
-    assert metering.prepare(conn, scope, "ws_1", lambda: "fitted") == "fitted"  # later stage: no new charge
-    assert metering.prepare(conn, scope, "ws_1", lambda: "rerun") == "rerun"
+    assert metering.prepare(conn, scope, "ws_1", lambda: "understood", stage="understand") == "understood"
+    assert metering.prepare(conn, scope, "ws_1", lambda: "fitted", stage="fit") == "fitted"  # no new charge
+    assert metering.prepare(conn, scope, "ws_1", lambda: "rerun", stage="fit") == "rerun"  # a later rerun
     assert sorted(s for _, s in _statuses(conn)) == ["CONSUMED", "RELEASED"]  # one charge in the window
 
 
@@ -211,7 +213,7 @@ def test_unenforced_metering_records_nothing(world):
     _, conn, scope, settings = world
     gate = EntitlementGate(_catalog(**{"applications.prepare": 0}), settings=settings)
     metering = Metering(gate, UsageService(gate), enforced=False)
-    assert metering.prepare(conn, scope, "ws_1", lambda: "ok") == "ok"
+    assert metering.prepare(conn, scope, "ws_1", lambda: "ok", stage="understand") == "ok"
     metering.require_feature(conn, scope, "ai.cv_tailor")
     assert _statuses(conn) == []
 
@@ -241,27 +243,104 @@ def _run_threads(path, scope, settings, target_for):
     return results
 
 
-def test_twenty_concurrent_prepares_of_one_workspace_take_one_reservation(world):
-    """Review Focus 2 (double-click, two tabs)."""
+def test_twenty_concurrent_prepares_of_one_stage_execute_the_provider_once(world):
+    """Review Focus 2 (double-click, two tabs) and Task 17: one logical metered
+    action is at most one underlying provider execution. The first caller runs
+    the work; every simultaneous duplicate gets ActionInProgress, never a
+    second execution."""
     path, conn, scope, settings = world
-    metering = _metering(settings)
+    gate = EntitlementGate(DEV, settings=settings)
+    metering = Metering(gate, UsageService(gate), enforced=True)  # the real clock: arrival precedes completion
+    executions: list[int] = []
+    count_lock = threading.Lock()
 
     def work():
-        time.sleep(0.01)
+        with count_lock:
+            executions.append(1)
+        time.sleep(0.3)  # the provider call: long enough that every duplicate arrives while it runs
         return "done"
 
-    results = _run_threads(path, scope, settings, lambda i, c: metering.prepare(c, scope, "ws_same", work))
-    assert results == ["done"] * 20
-    assert _statuses(conn) == [(prepare_key("ws_same", "month:2026-10"), "CONSUMED")]
+    results = _run_threads(path, scope, settings,
+                           lambda i, c: metering.prepare(c, scope, "ws_same", work, stage="understand"))
+    assert len(executions) == 1
+    assert results.count("done") == 1
+    assert all(isinstance(r, ActionInProgress) for r in results if r != "done"), results
+    assert [s for _, s in _statuses(conn)] == ["CONSUMED"]
+    assert [tuple(r) for r in conn.execute("SELECT status, COUNT(*) FROM metered_actions GROUP BY status")] == [
+        ("SUCCEEDED", 1)]
+
+
+def test_a_duplicate_in_flight_is_refused_but_a_different_stage_is_not(world):
+    _, conn, scope, settings = world
+    metering = _metering(settings)
+    other = connect(world[0])
+    seen = {}
+
+    def understand():
+        with pytest.raises(ActionInProgress) as refused:
+            metering.prepare(other, scope, "ws_1", lambda: "second", stage="understand")
+        seen["refused"] = refused.value
+        seen["fit"] = metering.prepare(other, scope, "ws_2", lambda: "fitted", stage="fit")
+        return "understood"
+
+    try:
+        assert metering.prepare(conn, scope, "ws_1", understand, stage="understand") == "understood"
+    finally:
+        other.close()
+    assert seen["fit"] == "fitted"
+    assert seen["refused"].action_key == "prepare:understand:ws_1"
+    # once the first execution has finished, a new request is a new logical action (a rerun)
+    assert metering.prepare(conn, scope, "ws_1", lambda: "again", stage="understand") == "again"
+
+
+def test_a_failed_execution_frees_the_action(world):
+    _, conn, scope, settings = world
+    metering = _metering(settings)
+
+    def fail():
+        raise RuntimeError("provider down")
+
+    with pytest.raises(RuntimeError):
+        metering.prepare(conn, scope, "ws_1", fail, stage="understand")
+    assert metering.prepare(conn, scope, "ws_1", lambda: "ok", stage="understand") == "ok"
+    assert sorted(r[0] for r in conn.execute("SELECT status FROM metered_actions")) == ["FAILED", "SUCCEEDED"]
+
+
+def test_an_abandoned_execution_past_its_lease_is_taken_over(world):
+    _, conn, scope, settings = world
+    clock = Clock(NOW)
+    gate = EntitlementGate(DEV, settings=settings)
+    metering = Metering(gate, UsageService(gate), enforced=True, clock=clock)
+    other = connect(world[0])
+
+    def crash_holder():
+        # the holder's process dies mid-call: simulate by advancing past the lease from inside the work
+        clock.now = NOW + timedelta(minutes=31)
+        return metering.prepare(other, scope, "ws_1", lambda: "taken over", stage="understand")
+
+    try:
+        assert metering.prepare(conn, scope, "ws_1", crash_holder, stage="understand") == "taken over"
+    finally:
+        other.close()
+    statuses = sorted(r[0] for r in conn.execute("SELECT status FROM metered_actions"))
+    assert statuses == ["ABANDONED", "SUCCEEDED"]
+
+
+def test_an_exhausted_allowance_leaves_no_running_action(world):
+    _, conn, scope, settings = world
+    metering = _metering(settings, _catalog(**{"applications.prepare": 0}))
+    with pytest.raises(AllowanceExhausted):
+        metering.prepare(conn, scope, "ws_1", lambda: "never", stage="understand")
+    assert conn.execute("SELECT COUNT(*) FROM metered_actions").fetchone()[0] == 0
 
 
 def test_twenty_workspaces_racing_for_the_last_unit_let_exactly_one_through(world):
     path, conn, scope, settings = world
     metering = _metering(settings)
     for ws in ("ws_a", "ws_b"):
-        metering.prepare(conn, scope, ws, lambda: None)  # 2 of 3 used
+        metering.prepare(conn, scope, ws, lambda: None, stage="fit")  # 2 of 3 used
     results = _run_threads(path, scope, settings,
-                           lambda i, c: metering.prepare(c, scope, f"ws_race_{i}", lambda: "done"))
+                           lambda i, c: metering.prepare(c, scope, f"ws_race_{i}", lambda: "done", stage="fit"))
     assert results.count("done") == 1
     assert all(isinstance(r, AllowanceExhausted) for r in results if r != "done")
     assert conn.execute("SELECT COUNT(*) FROM usage_reservations WHERE status = 'CONSUMED'").fetchone()[0] == 3

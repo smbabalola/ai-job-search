@@ -99,6 +99,7 @@ def post_search(
         return request.app.state.metering.metered(
             conn, scope, feature="discovery.on_demand", allowance="discovery.on_demand_runs",
             subject_type="search_workspace", subject_id=search_workspace_id, key=lambda window_key: run_key,
+            action=f"discovery:{search_workspace_id}",
             work=lambda: run_discovery_search(
                 conn, runner, search_workspace_id=search_workspace_id,
                 sources=body.sources, queries=body.queries,

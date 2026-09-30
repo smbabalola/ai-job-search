@@ -45,12 +45,12 @@ from webapp.deployment import require_valid_settings
 from webapp.observability import LogErrorReporter, RequestContextMiddleware, configure_logging, unhandled_error_handler
 from webapp.security_middleware import SecurityHeadersMiddleware
 from webapp.api.errors import (
-    allowance_exhausted_handler, csrf_failed_handler, database_busy_handler, feature_not_in_plan_handler,
-    rate_limited_handler, scope_refused_handler,
+    action_in_progress_handler, allowance_exhausted_handler, csrf_failed_handler, database_busy_handler,
+    feature_not_in_plan_handler, rate_limited_handler, scope_refused_handler,
 )
 from webapp.api.usage import router as usage_router
 from webapp.persistence.dbapi import DatabaseBusy
-from webapp.services.usage import AllowanceExhausted, Metering, UsageService
+from webapp.services.usage import ActionInProgress, AllowanceExhausted, Metering, UsageService
 from product.entitlements import FeatureNotInPlan
 from webapp.api.route_classes import PUBLIC, ScopeRefused
 from webapp.services.csrf import CsrfFailed, require_csrf
@@ -163,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(ScopeRefused, scope_refused_handler)
     app.add_exception_handler(FeatureNotInPlan, feature_not_in_plan_handler)
     app.add_exception_handler(AllowanceExhausted, allowance_exhausted_handler)
+    app.add_exception_handler(ActionInProgress, action_in_progress_handler)
     app.add_exception_handler(DatabaseBusy, database_busy_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)

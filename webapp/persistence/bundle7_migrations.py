@@ -592,3 +592,52 @@ def _usage(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("028_usage", sqlite=_usage("sqlite"), postgres=_usage("postgres")))
+
+
+# ---- 028b_metered_actions (Task 17): single flight for metered actions -------
+# One logical metered action (a prepare stage of one workspace, one discovery
+# run of one search workspace) executes its provider work at most once at a
+# time: a RUNNING row is the execution claim, taken under the account lock.
+
+_METERED_ACTIONS_DDL = """
+CREATE TABLE metered_actions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    action_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED')),
+    started_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    finished_at TEXT,
+    CHECK ((status = 'RUNNING') = (finished_at IS NULL))
+);
+CREATE UNIQUE INDEX idx_metered_actions_running ON metered_actions(account_id, action_key)
+    WHERE status = 'RUNNING';
+CREATE INDEX idx_metered_actions_account ON metered_actions(account_id, started_at)
+"""
+
+_ACTION_FIXED = ("id", "account_id", "action_key", "started_at", "lease_expires_at")
+
+
+def _action_transitions(conn, dialect: str) -> None:
+    """Only RUNNING→SUCCEEDED|FAILED|ABANDONED; nothing else changes."""
+    message = "metered_actions may only move RUNNING to SUCCEEDED, FAILED or ABANDONED"
+    distinct = "IS NOT" if dialect == "sqlite" else "IS DISTINCT FROM"
+    changed = " OR ".join(f"NEW.{c} {distinct} OLD.{c}" for c in _ACTION_FIXED)
+    when = f"OLD.status <> 'RUNNING' OR NEW.status NOT IN ('SUCCEEDED', 'FAILED', 'ABANDONED') OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER metered_actions_transition BEFORE UPDATE ON metered_actions "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "metered_actions_transition" BEFORE UPDATE ON "metered_actions" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _metered_actions(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _METERED_ACTIONS_DDL)
+        _action_transitions(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("028b_metered_actions", sqlite=_metered_actions("sqlite"),
+                                    postgres=_metered_actions("postgres")))

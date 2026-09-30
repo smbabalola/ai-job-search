@@ -117,3 +117,40 @@ def test_fill_start_requires_the_feature_only(world, monkeypatch):
         conn.close()
     assert result == {"id": "run"}
     assert calls == [("feature", "apply.assisted_fill")]
+
+
+def _running(settings, account_id, action_key):
+    """An execution of ``action_key`` already in flight (another tab, a double click)."""
+    conn = connect(settings)
+    conn.execute("INSERT INTO metered_actions (id, account_id, action_key, status, started_at, lease_expires_at) "
+                 "VALUES ('mact_inflight', ?, ?, 'RUNNING', '2000-01-01T00:00:00.000000', '9999-01-01T00:00:00.000000')",
+                 (account_id, action_key))
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("stage,service", [("understand", "understand_job"), ("fit", "fit_job"),
+                                           ("application-intelligence", "generate_application_intelligence")])
+def test_a_prepare_stage_already_in_flight_is_refused_without_running(world, monkeypatch, stage, service):
+    _, client, settings, ids, account_id, _ = world
+    executions = []
+    monkeypatch.setattr(workspaces_api, service, lambda *a, **k: executions.append(1) or {"id": "artifact"})
+    monkeypatch.setattr(workspaces_api, "record_shadow_decision", lambda *a, **k: None)
+    _running(settings, account_id, f"prepare:{stage}:{ids['workspace_id']}")
+    response = _post(client, f"/api/workspaces/{ids['workspace_id']}/{stage}", json={"request_id": "r2"})
+    assert response.status_code == 409, response.text
+    assert response.json()["error"] == "ACTION_IN_PROGRESS"
+    assert response.headers["Retry-After"] == "5"
+    assert executions == []
+
+
+def test_a_discovery_run_already_in_flight_is_refused_without_running(world, monkeypatch):
+    _, client, settings, ids, account_id, _ = world
+    executions = []
+    monkeypatch.setattr(discovery_api, "run_discovery_search", lambda *a, **k: executions.append(1) or {"run": "ok"})
+    _running(settings, account_id, f"discovery:{ids['search_workspace_id']}")
+    response = _post(client, f"/api/search-workspaces/{ids['search_workspace_id']}/discovery/search",
+                     json={"sources": [], "queries": ["engineer"], "locations": []})
+    assert response.status_code == 409, response.text
+    assert response.json()["error"] == "ACTION_IN_PROGRESS"
+    assert executions == []

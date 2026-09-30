@@ -58,3 +58,9 @@ async def allowance_exhausted_handler(request: Request, exc: Exception) -> JSONR
 async def database_busy_handler(request: Request, exc: Exception) -> JSONResponse:
     return error_response("DATABASE_BUSY", "The service is busy. Please try again in a moment.", 503,
                           headers={"Retry-After": "2"})
+
+
+async def action_in_progress_handler(request: Request, exc: Exception) -> JSONResponse:
+    retry_after = getattr(exc, "retry_after", 5)
+    return error_response("ACTION_IN_PROGRESS", "This is already running. Refresh in a moment to see the result.", 409,
+                          detail={"retry_after": retry_after}, headers={"Retry-After": str(retry_after)})

@@ -75,6 +75,34 @@ def accounts_with_expired(conn: dbapi.Connection, *, now: datetime) -> list[str]
     return [row[0] for row in rows]
 
 
+def claim_action(conn: dbapi.Connection, *, account_id: str, action_key: str, now: datetime,
+                 lease_expires_at: datetime, arrived_at: datetime) -> str | None:
+    """Under the account lock: mark a RUNNING claim past its lease ABANDONED,
+    then take a new RUNNING claim. None while one is live, or when one
+    succeeded after ``arrived_at`` (the request arrived while it ran and only
+    got the lock afterwards: it is the same logical action, not a rerun)."""
+    conn.execute("UPDATE metered_actions SET status = 'ABANDONED', finished_at = ? WHERE account_id = ? "
+                 "AND action_key = ? AND status = 'RUNNING' AND lease_expires_at <= ?",
+                 (ts(now), account_id, action_key, ts(now)))
+    if _one(conn, "SELECT id FROM metered_actions WHERE account_id = ? AND action_key = ? AND status = 'RUNNING'",
+            (account_id, action_key)) is not None:
+        return None
+    if _one(conn, "SELECT id FROM metered_actions WHERE account_id = ? AND action_key = ? AND status = 'SUCCEEDED' "
+            "AND finished_at > ?", (account_id, action_key, ts(arrived_at))) is not None:
+        return None
+    claim_id = f"mact_{uuid.uuid4().hex[:20]}"
+    conn.execute("INSERT INTO metered_actions (id, account_id, action_key, status, started_at, lease_expires_at) "
+                 "VALUES (?, ?, ?, 'RUNNING', ?, ?)", (claim_id, account_id, action_key, ts(now), ts(lease_expires_at)))
+    return claim_id
+
+
+def finish_action(conn: dbapi.Connection, claim_id: str, *, status: str, now: datetime) -> bool:
+    """RUNNING → ``status``. False when the claim was already taken over."""
+    cursor = conn.execute("UPDATE metered_actions SET status = ?, finished_at = ? WHERE id = ? AND status = 'RUNNING'",
+                          (status, ts(now), claim_id))
+    return cursor.rowcount == 1
+
+
 def storage_bytes(conn: dbapi.Connection, account_id: str) -> int:
     row = conn.execute("SELECT COALESCE(SUM(byte_length), 0) FROM application_document_versions WHERE account_id = ?",
                        (account_id,)).fetchone()
