@@ -26,12 +26,14 @@ def _session(conn, account_id, ws):
     session = create_handoff_session(conn, account_id=account_id, workspace_id=ws, pack_artifact_id=pack,
                                      target_url=TARGET, target_domain="jobs.example.test", ats_adapter_id="greenhouse",
                                      ats_adapter_version="greenhouse@2")
-    return session["id"], create_session_token(conn, handoff_session_id=session["id"])
+    from tests.webapp.extension_helpers import session_credential
+    return session["id"], session_credential(conn, account_id, create_session_token(conn, handoff_session_id=session["id"]))
 
 
 class Ext:
     def __init__(self, client, sid, token):
-        self.client, self.sid, self.headers, self.responses = client, sid, {"X-Handoff-Session-Token": token}, []
+        headers = token.headers() if hasattr(token, "headers") else {"X-Handoff-Session-Token": token}
+        self.client, self.sid, self.headers, self.responses = client, sid, headers, []
 
     def call(self, method, path, body=None, expect=200, keep=True):
         r = getattr(self.client, method)(f"/api/handoff/sessions/{self.sid}/fill{path}", headers=self.headers,

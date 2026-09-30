@@ -292,3 +292,75 @@ def _audit(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("024_audit", sqlite=_audit("sqlite"), postgres=_audit("postgres")))
+
+
+# ---- 025_extension_devices (Task 11): device credentials, pairing codes,
+# handoff tickets (spec §9.1). user_id is NULL only in local single-user mode.
+
+_EXTENSION_DDL = """
+CREATE TABLE extension_devices (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    label TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoke_reason TEXT
+);
+CREATE INDEX idx_extension_devices_user ON extension_devices(user_id);
+CREATE INDEX idx_extension_devices_account ON extension_devices(account_id);
+CREATE TABLE extension_refresh_tokens (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES extension_devices(id),
+    family_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    rotated_at TEXT,
+    revoked_at TEXT
+);
+CREATE INDEX idx_extension_refresh_tokens_device ON extension_refresh_tokens(device_id);
+CREATE TABLE extension_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES extension_devices(id),
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_extension_access_tokens_device ON extension_access_tokens(device_id);
+CREATE TABLE pairing_codes (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE TABLE handoff_tickets (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    workspace_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('HANDOFF')),
+    nonce_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+)
+"""
+
+
+def _extension_devices(dialect: str):
+    def migrate(conn) -> None:
+        from datetime import datetime, timezone
+
+        _ddl(conn, dialect, _EXTENSION_DDL)
+        now = datetime.now(timezone.utc).isoformat()
+        # X2: the durable X-Handoff-Credential is retired; every extension pairs again once.
+        conn.execute("UPDATE extension_credentials SET revoked_at = ? WHERE revoked_at IS NULL", (now,))
+        conn.execute("UPDATE pairing_secrets SET consumed_at = ? WHERE consumed_at IS NULL", (now,))
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("025_extension_devices", sqlite=_extension_devices("sqlite"),
+                                    postgres=_extension_devices("postgres")))

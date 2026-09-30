@@ -17,7 +17,6 @@ from webapp.persistence.search_workspaces import (
     list_search_workspaces,
 )
 from webapp.services.discovery import discovery_run_is_stale, grouped_discovery_candidates
-from webapp.services.handoff import generate_pairing_secret
 from webapp.services.http_api import JobWorkspaceNotFound
 from webapp.services.workspace_view import (
     build_dashboard_view_model,
@@ -245,7 +244,13 @@ def pairing_page(
     request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
-    one_time_secret = generate_pairing_secret(conn, account_id=scope.account_id)
+    from datetime import datetime, timezone
+
+    from webapp.services.extension_auth import create_pairing_code
+
+    _, one_time_secret = create_pairing_code(conn, account_id=scope.account_id, user_id=scope.user_id,
+                                             now=datetime.now(timezone.utc))
+    conn.commit()
     return request.app.state.templates.TemplateResponse(
         request, "pairing.html",
         {"one_time_secret": one_time_secret, **_search_context(conn, scope.account_id)},

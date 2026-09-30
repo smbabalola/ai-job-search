@@ -40,7 +40,7 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
         "/api/handoff/pairing/exchange",
     }
     # Three legitimate account-scoping mechanisms exist: get_account_scope
-    # (webapp session), get_extension_scope (X-Handoff-Credential header,
+    # (webapp session), get_extension_scope (bearer device token,
     # for routes reached by a browser extension with no webapp session
     # before any per-session token exists — session start/discover/
     # resume), and get_session_scope (X-Handoff-Session-Token, for

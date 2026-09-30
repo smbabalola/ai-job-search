@@ -7,7 +7,8 @@ double-submit pre-session token, which also blocks login CSRF. A present
 Origin (or Referer) must be this application's origin.
 
 Exempt: bearer-authenticated requests without a session cookie (the
-extension), extension endpoints under /api/ext/, and signed provider webhooks.
+extension), the code/refresh-token endpoints /api/ext/pair and /api/ext/token,
+and signed provider webhooks.
 """
 from __future__ import annotations
 
@@ -17,7 +18,12 @@ from urllib.parse import urlsplit
 from fastapi import Request
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-EXEMPT_PREFIXES = ("/webhooks/", "/api/ext/")
+EXEMPT_PREFIXES = ("/webhooks/",)
+# Extension endpoints authenticated by a pairing code or refresh token in the
+# body (no ambient browser credential). Other /api/ext/* routes are either
+# bearer-authenticated (exempt below) or cookie-authenticated USER routes that
+# need the token like any other.
+EXEMPT_PATHS = frozenset({"/api/ext/pair", "/api/ext/token"})
 
 
 class CsrfFailed(Exception):
@@ -46,8 +52,12 @@ async def require_csrf(request: Request) -> None:
     settings = request.app.state.settings
     if not settings.auth_enabled or request.method in SAFE_METHODS:
         return
-    if request.url.path.startswith(EXEMPT_PREFIXES):
+    if request.url.path.startswith(EXEMPT_PREFIXES) or request.url.path in EXEMPT_PATHS:
         return
+    route = request.scope.get("route")
+    if route is not None and [getattr(d.dependency, "route_class", None) for d in getattr(route, "dependencies", [])
+                              if hasattr(d.dependency, "route_class")] == ["EXTENSION"]:
+        return  # EXTENSION routes accept bearer device tokens only, never cookies
     has_session_cookie = session_cookie_name(settings) in request.cookies
     if request.headers.get("authorization", "").lower().startswith("bearer ") and not has_session_cookie:
         return

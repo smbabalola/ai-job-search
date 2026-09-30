@@ -6,20 +6,20 @@ parameter names routes use. Tables covered today:
 
   search_workspaces, search_workspace_user_profiles, user_profile_versions,
   workspaces (job), artifacts, workflow_events, application_document_versions,
-  application_document_selections, handoff_sessions, extension_credentials.
+  application_document_selections, handoff_sessions, extension_devices (+ tokens).
 
 Later tasks extend this graph as their tables arrive (CV library, approvals,
 fill runs, notifications, devices ...).
 """
 from __future__ import annotations
 
-import secrets
 import uuid
 from typing import Any
 
 from tests.webapp.services.review_fixtures import docx_bytes
 from webapp.persistence.artifacts import save_artifact
-from webapp.persistence.handoff import create_extension_credential, create_handoff_session, hash_pairing_secret
+from tests.webapp.extension_helpers import device_bearer
+from webapp.persistence.handoff import create_handoff_session
 from webapp.persistence.search_workspaces import create_search_workspace
 from webapp.persistence.user_profile import save_user_profile
 from webapp.persistence.workflow import record_status_change
@@ -47,12 +47,13 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
                                      pack_artifact_id=posting["id"], target_url="https://jobs.example.test/1",
                                      target_domain="jobs.example.test", ats_adapter_id="generic",
                                      ats_adapter_version="1")
-    extension_secret = secrets.token_urlsafe(24)
-    create_extension_credential(conn, account_id=account_id, secret_hash=hash_pairing_secret(extension_secret))
+    user = conn.execute("SELECT user_id FROM account_memberships WHERE account_id = ? AND role = 'OWNER'",
+                        (account_id,)).fetchone()
+    extension_bearer = device_bearer(conn, account_id, user["user_id"] if user else None)
     conn.commit()
     return {
         "canary": canary,
-        "extension_secret": extension_secret,
+        "extension_bearer": extension_bearer,
         "ids": {
             "workspace_id": job["id"], "search_workspace_id": search["id"], "document_version_id": document["id"],
             "session_id": session["id"], "pack_artifact_id": posting["id"], "kind": "cv",

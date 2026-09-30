@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -25,21 +26,19 @@ from webapp.services.handoff import (
     HandoffSessionNotActive,
     HandoffSessionNotFound,
     HandoffSessionTokenInvalid,
-    PairingSecretInvalid,
     SessionScope,
     confirm_handoff_submission,
     discover_resumable_handoff_sessions,
-    exchange_pairing_secret_for_credential,
     fetch_session_document,
-    generate_pairing_secret,
     mint_session_token,
     record_handoff_event,
     replay_handoff_session,
-    resolve_account_scope_from_extension_credential,
     resolve_session_scope,
     resume_handoff_session,
     start_handoff_session,
 )
+from webapp.api.extension_auth import ExtensionScope, get_extension_scope
+from webapp.services.extension_auth import AccountMismatch, ExtensionPrincipal, TicketInvalid, consume_handoff_ticket
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
 from webapp.persistence import dbapi
 
@@ -50,11 +49,8 @@ class StrictBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ExchangePairingBody(StrictBody):
-    one_time_secret: str
-
-
 class StartSessionBody(StrictBody):
+    handoff_ticket: str
     workspace_id: str
     pack_artifact_id: str
     target_url: str
@@ -77,28 +73,20 @@ class ConfirmSubmissionBody(StrictBody):
     effective_date: str | None = None
 
 
-def get_extension_scope(
-    request: Request,
-    x_handoff_credential: str = Header(...),
-    conn: dbapi.Connection = Depends(get_conn),
-) -> AccountScope:
-    try:
-        return resolve_account_scope_from_extension_credential(
-            conn, presented_secret=x_handoff_credential,
-            base_profile_root=request.app.state.settings.profile_root,
-        )
-    except PairingSecretInvalid as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-
 def get_session_scope(
     x_handoff_session_token: str = Header(...),
+    device: ExtensionScope = Depends(get_extension_scope),
     conn: dbapi.Connection = Depends(get_conn),
 ) -> SessionScope:
+    """A handoff session token is honoured only with a bearer device token of
+    the same account (spec §9.2): a leaked session token is useless alone."""
     try:
-        return resolve_session_scope(conn, raw_token=x_handoff_session_token)
+        scope = resolve_session_scope(conn, raw_token=x_handoff_session_token)
     except (HandoffSessionTokenInvalid, HandoffSessionExpired) as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if scope.account_id != device.account_id:
+        raise HTTPException(status_code=404, detail="handoff session not found")
+    return scope
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -121,38 +109,23 @@ def _translate(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/pairing/generate", status_code=201, dependencies=[Depends(USER)])
-def post_generate_pairing(
-    scope: AccountScope = Depends(get_account_scope),
-    conn: dbapi.Connection = Depends(get_conn),
-):
-    return {
-        "one_time_secret": generate_pairing_secret(conn, account_id=scope.account_id),
-        "account_id": scope.account_id,
-    }
-
-
-@router.post("/pairing/exchange", status_code=201, dependencies=[Depends(PUBLIC)])
-def post_exchange_pairing(
-    body: ExchangePairingBody,
-    conn: dbapi.Connection = Depends(get_conn),
-):
-    try:
-        return exchange_pairing_secret_for_credential(
-            conn, one_time_secret=body.one_time_secret,
-        )
-    except HandoffError as exc:
-        raise _translate(exc) from exc
-
-
 @router.post("/sessions", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_start_session(
     body: StartSessionBody,
-    scope: AccountScope = Depends(get_extension_scope),
+    request: Request,
+    scope: ExtensionScope = Depends(get_extension_scope),
     conn: dbapi.Connection = Depends(get_conn),
 ):
+    # X4: the web page's ticket must belong to the same user as this device.
     try:
-        session = start_handoff_session(conn, scope, **body.model_dump())
+        consume_handoff_ticket(conn, body.handoff_ticket, principal=ExtensionPrincipal(
+            scope.device_id, scope.user_id, scope.account_id), workspace_id=body.workspace_id, purpose="HANDOFF",
+            now=datetime.now(timezone.utc), secret=request.app.state.settings.secret_key)
+    except (AccountMismatch, TicketInvalid) as exc:
+        conn.rollback()
+        raise HTTPException(status_code=403, detail={"error": exc.code, "message": str(exc)}) from exc
+    try:
+        session = start_handoff_session(conn, scope, **body.model_dump(exclude={"handoff_ticket"}))
     except (HandoffError, OwnedResourceNotFound) as exc:
         raise _translate(exc) from exc
     token = mint_session_token(conn, handoff_session_id=session["id"])

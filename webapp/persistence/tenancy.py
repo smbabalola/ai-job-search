@@ -157,6 +157,12 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "legal_acceptances": TableSpec(("USER", "user_id"), purge="RETAIN", retain_class="CONSENT_PROOF"),
     "legal_documents": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "rate_limit_buckets": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    # extension devices (Bundle 7, 025_extension_devices)
+    "extension_devices": A,
+    "extension_refresh_tokens": _internal(("extension_devices", "device_id")),
+    "extension_access_tokens": _internal(("extension_devices", "device_id")),
+    "pairing_codes": _internal("account_id"),
+    "handoff_tickets": _internal("account_id"),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

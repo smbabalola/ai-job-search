@@ -45,65 +45,6 @@ class PairingSecretExpired(HandoffError):
     pass
 
 
-def generate_pairing_secret(
-    conn: dbapi.Connection, *, account_id: str, commit: bool = True,
-) -> str:
-    secret = secrets.token_urlsafe(32)
-    secret_id = f"pairsec_{uuid.uuid4().hex[:20]}"
-    now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(minutes=10)).isoformat()
-    conn.execute(
-        "INSERT INTO pairing_secrets "
-        "(id, account_id, secret_hash, created_at, expires_at, consumed_at) "
-        "VALUES (?, ?, ?, ?, ?, NULL)",
-        (secret_id, account_id, hash_pairing_secret(secret), now.isoformat(), expires_at),
-    )
-    if commit:
-        conn.commit()
-    return secret
-
-
-def exchange_pairing_secret_for_credential(
-    conn: dbapi.Connection, *, one_time_secret: str,
-) -> dict[str, Any]:
-    secret_hash = hash_pairing_secret(one_time_secret)
-    row = conn.execute(
-        "SELECT * FROM pairing_secrets WHERE secret_hash = ?", (secret_hash,)
-    ).fetchone()
-    if row is None:
-        raise PairingSecretInvalid("pairing code not recognized")
-    if row["consumed_at"] is not None:
-        raise PairingSecretInvalid("pairing code already used")
-    now_iso = datetime.now(timezone.utc).isoformat()
-    if row["expires_at"] < now_iso:
-        raise PairingSecretExpired("pairing code expired")
-
-    conn.execute(
-        "UPDATE pairing_secrets SET consumed_at = ? WHERE id = ?",
-        (now_iso, row["id"]),
-    )
-    durable_secret = secrets.token_urlsafe(32)
-    credential = create_extension_credential(
-        conn, account_id=row["account_id"],
-        secret_hash=hash_pairing_secret(durable_secret),
-    )
-    conn.commit()
-    return {"credential_id": credential["id"], "durable_secret": durable_secret}
-
-
-def resolve_account_scope_from_extension_credential(
-    conn: dbapi.Connection, *, presented_secret: str, base_profile_root: str,
-) -> AccountScope:
-    secret_hash = hash_pairing_secret(presented_secret)
-    credential = get_extension_credential_by_hash(conn, secret_hash)
-    if credential is None:
-        raise PairingSecretInvalid("extension credential not recognized or revoked")
-    return AccountScope(
-        account_id=credential["account_id"],
-        profile_root=account_profile_root(base_profile_root, credential["account_id"]),
-    )
-
-
 class HandoffPackNotFound(HandoffError):
     pass
 

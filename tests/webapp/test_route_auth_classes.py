@@ -28,7 +28,8 @@ def test_known_routes_have_the_expected_class(tmp_path):
         ("/health", "GET"): "PUBLIC", ("/auth/login", "POST"): "PUBLIC", ("/signup", "GET"): "PUBLIC",
         ("/auth/me", "GET"): "USER", ("/settings/password", "POST"): "USER",
         ("/api/search-workspaces", "GET"): "USER", ("/", "GET"): "USER",
-        ("/api/handoff/sessions", "POST"): "EXTENSION", ("/api/handoff/pairing/generate", "POST"): "USER",
+        ("/api/handoff/sessions", "POST"): "EXTENSION", ("/api/ext/pairing-codes", "POST"): "USER",
+        ("/api/ext/pair", "POST"): "PUBLIC", ("/api/ext/whoami", "GET"): "EXTENSION",
     }
     for (path, method), klass in expect.items():
         matches = [classes for (p, methods), classes in by_path.items() if p == path and method in methods]

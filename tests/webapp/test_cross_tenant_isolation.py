@@ -60,7 +60,7 @@ def probe_every_route(app, b_client, graph_a, graph_b):
             continue  # routes without ids only ever see the caller's own data
         values = {name: str(graph_a["ids"].get(name, FALLBACK_IDS.get(name, f"{name}_absent"))) for name in names}
         path = PARAM.sub(lambda m: values[m.group(1)], route.path)
-        headers = {"X-Handoff-Credential": graph_b["extension_secret"]} if klass == "EXTENSION" else {}
+        headers = {"Authorization": f"Bearer {graph_b['extension_bearer']}"} if klass == "EXTENSION" else {}
         for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
             if (method, route.path) in OPT_OUTS:
                 continue

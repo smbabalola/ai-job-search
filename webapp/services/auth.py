@@ -278,3 +278,12 @@ class AuthService:
         self._audit(conn, "EMAIL_CHANGED", user_id=row["user_id"])
         conn.commit()
         return Outcome(True, user=identity.get_user(conn, row["user_id"]))
+
+
+def _revoke_extension_devices(conn, *, user_id: str, reason: str, now: datetime) -> None:
+    from webapp.services.extension_auth import revoke_all_devices_for_user
+
+    revoke_all_devices_for_user(conn, user_id, reason=reason, now=now)
+
+
+CREDENTIAL_REVOCATION_HOOKS.append(_revoke_extension_devices)
