@@ -334,6 +334,8 @@ def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str
         "company.key": employer_key or UNKNOWN,
         "workspace.id": search_ws or UNKNOWN,
         "identity.strength": identity_strength.value,
+        **v2_attributes(conn, account_id=account_id, workspace_id=ws, posting=posting, workspace=workspace,
+                        policy_doc=doc),
     }
 
     auto_reject, unresolved = _governing(conn, ws)
@@ -405,3 +407,29 @@ def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str
         budgets=budgets, rule_acknowledgements=acks, executor_hard_stops=tuple(executor_hard_stops),
         grant_binding_drift=tuple(grant_binding_drift), run_id=run_id, authority=authority,
     )
+
+
+def v2_attributes(conn, *, account_id: str, workspace_id: str, posting: Mapping[str, Any],
+                  workspace: Mapping[str, Any], policy_doc: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bundle 7 standing-policy.v2 job attributes (spec 16.2), derived
+    deterministically; anything underivable is UNKNOWN (never a guess)."""
+    from product.job_families import classify
+    from product.rule_attributes import (
+        annual_compensation_max, country_from, family_attribute, remote_mode_from, rotation_from_text,
+    )
+    from webapp.services.cv_strategy import current_job_families
+    understanding_artifact = get_current_artifact(conn, workspace_id, "job_understanding_result")
+    understanding = (understanding_artifact or {}).get("payload") or {}
+    title = understanding.get("title") or posting.get("title") or workspace.get("title") or ""
+    seniority = understanding.get("seniority") if isinstance(understanding.get("seniority"), str) else None
+    families, _ = current_job_families(conn, account_id)
+    text = " ".join(str(posting.get(k) or "") for k in ("description", "raw_text", "title"))
+    compensation = understanding.get("compensation") or posting.get("compensation")
+    currency = (policy_doc or {}).get("currency")
+    return {
+        "job.family": family_attribute(classify(families, title=title, seniority=seniority).family_id),
+        "job.compensation_max_annual": annual_compensation_max(compensation, currency),
+        "job.country": country_from(understanding) if understanding else country_from(posting),
+        "job.remote_mode": remote_mode_from(understanding) if understanding else remote_mode_from(posting),
+        "job.rotation": rotation_from_text(text),
+    }

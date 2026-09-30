@@ -115,7 +115,7 @@ def test_user_profile_versions_are_never_shared_across_accounts(conn):
 
     create_account(conn, display_name="Other", account_id="acct_other")
     other_ws = create_search_workspace(conn, name="Other search", account_id="acct_other")
-    profile = {"schema_version": "user-profile.v1", "target_roles": ["Drilling Engineer"]}
+    profile = {"schema_version": "user-profile.v2", "target_roles": ["Drilling Engineer"]}
     mine = save_user_profile(conn, profile, search_workspace_id="search_default", account_id=DEFAULT_ACCOUNT_ID)
     theirs = save_user_profile(conn, profile, search_workspace_id=other_ws["id"], account_id="acct_other")
     assert mine["content_id"] == theirs["content_id"]

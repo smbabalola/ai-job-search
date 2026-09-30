@@ -25,6 +25,7 @@ from webapp.api.email_webhooks import router as email_webhooks_router
 from webapp.api.notifications import router as notifications_router
 from webapp.api.cv_library import router as cv_library_router
 from webapp.api.cv_strategy import router as cv_strategy_router
+from webapp.api.preferences import router as preferences_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -204,6 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notifications_router)
     app.include_router(cv_strategy_router)  # before cv_library: /cvs/strategy is not an item id
     app.include_router(cv_library_router)
+    app.include_router(preferences_router)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)

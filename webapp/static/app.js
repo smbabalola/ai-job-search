@@ -539,3 +539,16 @@ document.addEventListener("click", async (event) => {
     window.location.reload();
   } catch (error) { showMessage(error.message, true); button.disabled = false; }
 });
+
+// Bundle 7 16.3: acknowledge a BLOCK rule for this application only.
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-rule-ack]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(button.dataset.workspaceId)}/review/rule-acknowledgements`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rule_id: button.dataset.ruleAck})});
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); button.disabled = false; }
+});

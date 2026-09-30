@@ -919,10 +919,21 @@ def binding_documents(binding: dict) -> list[str]:
                    if d.get("document_version_id")})
 
 
+def _table_exists(conn, name: str) -> bool:
+    """Tests build partial legacy chains; a migration never assumes an older table."""
+    if conn.dialect == "sqlite":
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() \
+            is not None
+    return bool(conn.execute(f"SELECT to_regclass('{name}') IS NOT NULL").fetchone()[0])
+
+
 def _backfill_references(conn) -> None:
     import datetime as _dt
     import json
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    if not all(_table_exists(conn, t) for t in ("application_approvals", "fill_run_grant_bindings",
+                                                 "submission_results")):
+        return
 
     def add(document_ids: list[str], referrer_type: str, referrer_id: str) -> None:
         for document_id in document_ids:
@@ -1024,3 +1035,34 @@ def _cv_strategy(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("033_cv_strategy", sqlite=_cv_strategy("sqlite"),
                                     postgres=_cv_strategy("postgres")))
+
+
+# ---- 034_rules_v2 (Task 23): data only; each account's current standing
+# policy re-saved as standing-policy.v2 with an identical rule list (16.2) ----
+
+def _resave_policies_as_v2(conn) -> None:
+    import datetime as _dt
+    import json
+    from webapp.persistence.autonomy_authority import save_policy_version
+    from product.standing_policy import STANDING_POLICY_V1, upgrade_policy
+    now = _dt.datetime.now(_dt.timezone.utc)
+    if not _table_exists(conn, "standing_policy_versions"):  # a partial legacy chain (tests)
+        return
+    accounts = [r[0] for r in conn.execute("SELECT DISTINCT account_id FROM standing_policy_versions").fetchall()]
+    for account_id in accounts:
+        row = conn.execute("SELECT policy_json FROM standing_policy_versions WHERE account_id = ? "
+                           "ORDER BY seq DESC LIMIT 1", (account_id,)).fetchone()
+        doc = json.loads(row[0])
+        if doc.get("schema_version") != STANDING_POLICY_V1:
+            continue
+        save_policy_version(conn, account_id=account_id, doc=upgrade_policy(doc), created_by="migration:034_rules_v2",
+                            now=now, commit=False)
+
+
+def _rules_v2(dialect: str):
+    def migrate(conn) -> None:
+        _resave_policies_as_v2(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("034_rules_v2", sqlite=_rules_v2("sqlite"), postgres=_rules_v2("postgres")))

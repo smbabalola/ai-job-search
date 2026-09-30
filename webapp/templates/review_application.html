@@ -7,6 +7,18 @@
 <section class="hero compact"><div><p class="eyebrow">Prepared application</p><h1>Review and approve</h1>
   <p>State: <strong data-review-state>{{ review.state.state }}</strong>{% if review.state.reasons %} · {{ review.state.reasons | join(", ") }}{% endif %}</p>
   <p data-copy>Filling does not submit. Submission will ask you separately.</p></div></section>
+{% if rule_advisories %}
+<section class="panel" data-rule-advisories>
+  <div class="panel-heading"><h2>Your rules</h2></div>
+  {% for a in rule_advisories %}<article class="evidence-row" data-rule-advisory="{{ a.rule_id }}" data-effect="{{ a.effect }}">
+    <div>{% if a.effect == "BLOCK" %}<strong>This job conflicts with your rule: {{ a.description }}</strong>{% else %}<strong>{{ a.description }}</strong> ({{ "check this" if a.effect == "REQUIRE_USER" else a.effect | lower }}){% endif %}
+      {% if a.via_unknown %}<p>We couldn't tell from the job posting, so the rule's "when unsure" setting applies.</p>{% endif %}
+      {% if a.needs_acknowledgement %}<p>To approve anyway, confirm you want to go ahead with this application.</p>
+      <button class="button secondary" type="button" data-rule-ack="{{ a.rule_id }}" data-workspace-id="{{ ws }}">Go ahead with this application</button>
+      {% elif a.effect == "BLOCK" %}<p>You chose to go ahead with this application.</p>{% endif %}</div>
+  </article>{% endfor %}
+</section>
+{% endif %}
 
 {% if mode.mode == "delta_only" %}
 <section class="panel" data-delta-only-banner>

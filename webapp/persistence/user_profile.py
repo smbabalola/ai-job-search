@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from product.user_profile import normalize_user_profile, user_profile_content_id
+from product.user_profile import normalize_user_profile_for_write, normalize_user_profile, user_profile_content_id
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
@@ -63,7 +63,7 @@ def save_user_profile(
         raise SearchWorkspaceError(f"unknown search workspace {search_workspace_id!r}")
     if workspace["status"] != "active":
         raise SearchWorkspaceError("archived search workspaces are read-only")
-    payload = normalize_user_profile(profile)
+    payload = normalize_user_profile_for_write(profile)  # Bundle 7: v2 writes only
     content_id = user_profile_content_id(payload)
     current = get_current_user_profile(
         conn, search_workspace_id, account_id=account_id

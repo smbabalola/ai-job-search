@@ -41,6 +41,7 @@ TITLES = {
     "submission_unclear": "Tell us whether this application went through",
     "challenge_handoff": "Complete the verification on the employer's page",
     "automation_question": "Automation needs your answer",
+    "rule_conflict": "This job conflicts with one of your rules",
 }
 
 
@@ -91,10 +92,16 @@ def _automation_questions(conn: dbapi.Connection, account_id: str) -> list[Actio
 SOURCES: list[Callable[..., list[ActionItem]]] = []
 
 
+def _load_sources() -> None:
+    """Modules that register sources (rule conflicts, onboarding)."""
+    import webapp.services.manual_rules  # noqa: F401
+
+
 def action_required(conn: dbapi.Connection, scope: Any, *, settings: Any, now: datetime) -> list[ActionItem]:
     account_id = scope.account_id
     items = _blockers(conn, account_id) + _workspace_items(conn, account_id, settings=settings, now=now)
     items += _automation_questions(conn, account_id)
+    _load_sources()
     for source in SOURCES:
         items += source(conn, scope, settings=settings, now=now)
     return items

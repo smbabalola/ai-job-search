@@ -1,4 +1,8 @@
-"""Deterministic User Profile v1 contract for job-search intent and preferences."""
+"""Deterministic User Profile contract for job-search intent and preferences.
+
+Bundle 7 (spec 16.1): user-profile.v2 adds rotation, relocation and job
+family preferences. v1 documents are read as v2 with defaults; writes are v2
+only. Preferences drive discovery; nothing refuses a job for a preference."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +12,12 @@ import unicodedata
 from typing import Any
 
 
-USER_PROFILE_VERSION = "user-profile.v1"
+USER_PROFILE_VERSION = "user-profile.v2"
+USER_PROFILE_V1 = "user-profile.v1"
+ROTATION_PREFERENCES = frozenset({"no_preference", "rotation_only", "rotation_acceptable", "no_rotation"})
+ROTATIONS = frozenset({"14/14", "21/21", "28/28", "other"})
+RELOCATION = frozenset({"no", "within_country", "international"})
+_FAMILY_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 REMOTE_PREFERENCES = frozenset({
     "no_preference",
     "remote_only",
@@ -41,6 +50,10 @@ ALLOWED_FIELDS = frozenset({
     "remote_preference",
     "recency_days",
     "compensation",
+    "rotation_preference",
+    "acceptable_rotations",
+    "relocation",
+    "job_family_ids",
 })
 MAX_LIST_ITEMS = 50
 MAX_TEXT_LENGTH = 200
@@ -60,7 +73,7 @@ def normalize_user_profile(value: Any) -> dict[str, Any]:
         raise UserProfileValidationError("$: must be an object")
     for field in sorted(set(value) - ALLOWED_FIELDS, key=str):
         errors.append(f"$.{field}: unsupported field")
-    if "schema_version" in value and value.get("schema_version") != USER_PROFILE_VERSION:
+    if "schema_version" in value and value.get("schema_version") not in (USER_PROFILE_VERSION, USER_PROFILE_V1):
         errors.append(f"$.schema_version: must be {USER_PROFILE_VERSION!r}")
 
     normalized: dict[str, Any] = {"schema_version": USER_PROFILE_VERSION}
@@ -83,9 +96,32 @@ def normalize_user_profile(value: Any) -> dict[str, Any]:
     normalized["recency_days"] = recency_days
     normalized["compensation"] = _normalize_compensation(value.get("compensation"), errors)
 
+    rotation_preference = value.get("rotation_preference", "no_preference")
+    if rotation_preference not in ROTATION_PREFERENCES:
+        errors.append("$.rotation_preference: must be one of " + ", ".join(sorted(ROTATION_PREFERENCES)))
+    normalized["rotation_preference"] = rotation_preference
+    rotations = _normalize_string_list(value.get("acceptable_rotations", []), "acceptable_rotations", errors)
+    _enum_list(rotations, ROTATIONS, "acceptable_rotations", errors)
+    normalized["acceptable_rotations"] = sorted(rotations)
+    relocation = value.get("relocation", "no")
+    if relocation not in RELOCATION:
+        errors.append("$.relocation: must be one of " + ", ".join(sorted(RELOCATION)))
+    normalized["relocation"] = relocation
+    families = _normalize_string_list(value.get("job_family_ids", []), "job_family_ids", errors)
+    if any(_FAMILY_ID.match(f) is None for f in families):
+        errors.append("$.job_family_ids: family ids are lowercase letters, digits, - or _")
+    normalized["job_family_ids"] = families
+
     if errors:
         raise UserProfileValidationError(errors)
     return normalized
+
+
+def normalize_user_profile_for_write(value: Any) -> dict[str, Any]:
+    """Writes are v2 only (spec 16.1): an explicit v1 document is refused."""
+    if isinstance(value, dict) and value.get("schema_version") == USER_PROFILE_V1:
+        raise UserProfileValidationError(f"$.schema_version: must be {USER_PROFILE_VERSION!r}")
+    return normalize_user_profile(value)
 
 
 def user_profile_content_id(profile: Any) -> str:

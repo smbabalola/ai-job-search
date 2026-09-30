@@ -32,7 +32,7 @@ from webapp.services.application_documents import record_uploaded_version, store
 def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, Any]:
     canary = f"CANARY-{uuid.uuid4().hex[:10]}"
     search = create_search_workspace(conn, name=f"{canary} search", account_id=account_id)
-    save_user_profile(conn, {"schema_version": "user-profile.v1", "target_roles": [f"{canary} role"]},
+    save_user_profile(conn, {"schema_version": "user-profile.v2", "target_roles": [f"{canary} role"]},
                       search_workspace_id=search["id"], account_id=account_id)
     job = create_workspace(conn, company=f"{canary} Company", title=f"{canary} Title", account_id=account_id)
     posting = save_artifact(conn, workspace_id=job["id"], artifact_type="job_posting_snapshot",

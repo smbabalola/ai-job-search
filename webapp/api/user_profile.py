@@ -44,6 +44,11 @@ class UserProfileBody(StrictBody):
     source_preferences: list[str] = Field(default_factory=list)
     recency_days: int = 14
     compensation: CompensationBody | None = None
+    # user-profile.v2 (Bundle 7 spec §16.1)
+    rotation_preference: str = "no_preference"
+    acceptable_rotations: list[str] = Field(default_factory=list)
+    relocation: str = "no"
+    job_family_ids: list[str] = Field(default_factory=list)
 
 
 @router.get("")

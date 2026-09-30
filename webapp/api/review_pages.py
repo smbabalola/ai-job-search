@@ -58,7 +58,24 @@ def review_page(workspace_id: str, request: Request, conn: dbapi.Connection = De
         "ws": workspace_id, "review": payload, "displayed_binding_hash": presented,
         "revisions": payload["selection_revisions"],
         "classification_proposals": classification_proposals(conn, workspace_id),
-        "provenance_words": PROVENANCE_WORDS})
+        "provenance_words": PROVENANCE_WORDS,
+        "rule_advisories": rule_advisories(conn, scope.account_id, workspace_id)})
+
+
+def rule_advisories(conn, account_id: str, workspace_id: str) -> list[dict]:
+    """Bundle 7 16.3: the standing-policy rules as advisories on the review page."""
+    from product.standing_policy import upgrade_policy
+    from webapp.persistence.autonomy_authority import current_policy
+    from webapp.services import manual_rules
+    policy = current_policy(conn, account_id)
+    if policy is None:
+        return []
+    descriptions = {r["id"]: r.get("description") or r["id"] for r in upgrade_policy(policy["doc"])["rules"]}
+    blocked = {a.rule_id for a in manual_rules.unacknowledged_blocks(conn, account_id=account_id,
+                                                                     workspace_id=workspace_id)}
+    return [{"rule_id": a.rule_id, "effect": a.effect, "description": descriptions.get(a.rule_id, a.rule_id),
+             "via_unknown": a.via_unknown, "needs_acknowledgement": a.rule_id in blocked}
+            for a in manual_rules.advisories(conn, account_id=account_id, workspace_id=workspace_id)]
 
 
 def classification_proposals(conn, workspace_id: str) -> list[dict]:

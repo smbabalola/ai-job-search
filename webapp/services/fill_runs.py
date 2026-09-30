@@ -194,6 +194,10 @@ def start_run(conn, *, settings: Settings, account_id: str, handoff_session_id: 
         workspace = get_workspace(conn, ws, account_id=account_id)
         if workspace is None or workspace.get("kind") != "job":
             raise LookupError(ws)
+        from webapp.services.manual_rules import fill_start_refusal  # Bundle 7 16.3
+        refusal = fill_start_refusal(conn, account_id=account_id, workspace_id=ws, now=now)
+        if refusal:
+            raise FillRefused(refusal)
         _reap_in_transaction(conn, now=now)  # an expired run never blocks a fresh one
         run = f.insert_run(conn, account_id=account_id, application_workspace_id=ws,
                            handoff_session_id=handoff_session_id, executor_instance_id=executor_instance_id,

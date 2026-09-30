@@ -40,6 +40,10 @@ class ApproveBody(_Body):
     displayed_binding_hash: str
 
 
+class RuleAcknowledgementBody(_Body):
+    rule_id: str
+
+
 class SelectBody(_Body):
     document_version_id: str
     expected_revision: int
@@ -94,6 +98,10 @@ def call(action: Callable[[], Any]) -> Any:
     try:
         return action()
     except ReviewRefused as exc:
+        if exc.reason == "rule_acknowledgement_required":  # Bundle 7 spec 21.3
+            from webapp.api.errors import error_response
+            return error_response("RULE_ACKNOWLEDGEMENT_REQUIRED",
+                                  "This job conflicts with one of your rules. Acknowledge it to continue.", 409)
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="not found") from exc
@@ -263,3 +271,38 @@ def get_preview(workspace_id: str, kind: str, request: Request, conn: dbapi.Conn
             raise ReviewRefused("not_previewable") from exc
         return {"document_version_id": document["id"], "sha256": document["sha256"], "paragraphs": paragraphs}
     return call(action)
+
+
+@router.get("/rule-advisories")
+def get_rule_advisories(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
+                        scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """Bundle 7 16.3: the standing-policy rules as advisories for this application."""
+    from webapp.persistence.workspaces import get_workspace
+    from webapp.services import manual_rules
+    if get_workspace(conn, workspace_id, account_id=scope.account_id) is None:
+        raise HTTPException(status_code=404, detail="not found")
+    blocked = {a.rule_id for a in manual_rules.unacknowledged_blocks(conn, account_id=scope.account_id,
+                                                                     workspace_id=workspace_id)}
+    return {"advisories": [{"rule_id": a.rule_id, "effect": a.effect, "message_key": a.message_key,
+                            "via_unknown": a.via_unknown, "needs_acknowledgement": a.rule_id in blocked}
+                           for a in manual_rules.advisories(conn, account_id=scope.account_id,
+                                                            workspace_id=workspace_id)]}
+
+
+@router.post("/rule-acknowledgements")
+def post_rule_acknowledgement(workspace_id: str, body: RuleAcknowledgementBody,
+                              conn: dbapi.Connection = Depends(get_conn),
+                              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """The user proceeds with this application despite a BLOCK rule (for this application only)."""
+    from webapp.persistence.workspaces import get_workspace
+    from webapp.services import manual_rules
+    if get_workspace(conn, workspace_id, account_id=scope.account_id) is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        row = manual_rules.acknowledge(conn, account_id=scope.account_id, workspace_id=workspace_id,
+                                       rule_id=body.rule_id, actor=scope.user_id or scope.account_id, now=_now())
+    except LookupError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn.commit()
+    return {"acknowledged": row["rule_id"]}

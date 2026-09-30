@@ -15,7 +15,12 @@ from typing import Any, Mapping
 from product.autonomy_contract import UNKNOWN, canonical_hash, is_unknown
 
 STANDING_POLICY_SCHEMA = "standing-policy"
-STANDING_POLICY_SCHEMA_VERSION = "standing-policy.v1"
+STANDING_POLICY_SCHEMA_VERSION = "standing-policy.v2"
+STANDING_POLICY_V1 = "standing-policy.v1"
+SCHEMA_VERSIONS = (STANDING_POLICY_V1, STANDING_POLICY_SCHEMA_VERSION)
+# The hash domain stays v1 (Bundle 7): v2 only adds optional attributes, so
+# every existing rule hash, and each acknowledgement bound to one, is kept.
+_HASH_VERSION = STANDING_POLICY_V1
 
 ATTRIBUTE_TYPES: dict[str, str] = {
     "fit.overall_score": "int",
@@ -26,6 +31,12 @@ ATTRIBUTE_TYPES: dict[str, str] = {
     "company.key": "str",
     "workspace.id": "str",
     "identity.strength": "str",
+    # standing-policy.v2 (Bundle 7 spec 16.2)
+    "job.family": "str",
+    "job.compensation_max_annual": "int",
+    "job.country": "str",
+    "job.remote_mode": "str",
+    "job.rotation": "str",
 }
 COMPARISON_OPS = {"lt", "lte", "gt", "gte"}
 OPERATORS = {"eq", "ne", "in", "not_in", "contains", "in_list"} | COMPARISON_OPS
@@ -35,7 +46,7 @@ REDUCIBLE_LEVELS = {"NONE", "PREPARE", "FILL"}
 LIMIT_KEYS = ("submit_per_day", "submit_per_run", "fill_per_day", "submit_per_employer_30d")
 DEFAULT_LIMITS = {"submit_per_day": 3, "submit_per_run": 3, "fill_per_day": 10, "submit_per_employer_30d": 2}
 BUDGET_CATEGORIES = ("LLM", "BROWSER", "EXTERNAL_API", "OTHER")
-_TOP_KEYS = {"schema_version", "timezone", "rules", "limits", "employer_lists"}
+_TOP_KEYS = {"schema_version", "timezone", "rules", "limits", "employer_lists", "currency"}
 _RULE_KEYS = {"id", "description", "when", "effect", "on_unknown"}
 
 
@@ -144,8 +155,11 @@ def validate_standing_policy(doc: Any) -> None:
     unknown = set(doc) - _TOP_KEYS
     if unknown:
         errors.append(f"unknown top-level keys: {sorted(unknown)}")
-    if doc.get("schema_version") != STANDING_POLICY_SCHEMA_VERSION:
-        errors.append("schema_version: must be standing-policy.v1")
+    if doc.get("schema_version") not in SCHEMA_VERSIONS:
+        errors.append("schema_version: must be standing-policy.v2 (or v1)")
+    currency = doc.get("currency")
+    if currency is not None and (not isinstance(currency, str) or re.fullmatch(r"[A-Z]{3}", currency) is None):
+        errors.append("currency: must be a 3-letter uppercase currency code")
     tz = doc.get("timezone")
     try:
         if not isinstance(tz, str):
@@ -223,11 +237,11 @@ def validate_standing_policy(doc: Any) -> None:
 
 
 def policy_hash(doc: Mapping[str, Any]) -> str:
-    return canonical_hash(STANDING_POLICY_SCHEMA, STANDING_POLICY_SCHEMA_VERSION, doc)
+    return canonical_hash(STANDING_POLICY_SCHEMA, _HASH_VERSION, doc)
 
 
 def rule_hash(rule: Mapping[str, Any]) -> str:
-    return canonical_hash("standing-policy-rule", STANDING_POLICY_SCHEMA_VERSION, rule)
+    return canonical_hash("standing-policy-rule", _HASH_VERSION, rule)
 
 
 def referenced_attributes(pred: Mapping[str, Any]) -> list[str]:
@@ -388,3 +402,86 @@ def normalize_employment_type(text: str | None) -> Any:
     if len(matches) != 1:
         return UNKNOWN
     return matches.pop()
+
+
+# ---- standing-policy.v2 (Bundle 7 spec 16.2-16.3) ----------------------------------------
+
+def upgrade_policy(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """A v1 document read as v2 (the new attributes are optional); a copy."""
+    import copy
+    upgraded = copy.deepcopy(dict(doc))
+    upgraded["schema_version"] = STANDING_POLICY_SCHEMA_VERSION
+    return upgraded
+
+
+WELL_KNOWN_RULES = frozenset({"pref.salary_floor", "pref.excluded_locations", "pref.rotation",
+                              "pref.excluded_employers"})
+EXCLUDED_EMPLOYERS_LIST = "pref.excluded_employers"
+_WELL_KNOWN_DESCRIPTIONS = {
+    "pref.salary_floor": "Pay below my minimum",
+    "pref.excluded_locations": "Jobs in countries I exclude",
+    "pref.rotation": "A rotation I do not accept",
+    "pref.excluded_employers": "Employers I exclude",
+}
+
+
+def _effect(value: Any, allowed: tuple[str, ...], what: str) -> dict[str, Any]:
+    if value not in allowed:
+        raise StandingPolicyError([f"{what} must be one of {', '.join(allowed)}"])
+    return {"type": value}
+
+
+def build_well_known_rule(rule_id: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    """The Rules UI's rules, as ordinary editable rules. A BLOCK is never
+    weakened on missing information: its on_unknown is REQUIRE_USER."""
+    if rule_id not in WELL_KNOWN_RULES:
+        raise StandingPolicyError([f"unknown well-known rule {rule_id}"])
+    description = _WELL_KNOWN_DESCRIPTIONS[rule_id]
+    if rule_id == "pref.salary_floor":
+        amount = params.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+            raise StandingPolicyError(["the salary floor is a positive whole amount"])
+        effect = _effect(params.get("effect", "REQUIRE_USER"), ("BLOCK", "REQUIRE_USER"), "the salary-floor effect")
+        on_unknown = _effect(params.get("on_unknown", "REQUIRE_USER"), ("NO_EFFECT", "REQUIRE_USER"),
+                             "the salary-floor unknown handling")
+        if effect["type"] == "BLOCK" and on_unknown["type"] == "NO_EFFECT":
+            raise StandingPolicyError(["a BLOCK rule cannot ignore missing pay information; ask me instead"])
+        when = {"attr": "job.compensation_max_annual", "op": "lt", "value": amount}
+    elif rule_id == "pref.excluded_locations":
+        countries = sorted({str(c).strip().upper() for c in params.get("countries", []) if str(c).strip()})
+        if not countries or any(re.fullmatch(r"[A-Z]{2}", c) is None for c in countries):
+            raise StandingPolicyError(["excluded countries are two-letter ISO codes"])
+        effect, on_unknown = {"type": "BLOCK"}, {"type": "REQUIRE_USER"}
+        when = {"attr": "job.country", "op": "in", "value": countries}
+    elif rule_id == "pref.rotation":
+        accepted = sorted({str(r).strip() for r in params.get("accepted", []) if str(r).strip()})
+        if not accepted or any(re.fullmatch(r"[0-9]{1,2}/[0-9]{1,2}", r) is None for r in accepted):
+            raise StandingPolicyError(["accepted rotations look like 14/14"])
+        effect = _effect(params.get("effect", "REQUIRE_USER"), ("BLOCK", "REQUIRE_USER"), "the rotation effect")
+        on_unknown = _effect(params.get("on_unknown", "NO_EFFECT"), ("NO_EFFECT", "REQUIRE_USER"),
+                             "the rotation unknown handling")
+        if effect["type"] == "BLOCK":
+            on_unknown = {"type": "REQUIRE_USER"}
+        when = {"attr": "job.rotation", "op": "not_in", "value": accepted}
+    else:  # pref.excluded_employers: the employer list of the same name
+        effect, on_unknown = {"type": "BLOCK"}, {"type": "REQUIRE_USER"}
+        when = {"attr": "company.key", "op": "in_list", "value": EXCLUDED_EMPLOYERS_LIST}
+    return {"id": rule_id, "description": description, "when": when, "effect": effect, "on_unknown": on_unknown}
+
+
+@dataclass(frozen=True)
+class Advisory:
+    rule_id: str
+    effect: str
+    message_key: str
+    rule_hash: str = ""
+    observed_fingerprint: str = ""
+    via_unknown: bool = False
+
+
+def evaluate_manual(policy: Mapping[str, Any], attributes: Mapping[str, Any]) -> list[Advisory]:
+    """Manual mode (16.3): the same rules, as advisories. BLOCK needs the
+    user's acknowledgement before approval; other effects are displayed only."""
+    return [Advisory(o.rule_id, o.applied_effect["type"], f"rule.{o.rule_id}.{o.applied_effect['type']}",
+                     o.rule_hash, o.observed_fingerprint, o.via_unknown)
+            for o in evaluate_rules(policy, attributes) if o.applied_effect is not None]

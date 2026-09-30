@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Preferences and rules · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Preferences and rules</h1>
+  <p>Preferences shape what we look for. Rules restrict what happens: they can stop or pause an application, never allow more. Every change {{ note }}.</p></div></section>
+{% if saved %}<p class="notice" role="status">Saved.</p>{% endif %}
+<nav class="tabs" aria-label="Preference sections">
+  <a href="/preferences?tab=preferences" {% if tab == "preferences" %}aria-current="page"{% endif %}>Preferences</a>
+  <a href="/preferences?tab=families" {% if tab == "families" %}aria-current="page"{% endif %}>Job families and CVs</a>
+  <a href="/preferences?tab=rules" {% if tab == "rules" %}aria-current="page"{% endif %}>Rules</a>
+</nav>
+{% if tab == "preferences" %}
+<section class="panel" data-preferences-tab="preferences">
+  {% if search_workspace %}
+  <p>Roles, locations, seniority and pay are set in <a href="/search-workspaces/{{ search_workspace.id }}/preferences">search preferences</a>. Rotation and relocation:</p>
+  <form method="post" action="/preferences/profile">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <input type="hidden" name="search_workspace_id" value="{{ search_workspace.id }}">
+    <label class="field"><span>Rotation work</span><select name="rotation_preference">
+      {% for value, label in [("no_preference", "No preference"), ("rotation_only", "Rotation jobs only"), ("rotation_acceptable", "Rotation is fine"), ("no_rotation", "No rotation")] %}
+      <option value="{{ value }}" {% if profile.rotation_preference == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <fieldset class="field"><legend>Rotations I'd accept</legend>
+      {% for r in ["14/14", "21/21", "28/28", "other"] %}<label class="checkbox"><input type="checkbox" name="acceptable_rotations" value="{{ r }}" {% if r in profile.acceptable_rotations %}checked{% endif %}> {{ r }}</label>{% endfor %}</fieldset>
+    <label class="field"><span>Relocation</span><select name="relocation">
+      {% for value, label in [("no", "I won't relocate"), ("within_country", "Within my country"), ("international", "Internationally")] %}
+      <option value="{{ value }}" {% if profile.relocation == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <button class="button" type="submit">Save preferences</button>
+  </form>
+  {% else %}<p>Create a <a href="/search-workspaces">search</a> first.</p>{% endif %}
+</section>
+{% elif tab == "families" %}
+<section class="panel" data-preferences-tab="families">
+  {% for family in families %}<p><strong>{{ family.name }}</strong>: {{ family.match.title_any | join(", ") }}
+    {% set rule = strategy.by_family.get(family.id) %}{% if rule and rule.item_id and items.get(rule.item_id) %} → {{ items[rule.item_id].title }}{% if rule.mode == "TAILOR_FROM" %} (tailored){% endif %}{% endif %}</p>
+  {% else %}<p>No job families yet.</p>{% endfor %}
+  <p><a class="button" href="/cvs/strategy">Edit job families and CVs</a></p>
+</section>
+{% else %}
+<form class="panel" method="post" action="/preferences/rules" data-preferences-tab="rules">
+  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  {% set floor = rules.get("pref.salary_floor") %}
+  <div class="panel-heading"><h2>Minimum pay</h2></div>
+  <label class="field"><span>Yearly minimum (leave empty for none)</span><input name="salary_amount" inputmode="numeric" value="{{ floor.when.value if floor else '' }}"></label>
+  <label class="field"><span>Currency</span><input name="salary_currency" maxlength="3" value="{{ currency or 'GBP' }}"></label>
+  <label class="field"><span>When pay is lower</span><select name="salary_effect">
+    <option value="REQUIRE_USER" {% if floor and floor.effect.type == "REQUIRE_USER" %}selected{% endif %}>Ask me</option>
+    <option value="BLOCK" {% if floor and floor.effect.type == "BLOCK" %}selected{% endif %}>Don't apply</option></select></label>
+  <label class="field"><span>When pay isn't stated (or in another currency)</span><select name="salary_unknown">
+    <option value="REQUIRE_USER">Ask me</option>
+    <option value="NO_EFFECT" {% if floor and floor.on_unknown.type == "NO_EFFECT" %}selected{% endif %}>Ignore (only when "Ask me" above)</option></select></label>
+  {% set places = rules.get("pref.excluded_locations") %}
+  <div class="panel-heading"><h2>Countries I exclude</h2></div>
+  <label class="field"><span>Two-letter country codes, comma separated</span><input name="excluded_countries" value="{{ places.when.value | join(', ') if places else '' }}" placeholder="RU, IR"></label>
+  {% set rotation = rules.get("pref.rotation") %}
+  <div class="panel-heading"><h2>Rotations I accept</h2></div>
+  <fieldset class="field">{% for r in ["14/14", "21/21", "28/28"] %}<label class="checkbox"><input type="checkbox" name="accepted_rotations" value="{{ r }}" {% if rotation and r in rotation.when.value %}checked{% endif %}> {{ r }}</label>{% endfor %}</fieldset>
+  <label class="field"><span>Other rotations</span><select name="rotation_effect">
+    <option value="REQUIRE_USER">Ask me</option>
+    <option value="BLOCK" {% if rotation and rotation.effect.type == "BLOCK" %}selected{% endif %}>Don't apply</option></select></label>
+  <div class="panel-heading"><h2>Employers I exclude</h2></div>
+  <label class="field"><span>One employer per line</span><textarea name="excluded_employers" rows="4">{% for key in excluded_employers %}{{ key[5:] if key.startswith("name:") else key }}
+{% endfor %}</textarea></label>
+  <p>A job that breaks a "Don't apply" rule is never prepared automatically. When you prepare it yourself you'll be asked to confirm before approving.</p>
+  <button class="button" type="submit">Save rules</button>
+</form>
+{% endif %}
+{% endblock %}
