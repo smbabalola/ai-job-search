@@ -291,6 +291,8 @@ def test_every_openai_provider_caps_output_and_input():
     assert understanding.MAX_SOURCE_CHARACTERS == 100_000
     assert 0 < intelligence.MAX_INPUT_CHARACTERS <= 200_000
     assert 0 < semantic.MAX_INPUT_CHARACTERS <= 200_000
+    from product import cv_extraction, openai_cv_extraction_provider as cv_openai  # Task 24
+    assert 0 < cv_openai.MAX_OUTPUT_TOKENS <= 8_192 and 0 < cv_extraction.MAX_TEXT_CHARACTERS <= 200_000
 
 
 def test_the_intelligence_provider_refuses_oversize_input_before_the_call(monkeypatch):

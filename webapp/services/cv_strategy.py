@@ -91,6 +91,9 @@ def _job_context(conn: dbapi.Connection, account_id: str, workspace_id: str) -> 
 def _select(conn: dbapi.Connection, scope: Any, workspace_id: str, document_version_id: str) -> None:
     from webapp.persistence.application_documents import get_selection
     from webapp.services.application_documents import apply_selection
+    workspace = get_workspace(conn, workspace_id, account_id=scope.account_id)
+    if workspace is None or workspace.get("workflow_status") not in (None, "drafted"):
+        return  # a closed application's documents never change; the resolution is still recorded
     current = get_selection(conn, workspace_id, "cv", account_id=scope.account_id)
     if current is not None and current["document_version_id"] == document_version_id:
         return

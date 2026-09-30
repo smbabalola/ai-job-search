@@ -33,6 +33,10 @@ def test_registry_contains_initial_four_subjects():
         "demographic.eeo",
         "background.criminal_record",
         "health.disability",
+        # Bundle 7 onboarding (spec §15.2): only the subjects that were absent
+        "contact.email",
+        "contact.phone",
+        "location.current",
     }
 
 

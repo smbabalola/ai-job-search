@@ -57,6 +57,9 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
                                         filename=f"{canary}-library.docx", media_type_hint=None,
                                         documents_root=documents_root, note=f"{canary} note",
                                         now=datetime.now(timezone.utc))
+    from webapp.services import cv_strategy  # a ready account (spec 15.2): the default CV rule resolves
+    cv_strategy.save_cv_strategy(conn, cv_scope, {"default": {"mode": "LATEST_VERSION", "item_id": cv_item["id"]},
+                                                  "by_family": {}}, now=datetime.now(timezone.utc))
     conn.commit()
     from webapp.services.notifications import notify
     notify(conn, account_id=account_id, kind="fill.failed", subject_type="workspace", subject_id=job["id"],

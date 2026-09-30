@@ -76,3 +76,11 @@ async def fair_use_limit_handler(request: Request, exc: Exception) -> JSONRespon
 async def document_rejected_handler(request: Request, exc: Exception) -> JSONResponse:
     """Bundle 7 Review Focus 4: a refused upload names its reason; nothing was stored."""
     return error_response("DOCUMENT_REJECTED", exc.message, 400, detail={"code": exc.code})
+
+
+async def onboarding_incomplete_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Bundle 7 15.2: what is missing, and where to fix it."""
+    from webapp.services.onboarding_v1 import STEP_FOR_MISSING
+    steps = sorted({STEP_FOR_MISSING[m] for m in exc.missing if STEP_FOR_MISSING.get(m)})
+    return error_response("ONBOARDING_INCOMPLETE", "Finish setting up your account before preparing applications.",
+                          409, detail={"missing": exc.missing, "steps": [f"/onboarding/{s}" for s in steps]})

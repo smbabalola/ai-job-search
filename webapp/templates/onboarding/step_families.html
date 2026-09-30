@@ -1,0 +1,14 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<p>We suggest one job family per role you want. Choose the CV each uses.</p>
+<form method="post" action="/onboarding/families"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  {% set roles = profile.target_roles | default([]) %}
+  <label class="field"><span>CV for other jobs</span><select name="default_cv"><option value="">Ask me each time</option>{% for i in items %}<option value="latest:{{ i.id }}" {% if loop.first %}selected{% endif %}>{{ i.title }}</option>{% endfor %}</select></label>
+  {% for role in roles %}<fieldset class="field-group" data-family-suggestion="{{ loop.index0 }}">
+    <input type="hidden" name="family_name_{{ loop.index0 }}" value="{{ role }}">
+    <label class="field"><span>{{ role }}: title words</span><input name="family_words_{{ loop.index0 }}" value="{{ role | lower }}"></label>
+    <label class="field"><span>CV</span><select name="family_cv_{{ loop.index0 }}"><option value="">Ask me each time</option>{% for i in items %}<option value="latest:{{ i.id }}" {% if loop.first %}selected{% endif %}>{{ i.title }}</option>{% endfor %}</select></label>
+  </fieldset>{% endfor %}
+  <button class="button" type="submit">Continue</button>
+</form>
+{% endblock %}

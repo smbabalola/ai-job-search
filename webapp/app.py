@@ -26,6 +26,7 @@ from webapp.api.notifications import router as notifications_router
 from webapp.api.cv_library import router as cv_library_router
 from webapp.api.cv_strategy import router as cv_strategy_router
 from webapp.api.preferences import router as preferences_router
+from webapp.api.onboarding_v1 import router as onboarding_v1_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -180,6 +181,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(FairUseLimitReached, fair_use_limit_handler)
     from webapp.services.cv_library import DocumentRejected
     app.add_exception_handler(DocumentRejected, document_rejected_handler)
+    from webapp.api.errors import onboarding_incomplete_handler
+    from webapp.services.onboarding_v1 import OnboardingIncomplete
+    app.add_exception_handler(OnboardingIncomplete, onboarding_incomplete_handler)
     app.add_exception_handler(DatabaseBusy, database_busy_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
@@ -206,6 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(cv_strategy_router)  # before cv_library: /cvs/strategy is not an item id
     app.include_router(cv_library_router)
     app.include_router(preferences_router)
+    app.include_router(onboarding_v1_router)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)

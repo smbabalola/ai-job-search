@@ -1,0 +1,12 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<form method="post" action="/onboarding/eligibility"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <label class="field"><span>Country you mostly apply in (two-letter code)</span><input name="country" maxlength="2" placeholder="GB"></label>
+  <label class="field"><span>Do you have the right to work there?</span><select name="right_to_work"><option value="">Prefer to answer per job</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+  <label class="field"><span>Do you need visa sponsorship there?</span><select name="sponsorship"><option value="">Prefer to answer per job</option><option value="no">No</option><option value="yes">Yes</option></select></label>
+  <label class="field"><span>Notice period</span><input name="notice_period" placeholder="1 month"></label>
+  <label class="field"><span>Earliest start date</span><input name="start_date" type="date"></label>
+  <p>Relocation and rotation preferences are in <a href="/preferences">Preferences</a>.</p>
+  <button class="button" type="submit">Continue</button>
+</form>
+{% endblock %}

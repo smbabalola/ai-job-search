@@ -318,6 +318,6 @@ def test_understanding_records_the_cv_resolution_and_intelligence_fulfils_tailor
     outcomes = [r[0] for r in conn.execute("SELECT outcome FROM application_cv_resolutions WHERE "
                                            "application_workspace_id = ?", (ws,))]
     conn.close()
-    assert outcomes == ["NEEDS_USER_CHOICE"]  # no CV strategy yet
+    assert outcomes == ["RESOLVED_VERSION"]  # the ready account's default CV rule
     assert _post(client, f"/api/workspaces/{ws}/application-intelligence", json={"request_id": "i1"}).status_code == 200
     assert fulfilled == [ws]

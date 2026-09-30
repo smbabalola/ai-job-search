@@ -538,6 +538,30 @@ def create_profile_entry(
     return result
 
 
+def create_profile_entries(
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
+    entries: list[tuple[str, dict[str, Any]]], account_id: str,
+) -> dict[str, Any]:
+    """Bundle 7 (spec 15.3): several entries in ONE mutation, so an accept
+    batch is a single profile source revision. Returns the new entry ids in
+    input order."""
+    if not entries:
+        raise ProfileManagerError("no entries to create")
+    prepared = [(kind, _normalize_fields(kind, fields), f"profile-entry-{uuid.uuid4().hex[:20]}")
+                for kind, fields in entries]
+
+    def operation(markdown: str, current: list[SourceEntry]) -> tuple[str, bool]:
+        lines = markdown.splitlines()
+        for kind, normalized, entry_id in prepared:
+            lines = _insert_entry(lines, kind, normalized, _render_entry(entry_id, kind, normalized)) or lines
+        return "\n".join(lines).rstrip() + "\n", True
+
+    result = _persist_mutation(conn, root=root, expected_revision=expected_revision, operation=operation,
+                               account_id=account_id)
+    result["entry_ids"] = [entry_id for _, _, entry_id in prepared]
+    return result
+
+
 def update_profile_entry(
     conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     entry_id: str, kind: str, fields: dict[str, Any],

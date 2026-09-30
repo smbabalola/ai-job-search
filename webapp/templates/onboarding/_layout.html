@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Getting started · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Getting started</p><h1>{{ title }}</h1>
+  <ol class="onboarding-progress" data-onboarding-progress>{% for id, label in steps.items() %}<li data-step="{{ id }}" data-step-state="{{ state.steps[id] }}"{% if id == step %} aria-current="step"{% endif %}><a href="/onboarding/{{ id }}">{{ label }}</a>{% if state.steps[id] == "DONE" %} ✓{% elif state.steps[id] == "SKIPPED" %} (skipped){% endif %}</li>{% endfor %}</ol></div></section>
+<section class="panel" data-onboarding-step="{{ step }}">
+{% block step %}{% endblock %}
+</section>
+{% if skippable %}<form method="post" action="/onboarding/{{ step }}/skip" class="inline-form"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button secondary" type="submit">{% if optional %}Skip this step{% else %}Do this later{% endif %}</button></form>{% endif %}
+{% endblock %}

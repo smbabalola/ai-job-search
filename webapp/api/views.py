@@ -93,8 +93,22 @@ def dashboard(
                 in ("job_workflow_intro", "document_workflow_intro")
             ),
             **_search_context(conn, scope.account_id),
+            "onboarding_checklist": _onboarding_checklist(request, conn, scope),
         },
     )
+
+
+def _onboarding_checklist(request: Request, conn, scope: AccountScope):
+    """Bundle 7 15.4: the onboarding.v1 checklist until every required step is DONE or SKIPPED."""
+    if not request.app.state.settings.auth_enabled:
+        return None
+    from webapp.api.onboarding_v1 import STEP_TITLES
+    from webapp.services.onboarding_v1 import OPTIONAL_STEPS, onboarding_state
+    state = onboarding_state(conn, scope)
+    if state["complete"]:
+        return None
+    return [{"step": step, "title": STEP_TITLES[step], "state": value, "optional": step in OPTIONAL_STEPS}
+            for step, value in state["steps"].items()]
 
 
 @router.get("/profile", response_class=HTMLResponse)

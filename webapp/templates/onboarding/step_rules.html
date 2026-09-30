@@ -1,0 +1,5 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<p>Rules stop or pause applications you don't want, for example pay below your minimum. You can set them now in <a href="/preferences?tab=rules">Rules</a> or later.</p>
+<form method="post" action="/onboarding/rules/done"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button" type="submit">Continue</button></form>
+{% endblock %}

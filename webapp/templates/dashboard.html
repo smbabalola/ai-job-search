@@ -3,6 +3,10 @@
 {% block onboarding_autotrigger %} data-onboarding-autotrigger="dashboard_intro"{% endblock %}
 {% block onboarding_valid_replay %} data-onboarding-valid-replay="dashboard_intro"{% endblock %}
 {% block content %}
+{% if onboarding_checklist %}<section class="panel" data-onboarding-checklist>
+  <div class="panel-heading"><h2>Finish setting up</h2><a class="button button-small" href="/onboarding">Continue</a></div>
+  <ol>{% for item in onboarding_checklist %}<li data-checklist-step="{{ item.step }}" data-step-state="{{ item.state }}"><a href="/onboarding/{{ item.step }}">{{ item.title }}</a>{% if item.state == "DONE" %} ✓{% elif item.state == "SKIPPED" %} (skipped){% elif item.optional %} (optional){% endif %}</li>{% endfor %}</ol>
+</section>{% endif %}
 {% if pending_workspace_replay %}<div class="onboarding-replay-prompt" role="status">
   {% if workspaces %}Choose a job below to replay this walkthrough.
   {% else %}This walkthrough becomes available once you have a job to work with. <a href="/new-job">Add a job</a> to get started.{% endif %}

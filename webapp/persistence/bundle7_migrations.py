@@ -1066,3 +1066,83 @@ def _rules_v2(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("034_rules_v2", sqlite=_rules_v2("sqlite"), postgres=_rules_v2("postgres")))
+
+
+# ---- 035_onboarding (Task 24): onboarding progress, CV import runs and the
+# proposals that need the user's confirmation (spec 15.1) --------------------
+
+ONBOARDING_STEP_IDS = ("about", "cv", "import", "eligibility", "preferences", "families", "rules", "extension")
+
+_ONBOARDING_DDL = """
+CREATE TABLE account_onboarding (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE profile_import_runs (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    document_version_id TEXT NOT NULL REFERENCES application_document_versions(id),
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'PROPOSED', 'FAILED')),
+    provider_audit_id TEXT,
+    reservation_id TEXT,
+    error_code TEXT,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX idx_profile_import_runs_account ON profile_import_runs(account_id, created_at);
+CREATE TABLE profile_proposals (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    import_run_id TEXT NOT NULL REFERENCES profile_import_runs(id),
+    target TEXT NOT NULL CHECK (target IN ('PROFILE_ENTRY', 'ANSWER')),
+    kind TEXT NOT NULL,
+    fields_json TEXT NOT NULL,
+    source_excerpt TEXT NOT NULL,
+    confidence REAL NOT NULL,  -- 0..1, validated by product.cv_extraction (a REAL CHECK breaks dialect parity)
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_profile_proposals_run ON profile_proposals(import_run_id, seq);
+CREATE TABLE profile_proposal_resolutions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    proposal_id TEXT NOT NULL UNIQUE REFERENCES profile_proposals(id),
+    resolution TEXT NOT NULL CHECK (resolution IN ('ACCEPTED', 'EDITED_ACCEPTED', 'REJECTED')),
+    final_fields_json TEXT,
+    resulting_ref TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+
+
+def _seed_local_onboarding(conn) -> None:
+    """In local mode the operator account that already has a profile is
+    onboarded: every step DONE (idempotent)."""
+    import datetime as _dt
+    import json
+    if conn.execute("SELECT 1 FROM accounts WHERE id = 'account_local'").fetchone() is None:
+        return
+    configured = conn.execute(
+        "SELECT 1 FROM artifacts a JOIN account_profiles p ON p.workspace_id = a.workspace_id "
+        "WHERE p.account_id = 'account_local' AND a.artifact_type = 'profile_snapshot' LIMIT 1").fetchone()
+    if configured is None:
+        return
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    state = {"version": "onboarding.v1", "steps": {step: "DONE" for step in ONBOARDING_STEP_IDS}}
+    conn.execute("INSERT INTO account_onboarding (account_id, state_json, updated_at) VALUES ('account_local', ?, ?) "
+                 "ON CONFLICT DO NOTHING", (json.dumps(state, sort_keys=True), now))
+
+
+def _onboarding(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _ONBOARDING_DDL)
+        _append_only(conn, dialect, "profile_proposals", "profile_proposal_resolutions")
+        if _table_exists(conn, "account_profiles") and _table_exists(conn, "artifacts"):
+            _seed_local_onboarding(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("035_onboarding", sqlite=_onboarding("sqlite"), postgres=_onboarding("postgres")))

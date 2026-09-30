@@ -1,0 +1,10 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<form method="post" action="/onboarding/preferences"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <label class="field"><span>Roles you want (comma separated)</span><input name="target_roles" required value="{{ profile.target_roles | default([]) | join(', ') }}" placeholder="Drilling Engineer, Well Engineer"></label>
+  <label class="field"><span>Locations (comma separated)</span><input name="locations" value="{{ profile.locations | default([]) | join(', ') }}"></label>
+  <label class="field"><span>Remote work</span><select name="remote_preference">{% for v, l in [("no_preference", "No preference"), ("remote_only", "Remote only"), ("remote_or_hybrid", "Remote or hybrid"), ("onsite_preferred", "On-site preferred")] %}<option value="{{ v }}" {% if profile.remote_preference == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+  <p>More detail (seniority, pay, sources) is in your search preferences.</p>
+  <button class="button" type="submit">Continue</button>
+</form>
+{% endblock %}

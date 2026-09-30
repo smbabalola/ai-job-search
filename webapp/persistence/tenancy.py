@@ -197,6 +197,11 @@ TENANT_TABLES: dict[str, TableSpec] = {
     # CV strategy (Bundle 7, 033_cv_strategy)
     "account_policy_documents": A,
     "application_cv_resolutions": A,
+    # onboarding and CV import (Bundle 7, 035_onboarding)
+    "account_onboarding": A,
+    "profile_import_runs": A,
+    "profile_proposals": A,
+    "profile_proposal_resolutions": TableSpec(("profile_proposals", "proposal_id")),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

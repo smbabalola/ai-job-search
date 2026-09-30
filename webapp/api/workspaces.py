@@ -59,7 +59,13 @@ def _prepare_stage(request: Request, conn: dbapi.Connection, scope: AccountScope
     workspace (a duplicate in flight is ACTION_IN_PROGRESS). Ownership is
     checked first, so a foreign workspace is a 404 and never touches the ledger."""
     get_job_workspace(conn, workspace_id, account_id=scope.account_id)
-    return request.app.state.metering.prepare(conn, scope, workspace_id, work, stage=stage)
+    metering = request.app.state.metering
+    if metering.enforced:  # Bundle 7 15.2: ready to prepare (after the entitlement check), before any charge
+        from datetime import datetime, timezone
+        from webapp.services.onboarding_v1 import require_prepare_ready
+        metering.require_feature(conn, scope, "ai.prepare")
+        require_prepare_ready(conn, scope, now=datetime.now(timezone.utc))
+    return metering.prepare(conn, scope, workspace_id, work, stage=stage)
 
 
 def _service_error(exc: Exception) -> HTTPException:
