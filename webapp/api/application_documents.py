@@ -22,10 +22,11 @@ from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/application-documents", tags=["application-documents"])
-reusable_router = APIRouter(prefix="/api/reusable-application-documents", tags=["application-documents"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}/application-documents", tags=["application-documents"])
+reusable_router = APIRouter(dependencies=[Depends(USER)], prefix="/api/reusable-application-documents", tags=["application-documents"])
 
 
 class SelectionBody(BaseModel):

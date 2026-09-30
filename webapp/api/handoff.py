@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from webapp.api.route_classes import EXTENSION, PUBLIC, USER
 from webapp.api.dependencies import (
     get_account_scope,
     get_conn,
@@ -120,7 +121,7 @@ def _translate(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/pairing/generate", status_code=201)
+@router.post("/pairing/generate", status_code=201, dependencies=[Depends(USER)])
 def post_generate_pairing(
     scope: AccountScope = Depends(get_account_scope),
     conn: dbapi.Connection = Depends(get_conn),
@@ -131,7 +132,7 @@ def post_generate_pairing(
     }
 
 
-@router.post("/pairing/exchange", status_code=201)
+@router.post("/pairing/exchange", status_code=201, dependencies=[Depends(PUBLIC)])
 def post_exchange_pairing(
     body: ExchangePairingBody,
     conn: dbapi.Connection = Depends(get_conn),
@@ -144,7 +145,7 @@ def post_exchange_pairing(
         raise _translate(exc) from exc
 
 
-@router.post("/sessions", status_code=201)
+@router.post("/sessions", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_start_session(
     body: StartSessionBody,
     scope: AccountScope = Depends(get_extension_scope),
@@ -158,7 +159,7 @@ def post_start_session(
     return {**session, "session_token": token}
 
 
-@router.get("/sessions/discover")
+@router.get("/sessions/discover", dependencies=[Depends(EXTENSION)])
 def get_discover_sessions(
     workspace_id: str, target_domain: str,
     scope: AccountScope = Depends(get_extension_scope),
@@ -178,7 +179,7 @@ def get_discover_sessions(
         raise _translate(exc) from exc
 
 
-@router.post("/sessions/{session_id}/resume", status_code=201)
+@router.post("/sessions/{session_id}/resume", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_resume_session(
     session_id: str,
     scope: AccountScope = Depends(get_extension_scope),
@@ -191,7 +192,7 @@ def post_resume_session(
     return {"session_token": token}
 
 
-@router.get("/sessions/{session_id}/documents/{kind}")
+@router.get("/sessions/{session_id}/documents/{kind}", dependencies=[Depends(EXTENSION)])
 def get_session_document(
     session_id: str, kind: str,
     scope: SessionScope = Depends(get_session_scope),
@@ -228,7 +229,7 @@ def get_session_document(
     )
 
 
-@router.post("/sessions/{session_id}/events", status_code=201)
+@router.post("/sessions/{session_id}/events", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_record_event(
     session_id: str, body: RecordEventBody,
     scope: SessionScope = Depends(get_session_scope),
@@ -242,7 +243,7 @@ def post_record_event(
         raise _translate(exc) from exc
 
 
-@router.get("/sessions/{session_id}/events")
+@router.get("/sessions/{session_id}/events", dependencies=[Depends(EXTENSION)])
 def get_replay_events(
     session_id: str,
     scope: SessionScope = Depends(get_session_scope),
@@ -254,7 +255,7 @@ def get_replay_events(
         raise _translate(exc) from exc
 
 
-@router.post("/sessions/{session_id}/confirm-submission", status_code=201)
+@router.post("/sessions/{session_id}/confirm-submission", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_confirm_submission(
     session_id: str, body: ConfirmSubmissionBody,
     scope: SessionScope = Depends(get_session_scope),

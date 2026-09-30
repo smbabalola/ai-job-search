@@ -16,8 +16,9 @@ from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import review_snapshot
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/applications", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/applications", tags=["review"])
 LISTED = ("READY_FOR_REVIEW", "NEEDS_REVIEW", "APPROVED_FOR_FILL")
 
 

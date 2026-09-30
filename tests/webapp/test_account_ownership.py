@@ -5,7 +5,8 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from webapp.app import create_app
-from webapp.api.dependencies import get_account_scope
+from webapp.api.dependencies import get_account_scope, restricted_scope
+from webapp.api.route_classes import route_class_of
 from webapp.api.handoff import get_extension_scope, get_session_scope
 from webapp.config import Settings
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID, create_account
@@ -46,11 +47,18 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
     # in-session traffic once a handoff session exists — events, replay,
     # confirm-submission). Any one satisfies the "resolves account scope"
     # invariant.
-    scoping_dependencies = {get_account_scope, get_extension_scope, get_session_scope}
+    scoping_dependencies = {get_account_scope, get_extension_scope, get_session_scope, restricted_scope}
+    # Bundle 7: PUBLIC routes (sign-up, login, reset, ...) are unscoped by
+    # design, and these USER routes act on the signed-in *user* taken from the
+    # session (their account is resolved from the same session), not on
+    # account-owned rows.
+    user_session_routes = {"/auth/me", "/settings/password", "/settings/email", "/settings/sessions/revoke-all"}
 
     unscoped = []
     for route in app.routes:
-        if not isinstance(route, APIRoute) or route.path in system_routes:
+        if not isinstance(route, APIRoute) or route.path in system_routes or route.path in user_session_routes:
+            continue
+        if route_class_of(route) == ["PUBLIC"]:
             continue
         dependency_calls = {
             dependency.call for dependency in route.dependant.dependencies

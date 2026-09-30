@@ -10,6 +10,7 @@ import anyio
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from webapp.api.route_classes import PUBLIC, USER
 from webapp.api.dependencies import get_conn
 from webapp.persistence import dbapi, identity
 from webapp.persistence.db import connect
@@ -130,44 +131,44 @@ def _require_user(request: Request) -> dict[str, Any]:
 
 # ---- pages -------------------------------------------------------------------
 
-@router.get("/signup", response_class=HTMLResponse)
+@router.get("/signup", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def signup_page(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     return _page(request, "auth/signup.html", legal=latest_legal_documents(conn), errors=[], values={})
 
 
-@router.get("/login", response_class=HTMLResponse)
+@router.get("/login", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def login_page(request: Request):
     return _page(request, "auth/login.html", errors=[], values={})
 
 
-@router.get("/check-email", response_class=HTMLResponse)
+@router.get("/check-email", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def check_email_page(request: Request):
     return _page(request, "auth/check_email.html")
 
 
-@router.get("/verify-email", response_class=HTMLResponse)
+@router.get("/verify-email", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def verify_email_page(request: Request, token: str = ""):
     return _page(request, "auth/verify_email.html", token=token, errors=[])
 
 
-@router.get("/reset-password", response_class=HTMLResponse)
+@router.get("/reset-password", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def reset_request_page(request: Request):
     return _page(request, "auth/reset_request.html", sent=False)
 
 
-@router.get("/reset-password/confirm", response_class=HTMLResponse)
+@router.get("/reset-password/confirm", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def reset_confirm_page(request: Request, token: str = ""):
     return _page(request, "auth/reset_confirm.html", token=token, errors=[])
 
 
-@router.get("/email-change/confirm", response_class=HTMLResponse)
+@router.get("/email-change/confirm", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def email_change_page(request: Request, token: str = ""):
     return _page(request, "auth/email_change_confirm.html", token=token, errors=[])
 
 
 # ---- actions -----------------------------------------------------------------
 
-@router.post("/auth/signup", response_class=HTMLResponse)
+@router.post("/auth/signup", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def signup(request: Request, email: str = Form(""), password: str = Form(""), display_name: str = Form(""),
            accept_terms: str = Form(""), accept_privacy: str = Form(""),
            conn: dbapi.Connection = Depends(get_conn)):
@@ -184,7 +185,7 @@ def signup(request: Request, email: str = Form(""), password: str = Form(""), di
     return _page(request, "auth/check_email.html")
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", dependencies=[Depends(PUBLIC)])
 def login(request: Request, email: str = Form(""), password: str = Form(""),
           conn: dbapi.Connection = Depends(get_conn)):
     enforce(conn, "login", f"{_client_ip(request)}:{_email_key(email)}", now=_utcnow())
@@ -198,7 +199,7 @@ def login(request: Request, email: str = Form(""), password: str = Form(""),
     return response
 
 
-@router.post("/auth/logout")
+@router.post("/auth/logout", dependencies=[Depends(PUBLIC)])
 def logout(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     _service(request).logout(conn, raw_session=getattr(request.state, "raw_session", None))
     response = RedirectResponse("/login", status_code=303)
@@ -206,7 +207,7 @@ def logout(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     return response
 
 
-@router.post("/auth/verify-email")
+@router.post("/auth/verify-email", dependencies=[Depends(PUBLIC)])
 def verify_email(request: Request, token: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
     outcome = _service(request).verify_email(conn, token=token)
     if not outcome.ok:
@@ -214,21 +215,21 @@ def verify_email(request: Request, token: str = Form(""), conn: dbapi.Connection
     return RedirectResponse("/", status_code=303)
 
 
-@router.post("/auth/resend-verification", response_class=HTMLResponse)
+@router.post("/auth/resend-verification", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def resend_verification(request: Request, email: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
     enforce(conn, "verify_resend", _email_key(email), now=_utcnow())
     _service(request).resend_verification(conn, email=email)
     return _page(request, "auth/check_email.html")
 
 
-@router.post("/auth/password-reset/request", response_class=HTMLResponse)
+@router.post("/auth/password-reset/request", response_class=HTMLResponse, dependencies=[Depends(PUBLIC)])
 def password_reset_request(request: Request, email: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
     enforce(conn, "password_reset", _email_key(email), now=_utcnow())
     _service(request).request_password_reset(conn, email=email)
     return _page(request, "auth/reset_request.html", sent=True)
 
 
-@router.post("/auth/password-reset/confirm")
+@router.post("/auth/password-reset/confirm", dependencies=[Depends(PUBLIC)])
 def password_reset_confirm(request: Request, token: str = Form(""), password: str = Form(""),
                            conn: dbapi.Connection = Depends(get_conn)):
     outcome = _service(request).confirm_password_reset(conn, token=token, password=password,
@@ -241,7 +242,7 @@ def password_reset_confirm(request: Request, token: str = Form(""), password: st
     return response
 
 
-@router.post("/auth/email-change/confirm")
+@router.post("/auth/email-change/confirm", dependencies=[Depends(PUBLIC)])
 def email_change_confirm(request: Request, token: str = Form(""), conn: dbapi.Connection = Depends(get_conn)):
     outcome = _service(request).confirm_email_change(conn, token=token)
     if not outcome.ok:
@@ -249,7 +250,7 @@ def email_change_confirm(request: Request, token: str = Form(""), conn: dbapi.Co
     return RedirectResponse("/", status_code=303)
 
 
-@router.post("/settings/password")
+@router.post("/settings/password", dependencies=[Depends(USER)])
 def change_password(request: Request, current_password: str = Form(""), new_password: str = Form(""),
                     conn: dbapi.Connection = Depends(get_conn)):
     user = _require_user(request)
@@ -259,7 +260,7 @@ def change_password(request: Request, current_password: str = Form(""), new_pass
     return JSONResponse({"ok": outcome.ok, "errors": outcome.errors}, status_code=200 if outcome.ok else 400)
 
 
-@router.post("/settings/email")
+@router.post("/settings/email", dependencies=[Depends(USER)])
 def change_email(request: Request, new_email: str = Form(""), password: str = Form(""),
                  conn: dbapi.Connection = Depends(get_conn)):
     user = _require_user(request)
@@ -268,7 +269,7 @@ def change_email(request: Request, new_email: str = Form(""), password: str = Fo
     return JSONResponse({"ok": outcome.ok, "errors": outcome.errors}, status_code=200 if outcome.ok else 400)
 
 
-@router.post("/settings/sessions/revoke-all")
+@router.post("/settings/sessions/revoke-all", dependencies=[Depends(USER)])
 def revoke_all(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     user = _require_user(request)
     _service(request).revoke_all(conn, user_id=user["id"])
@@ -277,14 +278,14 @@ def revoke_all(request: Request, conn: dbapi.Connection = Depends(get_conn)):
     return response
 
 
-@router.get("/auth/csrf")
+@router.get("/auth/csrf", dependencies=[Depends(PUBLIC)])
 def csrf(request: Request):
     """The token the caller's next unsafe request must carry (readable only
     same-origin; cross-origin pages cannot read this response)."""
     return {"csrf_token": getattr(request.state, "csrf_token", None)}
 
 
-@router.get("/auth/me")
+@router.get("/auth/me", dependencies=[Depends(USER)])
 def me(request: Request):
     user = _require_user(request)
     account = getattr(request.state, "account", None)

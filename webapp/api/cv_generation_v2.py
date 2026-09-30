@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from product.cv_review_projection import CvReviewProjectionError
 from product.cv_generation_basis_contract import CvGenerationBasisContractError
+from webapp.api.route_classes import USER
 from webapp.api.dependencies import get_account_scope, get_conn, require_cv_quality_v2_enabled
 from webapp.persistence.artifacts import get_artifact, list_artifact_history
 from webapp.services.application_documents import _require_writable_workspace
@@ -32,7 +33,7 @@ from webapp.persistence import dbapi
 
 router = APIRouter(
     prefix="/api/workspaces/{workspace_id}/cv-v2", tags=["cv-generation-v2"],
-    dependencies=[Depends(require_cv_quality_v2_enabled)],
+    dependencies=[Depends(USER), Depends(require_cv_quality_v2_enabled)],
 )
 
 

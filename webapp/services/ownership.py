@@ -25,6 +25,7 @@ class AccountScope:
     # Bundle 7 (spec H7): where this account's profile sources live. None
     # means the filesystem root above (local mode, pre-Bundle-7 behaviour).
     profile_store: Any = None
+    user_id: str | None = None  # the signed-in user (None in local single-user mode)
 
     def profile_sources(self, conn: dbapi.Connection):
         """This account's profile sources, bound to ``conn``."""

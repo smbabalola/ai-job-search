@@ -17,9 +17,10 @@ from webapp.persistence.search_workspaces import (
 )
 from webapp.services.ownership import AccountScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(prefix="/api/search-workspaces", tags=["search-workspaces"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/search-workspaces", tags=["search-workspaces"])
 
 
 class StrictBody(BaseModel):

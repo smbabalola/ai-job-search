@@ -22,8 +22,9 @@ from webapp.services.http_api import (
 from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api", tags=["workspaces"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api", tags=["workspaces"])
 
 
 class StrictBody(BaseModel):

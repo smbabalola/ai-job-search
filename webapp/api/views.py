@@ -29,8 +29,9 @@ from webapp.services.ownership import AccountScope
 from product.onboarding_walkthroughs import WALKTHROUGH_LAUNCH_CONTEXTS
 from webapp.services.onboarding import list_walkthrough_statuses
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(tags=["views"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["views"])
 
 
 def _search_context(

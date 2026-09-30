@@ -19,3 +19,23 @@ async def rate_limited_handler(request: Request, exc: Exception) -> JSONResponse
     retry_after = getattr(exc, "retry_after", 60)
     return error_response("RATE_LIMITED", "Too many attempts. Please wait and try again.", 429,
                           detail={"retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
+
+
+_PAGE_REDIRECTS = {"SIGN_IN_REQUIRED": "/login", "EMAIL_NOT_VERIFIED": "/check-email"}
+
+
+async def scope_refused_handler(request: Request, exc: Exception):
+    """API callers get the JSON contract; a page request is redirected to where
+    the user can fix it (sign in, verify)."""
+    from fastapi.responses import RedirectResponse
+    from urllib.parse import quote
+
+    accept = request.headers.get("accept", "")
+    wants_page = (request.method == "GET" and not request.url.path.startswith(("/api/", "/auth/"))
+                  and "application/json" not in accept)
+    target = _PAGE_REDIRECTS.get(exc.code)
+    if wants_page and target:
+        if exc.code == "SIGN_IN_REQUIRED" and request.url.path not in ("/", "/login"):
+            target = f"{target}?next={quote(request.url.path)}"
+        return RedirectResponse(target, status_code=303)
+    return error_response(exc.code, exc.message, exc.status)

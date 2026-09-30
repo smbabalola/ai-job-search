@@ -28,8 +28,9 @@ from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 from webapp.services.review_view import build_review_view_model
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}", tags=["review"])
 
 
 class StrictBody(BaseModel):

@@ -20,8 +20,9 @@ from webapp.services import human_submit as hs
 from webapp.services import submit_review as sr
 from webapp.services.handoff import SessionScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import EXTENSION
 
-router = APIRouter(prefix="/api/handoff/sessions/{session_id}/fill", tags=["submit"])
+router = APIRouter(dependencies=[Depends(EXTENSION)], prefix="/api/handoff/sessions/{session_id}/fill", tags=["submit"])
 
 
 class _Body(BaseModel):

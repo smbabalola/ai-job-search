@@ -19,8 +19,9 @@ from webapp.services.profile_manager import (
 )
 from webapp.services.ownership import AccountScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/profile", tags=["profile"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/profile", tags=["profile"])
 
 
 class StrictBody(BaseModel):

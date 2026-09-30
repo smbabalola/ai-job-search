@@ -20,8 +20,9 @@ from webapp.services import submit_review
 from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["review"])
 PROVENANCE_WORDS = {
     "discovery_verified": "verified from discovery",
     "user_confirmed_apply_target": "you confirmed this exact URL",

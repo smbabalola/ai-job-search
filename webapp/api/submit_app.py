@@ -16,8 +16,9 @@ from webapp.services import human_submit as hs
 from webapp.services import submit_review as sr
 from webapp.services.ownership import AccountScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/submit", tags=["submit"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}/submit", tags=["submit"])
 
 
 class _Body(BaseModel):

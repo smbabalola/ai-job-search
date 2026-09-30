@@ -22,8 +22,9 @@ from webapp.services.onboarding import (
 )
 from webapp.services.ownership import AccountScope
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/onboarding", tags=["onboarding"])
 
 
 class StrictBody(BaseModel):

@@ -22,8 +22,9 @@ from webapp.services.fill_results import fill_status, run_plan_hash
 from webapp.services.handoff import SessionScope
 from webapp.services.review_application import ReviewRefused
 from webapp.persistence import dbapi
+from webapp.api.route_classes import EXTENSION
 
-router = APIRouter(prefix="/api/handoff/sessions/{session_id}/fill", tags=["fill"])
+router = APIRouter(dependencies=[Depends(EXTENSION)], prefix="/api/handoff/sessions/{session_id}/fill", tags=["fill"])
 
 
 class _Body(BaseModel):

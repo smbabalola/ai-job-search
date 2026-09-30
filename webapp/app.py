@@ -35,7 +35,8 @@ from webapp.config import Settings
 from webapp.deployment import require_valid_settings
 from webapp.observability import LogErrorReporter, RequestContextMiddleware, configure_logging, unhandled_error_handler
 from webapp.security_middleware import SecurityHeadersMiddleware
-from webapp.api.errors import csrf_failed_handler, rate_limited_handler
+from webapp.api.errors import csrf_failed_handler, rate_limited_handler, scope_refused_handler
+from webapp.api.route_classes import PUBLIC, ScopeRefused
 from webapp.services.csrf import CsrfFailed, require_csrf
 from webapp.services.rate_limit import RateLimited
 from webapp.persistence.db import init_db
@@ -95,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(Exception, unhandled_error_handler)
     app.add_exception_handler(CsrfFailed, csrf_failed_handler)
     app.add_exception_handler(RateLimited, rate_limited_handler)
+    app.add_exception_handler(ScopeRefused, scope_refused_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
     app.add_middleware(RequestContextMiddleware)  # outermost: every response carries the request id
@@ -107,7 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             name="handoff_fixtures",
         )
 
-    @app.get("/health")
+    @app.get("/health", dependencies=[Depends(PUBLIC)])
     def health() -> dict[str, str]:
         return {"status": "ok"}
 

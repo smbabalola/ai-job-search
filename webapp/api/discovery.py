@@ -20,9 +20,10 @@ from webapp.services.discovery import (
 from webapp.services.extension_registry import resolve_active_extensions
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(tags=["discovery"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["discovery"])
 
 
 class StrictBody(BaseModel):

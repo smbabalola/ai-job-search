@@ -11,8 +11,9 @@ from webapp.services.http_api import JobWorkspaceNotFound, change_job_status
 from webapp.services.pipeline import PipelineError
 from webapp.services.workflow_events import list_events
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["status"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}", tags=["status"])
 
 
 class StatusBody(BaseModel):

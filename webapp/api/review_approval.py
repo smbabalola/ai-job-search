@@ -27,8 +27,9 @@ from webapp.services.pipeline import PipelineError
 from webapp.persistence.application_documents import get_selection
 from webapp.services.review_application import KINDS, ReviewRefused, review_snapshot, review_state
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
 
 
 class _Body(BaseModel):

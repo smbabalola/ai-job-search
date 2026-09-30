@@ -21,8 +21,9 @@ from webapp.services.fill_runs import FillRefused
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import ReviewRefused
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["fill"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}", tags=["fill"])
 
 
 class _Body(BaseModel):

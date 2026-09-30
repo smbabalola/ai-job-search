@@ -37,8 +37,9 @@ from webapp.services.autonomy_dossier import build_dossier
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
 from webapp.services.workspace_view import resolve_apply_target
 from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(tags=["autonomy"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["autonomy"])
 
 
 class _Body(BaseModel):
