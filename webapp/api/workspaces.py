@@ -162,16 +162,28 @@ def post_application_intelligence(
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
-        return {
-            "artifact": _prepare_stage(
-                request, conn, scope, workspace_id, "application-intelligence", lambda: generate_application_intelligence(
+        artifact = _prepare_stage(
+            request, conn, scope, workspace_id, "application-intelligence", lambda: generate_application_intelligence(
                 conn, workspace_id, _providers(request, scope, workspace_id).intelligence,
                 request_id=body.request_id,
                 account_id=scope.account_id,
             ))
-        }
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    _notify_prepared(conn, scope, workspace_id, artifact)
+    return {"artifact": artifact}
+
+
+def _notify_prepared(conn: dbapi.Connection, scope: AccountScope, workspace_id: str, artifact: Any) -> None:
+    """Bundle 7 §17.2: the last prepare stage succeeded → prepared, and the pack is ready for review."""
+    from datetime import datetime, timezone
+    from webapp.services.notifications import notify
+    artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+    now = datetime.now(timezone.utc)
+    for kind in ("application.prepared", "application.review_required"):
+        notify(conn, account_id=scope.account_id, kind=kind, subject_type="workspace", subject_id=workspace_id,
+               dedupe_key=f"{kind}:{workspace_id}:{artifact_id}", detail={"artifact_id": artifact_id}, now=now)
+    conn.commit()
 
 
 def _providers(request: Request, scope: AccountScope, workspace_id: str):

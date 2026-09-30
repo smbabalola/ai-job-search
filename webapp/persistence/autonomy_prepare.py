@@ -137,6 +137,10 @@ def create_notification(conn, *, account_id: str, key: str, kind: str, subject_t
         return False
     _event(conn, account_id=account_id, key=key, kind=kind, subject_type=subject_type, subject_id=subject_id,
            event="CREATED", detail=detail, now=now)
+    # Bundle 7 §17.2: mirrored into the unified notification log (the 6C table is kept).
+    from webapp.services.notifications import notify_6c
+    notify_6c(conn, account_id=account_id, key=key, kind=kind, subject_type=subject_type, subject_id=subject_id,
+              detail=detail, now=now)
     return True
 
 

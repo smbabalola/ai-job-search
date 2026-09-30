@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from webapp import comms
 from webapp.persistence import dbapi, identity
 from webapp.persistence.audit import audit
 from webapp.services import notifications
@@ -153,12 +152,10 @@ def pair_device(conn: dbapi.Connection, *, raw_code: str, device_label: str, now
     tokens = _issue_tokens(conn, device_id=device_id, family_id=f"fam_{uuid.uuid4().hex[:20]}", now=now)
     _audit(conn, "EXTENSION_DEVICE_PAIRED", principal_user=row["user_id"], account_id=row["account_id"],
            device_id=device_id, now=now, secret=secret, detail={"label": label})
-    if row["user_id"]:
-        user = identity.get_user(conn, row["user_id"])
-        comms.enqueue(conn, category="SERVICE", template_id="security.new_device_paired",
-                      to_address=user["email_normalized"], payload={"device_label": label},
-                      account_id=row["account_id"], user_id=row["user_id"],
-                      idempotency_key=f"security.new_device_paired:{device_id}", now=now)
+    # Bundle 7 §17.2: the notification log fans the security email out (always immediate).
+    notifications.notify(conn, account_id=row["account_id"], kind="security.new_device_paired",
+                         subject_type="extension_device", subject_id=device_id,
+                         dedupe_key=f"device_paired:{device_id}", detail={"device_label": label}, now=now)
     return PairResult(device_id, tokens.access_token, tokens.access_expires_at, tokens.refresh_token,
                       _account_label(conn, row["user_id"]))
 

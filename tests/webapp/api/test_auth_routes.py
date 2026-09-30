@@ -218,3 +218,25 @@ def test_signed_out_home_is_the_public_landing(world):
     _verified(client)
     _login(client)
     assert "Sign out Ada Lovelace" in client.get("/").text
+
+
+def _notification_kinds(settings):
+    conn = connect(settings.db_path)
+    try:
+        return [r[0] for r in conn.execute("SELECT kind FROM notifications ORDER BY created_at, id")]
+    finally:
+        conn.close()
+
+
+def test_password_and_email_changes_are_security_notifications_without_a_second_email(world):
+    client, settings = world
+    _verified(client)
+    _login(client)
+    post(client, "/settings/password", data={"current_password": PASSWORD, "new_password": "brand new passphrase 1"})
+    assert _notification_kinds(settings) == ["security.password_changed"]
+    assert len(_mail("auth.password_changed")) == 1 and _mail("notify.immediate") == []
+    post(client, "/settings/email", data={"new_email": "ada.new@example.com", "password": "brand new passphrase 1"})
+    token = _token("auth.email_change_confirm", "ada.new@example.com")
+    post(client, "/auth/email-change/confirm", data={"token": token}, follow_redirects=False)
+    assert _notification_kinds(settings) == ["security.password_changed", "security.email_changed"]
+    assert _mail("notify.immediate") == []

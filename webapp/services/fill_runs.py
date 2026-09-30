@@ -93,6 +93,7 @@ def finish_in_transaction(conn, *, run_id: str, event: str, reason: str | None =
         raise ValueError(f"not a stop reason: {reason}")
     f.append_run_event(conn, fill_run_id=run_id, event=event, reason=reason, detail=dict(detail or {}), now=now)
     result = write_result(conn, run_id, now=now)
+    _notify_finished(conn, run_id, event=event, reason=reason, now=now)
     f.release_active_run(conn, run_id)
     if event != "FILLED_AWAITING_SUBMISSION":
         f.delete_lease(conn, run_id)
@@ -100,6 +101,18 @@ def finish_in_transaction(conn, *, run_id: str, event: str, reason: str | None =
         if binding is not None:
             revoke_grant(conn, grant_id=binding["grant_id"], reason=f"fill_run_stopped:{reason or event}", now=now)
     return result
+
+
+def _notify_finished(conn, run_id: str, *, event: str, reason: str | None, now: datetime) -> None:
+    """Bundle 7 §17.2: FILLED → fill.completed_awaiting_submit; any other end → fill.failed."""
+    from webapp.services.notifications import notify
+    run = conn.execute("SELECT account_id, application_workspace_id FROM fill_runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        return
+    kind = "fill.completed_awaiting_submit" if event == "FILLED_AWAITING_SUBMISSION" else "fill.failed"
+    notify(conn, account_id=run["account_id"], kind=kind, subject_type="workspace",
+           subject_id=run["application_workspace_id"], dedupe_key=f"fill:{run_id}:{event}",
+           detail={"fill_run_id": run_id, "state": event, "reason": reason}, now=now)
 
 
 def stop_run_in_transaction(conn, *, run_id: str, reason: str, detail: Mapping[str, Any] | None = None,

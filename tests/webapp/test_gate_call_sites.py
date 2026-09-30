@@ -288,3 +288,17 @@ def test_candidate_evaluation_is_refused_when_discovery_is_switched_off(world, m
     response = _post(client, f"{base}/evaluate", json={"candidate_ids": candidate_ids, "request_id": "e3"})
     assert response.status_code == 402 and response.json()["error"] == "FEATURE_NOT_IN_PLAN"
     assert probe.provider_calls == 0
+
+
+def test_a_completed_prepare_notifies_prepared_and_review_required(world, monkeypatch):
+    """Bundle 7 §17.2: the last prepare stage (application intelligence) produces both."""
+    _, client, settings, ids, _, _ = world
+    monkeypatch.setattr(workspaces_api, "generate_application_intelligence", lambda *a, **k: {"id": "art_intel_1"})
+    response = _post(client, f"/api/workspaces/{ids['workspace_id']}/application-intelligence",
+                     json={"request_id": "r1"})
+    assert response.status_code == 200, response.text
+    conn = connect(settings)
+    kinds = sorted(r[0] for r in conn.execute("SELECT kind FROM notifications WHERE subject_id = ? "
+                                              "AND kind LIKE 'application.%'", (ids["workspace_id"],)))
+    conn.close()
+    assert kinds == ["application.prepared", "application.review_required"]

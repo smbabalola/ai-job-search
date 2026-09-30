@@ -108,7 +108,28 @@ class UsageService:
 
     def consume(self, conn: dbapi.Connection, reservation_id: str, *, settlement_ref: str | None,
                 now: datetime) -> bool:
-        return rows.settle(conn, reservation_id, status="CONSUMED", now=now, settlement_ref=settlement_ref)
+        if not rows.settle(conn, reservation_id, status="CONSUMED", now=now, settlement_ref=settlement_ref):
+            return False
+        self._notify_thresholds(conn, reservation_id, now=now)
+        return True
+
+    def _notify_thresholds(self, conn: dbapi.Connection, reservation_id: str, *, now: datetime) -> None:
+        """§13.3: usage.limit_near at ≥ 80 %, usage.limit_reached at 100 %, once per allowance per window."""
+        from types import SimpleNamespace
+        from webapp.services.notifications import notify
+        row = rows.get(conn, reservation_id)
+        resolved = self.gate.entitlements(conn, SimpleNamespace(account_id=row["account_id"]), now=now)
+        limit = resolved.allowances.get(row["allowance"]) or 0
+        if limit <= 0:
+            return
+        used = rows.used(conn, account_id=row["account_id"], allowance=row["allowance"], window_key=row["window_key"])
+        kind = "usage.limit_reached" if used >= limit else "usage.limit_near" if used * 100 >= 80 * limit else None
+        if kind is None:
+            return
+        notify(conn, account_id=row["account_id"], kind=kind, subject_type="allowance", subject_id=row["allowance"],
+               dedupe_key=f"{kind}:{row['allowance']}:{row['window_key']}",
+               detail={"allowance": row["allowance"], "used": used, "limit": limit,
+                       "window_end": resolved.window.end.date().isoformat()}, now=now)
 
     def release(self, conn: dbapi.Connection, reservation_id: str, *, now: datetime) -> bool:
         return rows.settle(conn, reservation_id, status="RELEASED", now=now, settlement_ref="released")

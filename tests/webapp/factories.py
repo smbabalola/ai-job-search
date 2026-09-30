@@ -13,6 +13,8 @@ fill runs, notifications, devices ...).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import uuid
 from typing import Any
 
@@ -47,6 +49,12 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
                                      pack_artifact_id=posting["id"], target_url="https://jobs.example.test/1",
                                      target_domain="jobs.example.test", ats_adapter_id="generic",
                                      ats_adapter_version="1")
+    from webapp.services.notifications import notify
+    notify(conn, account_id=account_id, kind="fill.failed", subject_type="workspace", subject_id=job["id"],
+           dedupe_key=f"{canary}-notification", detail={"message": f"{canary} notification"},
+           now=datetime.now(timezone.utc))
+    notification_id = conn.execute("SELECT id FROM notifications WHERE account_id = ? AND dedupe_key = ?",
+                                   (account_id, f"{canary}-notification")).fetchone()[0]
     user = conn.execute("SELECT user_id FROM account_memberships WHERE account_id = ? AND role = 'OWNER'",
                         (account_id,)).fetchone()
     extension_bearer = device_bearer(conn, account_id, user["user_id"] if user else None)
@@ -57,5 +65,6 @@ def build_account_graph(conn, *, account_id: str, documents_root) -> dict[str, A
         "ids": {
             "workspace_id": job["id"], "search_workspace_id": search["id"], "document_version_id": document["id"],
             "session_id": session["id"], "pack_artifact_id": posting["id"], "kind": "cv",
+            "notification_id": notification_id,
         },
     }

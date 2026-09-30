@@ -761,3 +761,74 @@ def _comms(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("030_comms", sqlite=_comms("sqlite"), postgres=_comms("postgres")))
+
+
+# ---- 031_notifications (Task 20): the notification log and email preferences
+# (spec §17.1); the 6C notifications are back-projected (dedupe by key) ------
+
+NOTIFICATION_CATEGORIES = ("ACTION_REQUIRED", "OUTCOME", "ACCOUNT", "SECURITY", "BILLING", "USAGE", "ANNOUNCEMENT",
+                           "DISCOVERY")
+SIXC_KIND_MAP = {"NEEDS_USER": "application.blocker_needs_answer",
+                 "CANDIDATE_QUESTION": "application.blocker_needs_answer",
+                 "PREPARED": "application.prepared", "BLOCKED": "application.automation_blocked",
+                 "OPERATIONAL_ERROR": "application.automation_blocked"}
+SIXC_CATEGORY = {"application.blocker_needs_answer": "ACTION_REQUIRED", "application.prepared": "OUTCOME",
+                 "application.automation_blocked": "OUTCOME"}
+
+_NOTIFICATIONS_DDL = """
+CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ({categories})),
+    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL')),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT,
+    archived_at TEXT,
+    UNIQUE (account_id, dedupe_key)
+);
+CREATE INDEX idx_notifications_account ON notifications(account_id, created_at);
+CREATE TABLE notification_preferences (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    category TEXT NOT NULL CHECK (category IN ('ACTION_REQUIRED', 'OUTCOME', 'USAGE', 'DISCOVERY')),
+    email_mode TEXT NOT NULL CHECK (email_mode IN ('IMMEDIATE', 'DAILY_DIGEST', 'OFF')),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, category)
+)
+""".replace("{categories}", ", ".join(f"'{c}'" for c in NOTIFICATION_CATEGORIES))
+
+
+def _back_project_6c(conn, dialect: str) -> None:
+    import json
+    import uuid
+    exists_sql = ("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_notification_events'"
+                  if dialect == "sqlite" else "SELECT to_regclass('autonomy_notification_events') IS NOT NULL")
+    found = conn.execute(exists_sql).fetchone()
+    if not found or not found[0]:  # a partial legacy chain (tests); nothing to project
+        return
+    rows = conn.execute("SELECT account_id, notification_key, kind, subject_type, subject_id, detail_json, created_at "
+                        "FROM autonomy_notification_events WHERE event = 'CREATED' ORDER BY seq").fetchall()
+    for row in rows:
+        kind = SIXC_KIND_MAP.get(row[2])
+        if kind is None:
+            continue
+        conn.execute(
+            "INSERT INTO notifications (id, account_id, kind, category, severity, subject_type, subject_id, "
+            "dedupe_key, detail_json, created_at) VALUES (?, ?, ?, ?, 'INFO', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            (f"ntf_{uuid.uuid4().hex[:20]}", row[0], kind, SIXC_CATEGORY[kind], row[3], row[4], f"6c:{row[1]}",
+             json.dumps({"source": "6c", "6c_kind": row[2], **json.loads(row[5] or "{}")}, sort_keys=True), row[6]))
+
+
+def _notifications(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _NOTIFICATIONS_DDL)
+        _back_project_6c(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("031_notifications", sqlite=_notifications("sqlite"),
+                                    postgres=_notifications("postgres")))

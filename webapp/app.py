@@ -22,6 +22,7 @@ from webapp.services.billing import BillingService
 from webapp.services.billing_webhooks import BillingWebhooks
 from webapp.api.webhooks import router as webhooks_router
 from webapp.api.email_webhooks import router as email_webhooks_router
+from webapp.api.notifications import router as notifications_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -156,6 +157,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Bundle 7 §18: the email adapter (sending happens only in the worker; the app uses it for webhooks).
     from webapp.comms.outbox import provider_from_settings
     app.state.email_provider = provider_from_settings(settings)
+    from webapp.services.notifications import configure_origin
+    configure_origin(settings.app_origin)  # links in notification mail
     provider = provider_for(settings, catalog, deliver=lambda headers, body: _deliver_webhook(app, headers, body))
     app.state.billing_service = BillingService(provider, catalog, settings=settings)
     app.state.billing_webhooks = None if provider is None else BillingWebhooks(
@@ -193,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(billing_router)
     app.include_router(webhooks_router)
     app.include_router(email_webhooks_router)
+    app.include_router(notifications_router)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)

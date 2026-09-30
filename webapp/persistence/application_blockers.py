@@ -81,7 +81,7 @@ def save_application_blocker(
             raise ValueError(f"unknown semantic_subject_key: {semantic_subject_key!r}")
 
     blocker_id = f"block_{uuid.uuid4().hex[:20]}"
-    conn.execute(
+    inserted = conn.execute(
         "INSERT INTO application_blockers "
         "(id, workspace_id, policy_decision_id, source_artifact_id, stage, "
         "blocker_type, subject_key, question, context, resume_stage, "
@@ -92,7 +92,15 @@ def save_application_blocker(
             blocker_type, subject_key, question, json.dumps(context or {}), resume_stage,
             json.dumps(allowed_scopes), _now(), semantic_subject_key,
         ),
-    )
+    ).rowcount == 1
+    if inserted:  # Bundle 7 §17.2: a new open blocker needs the user's answer
+        from datetime import datetime, timezone
+        from webapp.services.notifications import notify
+        owner = conn.execute("SELECT account_id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        if owner is not None:
+            notify(conn, account_id=owner[0], kind="application.blocker_needs_answer", subject_type="workspace",
+                   subject_id=workspace_id, dedupe_key=f"blocker:{blocker_id}",
+                   detail={"blocker_id": blocker_id, "stage": stage}, now=datetime.now(timezone.utc))
     if commit:
         conn.commit()
     existing = conn.execute(

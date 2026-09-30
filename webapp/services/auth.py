@@ -87,6 +87,15 @@ class AuthService:
         comms.enqueue(conn, category=category, template_id=template_id, to_address=to, payload=payload,
                       user_id=user_id, idempotency_key=f"{template_id}:{uuid.uuid4().hex}", now=self.clock())
 
+    def _security_notice(self, conn, kind: str, user_id: str) -> None:
+        """Bundle 7 §17.2: in-app security notification (its service mail is sent by the flow itself)."""
+        from webapp.services.notifications import notify
+        account = identity.get_owner_account(conn, user_id)
+        if account is not None:
+            now = self.clock()
+            notify(conn, account_id=account["id"], kind=kind, subject_type="user", subject_id=user_id,
+                   dedupe_key=f"{kind}:{user_id}:{now.isoformat()}", detail={}, now=now)
+
     def _start_session(self, conn, user: dict, *, ip: str | None, user_agent: str | None) -> tuple[str, str]:
         now = self.clock()
         session = self.sessions.create(conn, user_id=user["id"], kind="CUSTOMER", now=now, ip=ip,
@@ -223,6 +232,7 @@ class AuthService:
         self._revoke_everything(conn, user["id"], reason="PASSWORD_RESET")
         session = self._start_session(conn, user, ip=ip, user_agent=user_agent)
         self._audit(conn, "PASSWORD_RESET", user_id=user["id"], ip=ip)
+        self._security_notice(conn, "security.password_changed", user["id"])
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user["id"],
                    payload={})
         conn.commit()
@@ -240,6 +250,7 @@ class AuthService:
         identity.set_password_hash(conn, user_id, hash_password(new_password), now=now)
         self._revoke_everything(conn, user_id, reason="PASSWORD_CHANGED", keep_session=keep_session)
         self._audit(conn, "PASSWORD_CHANGED", user_id=user_id)
+        self._security_notice(conn, "security.password_changed", user_id)
         user = identity.get_user(conn, user_id)
         self._mail(conn, template_id="auth.password_changed", to=user["email_normalized"], user_id=user_id,
                    payload={})
@@ -280,6 +291,7 @@ class AuthService:
             conn.rollback()
             return Outcome(False, ["That email address is already in use."])
         self._audit(conn, "EMAIL_CHANGED", user_id=row["user_id"])
+        self._security_notice(conn, "security.email_changed", row["user_id"])
         conn.commit()
         return Outcome(True, user=identity.get_user(conn, row["user_id"]))
 

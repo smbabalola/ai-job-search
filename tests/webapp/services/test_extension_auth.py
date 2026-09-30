@@ -8,7 +8,6 @@ import pytest
 from webapp.persistence import identity
 from webapp.persistence.db import connect, init_db
 from webapp.services import extension_auth as ext
-from webapp.services import notifications
 from webapp.storage.profile_sources import DatabaseProfileSourceStore
 
 NOW = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
@@ -27,7 +26,6 @@ def world(tmp_path):
             now=NOW, profile_store=DatabaseProfileSourceStore())
         users.append((created["user"]["id"], created["account"]["id"]))
     conn.commit()
-    notifications.reset_for_tests()
     yield conn, users
     conn.close()
 
@@ -60,7 +58,8 @@ def test_pairing_audits_and_sends_the_new_device_email(world):
     conn.commit()
     assert result.account_label == "a***@example.com"
     assert [r[0] for r in conn.execute("SELECT template_id FROM outbound_messages")] == [
-        "security.new_device_paired"]
+        "security.new_device_paired"]  # once: through the notification fan-out
+    assert [r[0] for r in conn.execute("SELECT kind FROM notifications")] == ["security.new_device_paired"]
     assert conn.execute("SELECT action FROM audit_log").fetchone()["action"] == "EXTENSION_DEVICE_PAIRED"
 
 
@@ -88,7 +87,8 @@ def test_refresh_rotates_and_reuse_revokes_the_whole_device(world):
         ext.refresh(conn, device_id=first.device_id, raw_refresh=second.refresh_token, now=NOW + timedelta(minutes=14))
     actions = [r["action"] for r in conn.execute("SELECT action FROM audit_log ORDER BY seq")]
     assert "EXTENSION_TOKEN_REUSE" in actions
-    assert [n["kind"] for n in notifications.recorded_for_tests()] == ["security.token_reuse_detected"]
+    kinds = [r[0] for r in conn.execute("SELECT kind FROM notifications ORDER BY created_at")]
+    assert kinds[-1] == "security.token_reuse_detected" and kinds.count("security.token_reuse_detected") == 1
 
 
 def test_refresh_tokens_last_thirty_days_sliding(world):

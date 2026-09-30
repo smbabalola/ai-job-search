@@ -91,7 +91,9 @@ def test_every_never_gated_surface_still_answers(world):
     client, ids, gate_calls = world
     ws = ids["workspace_id"]
     reads = [f"/api/workspaces/{ws}", f"/api/workspaces/{ws}/application-documents", "/api/usage",
-             f"/api/workspaces/{ws}/submit/state"]
+             f"/api/workspaces/{ws}/submit/state",
+             "/api/notifications", "/api/inbox", "/api/inbox/summary", "/inbox",           # notifications
+             "/api/notification-preferences", "/settings/communications"]                  # preferences
     writes = [
         (f"/api/workspaces/{ws}/review-decisions", {}),                      # review
         (f"/api/workspaces/{ws}/review/approve", {}),                        # approve

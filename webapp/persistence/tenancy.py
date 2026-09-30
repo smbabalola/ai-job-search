@@ -186,6 +186,9 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "email_suppressions": TableSpec("GLOBAL", purge="GLOBAL", retain_class="SUPPRESSION", export=False),
     "email_provider_events": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "announcements": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    # notifications (Bundle 7, 031_notifications)
+    "notifications": A,
+    "notification_preferences": A,
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

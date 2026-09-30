@@ -466,3 +466,32 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
   refresh();
   setInterval(refresh, 60000);
 })();
+
+// Bundle 7 §17.4: the header badge (Action required + unread critical) and the Updates actions.
+(function () {
+  const badge = document.querySelector("[data-inbox-badge]");
+  if (badge) {
+    const refresh = async () => {
+      try {
+        const r = await fetch("/api/inbox/summary");
+        if (!r.ok) return;
+        const summary = await r.json();
+        badge.textContent = String(summary.badge);
+        badge.hidden = summary.badge === 0;
+      } catch (error) { /* offline or signed out: leave the badge */ }
+    };
+    refresh();
+    setInterval(refresh, 60000);
+  }
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-notification-read], button[data-notification-archive]");
+    if (!button) return;
+    const id = button.dataset.notificationRead || button.dataset.notificationArchive;
+    const action = button.dataset.notificationRead ? "read" : "archive";
+    button.disabled = true;
+    try {
+      await api(`/api/notifications/${encodeURIComponent(id)}/${action}`, {method: "POST"});
+      if (action === "archive") button.closest("article").remove(); else button.remove();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+})();

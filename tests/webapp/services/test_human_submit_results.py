@@ -226,3 +226,28 @@ def test_any_tracker_failure_never_discards_the_submission_result(filled_world, 
                                      "ORDER BY seq DESC LIMIT 1", (attempt,)).fetchone()[0]
     assert '"workflow_applied":false' in last.replace(" ", "") and "tracker down" in last
     assert intents(filled_world) == [("HUMAN_AUTHORIZED", "CONFIRMED")]
+
+
+def _kinds(w):
+    return [r[0] for r in w.conn.execute("SELECT kind FROM notifications ORDER BY created_at, id")]
+
+
+def test_results_and_challenges_notify(filled_world):
+    """Bundle 7 §17.2 producers: confirmed / ambiguous / failed and the challenge handoff (in-app only)."""
+    _, attempt = dispatched(filled_world)
+    hs.record_submit_event(filled_world.conn, attempt_id=attempt, event="CHALLENGE_DETECTED", detail={},
+                           now=NOW + 3 * SEC)
+    assert "submit.challenge_handoff" in _kinds(filled_world)
+    report(filled_world, attempt)
+    assert "submit.ambiguous" in _kinds(filled_world)
+    templates = [r[0] for r in filled_world.conn.execute("SELECT template_id FROM outbound_messages")]
+    assert templates.count("notify.immediate") <= 1  # the challenge never emailed
+
+
+@pytest.mark.parametrize("overrides,kind", [({"success_observed": True}, "submit.confirmed"),
+                                            ({"failure_observed": True}, "submit.failed")])
+def test_a_decided_result_notifies_its_outcome(filled_world, overrides, kind):
+    _, attempt = dispatched(filled_world)
+    assert kind not in _kinds(filled_world)
+    report(filled_world, attempt, **overrides)
+    assert kind in _kinds(filled_world)

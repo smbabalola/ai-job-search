@@ -131,6 +131,26 @@ def _email_webhook_handler(ctx: JobContext, payload: dict) -> None:
         conn.close()
 
 
+def _notify_digest(ctx: JobContext, payload: dict) -> None:
+    from webapp.services.notifications import send_digests
+    conn = ctx.connect()
+    try:
+        send_digests(conn, now=ctx.clock())
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _approval_expiry_scan(ctx: JobContext, payload: dict) -> None:
+    from webapp.services.notifications import scan_expiring_approvals
+    conn = ctx.connect()
+    try:
+        scan_expiring_approvals(conn, settings=ctx.settings, now=ctx.clock())
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _billing_webhooks(settings: Any) -> Any:
     from product.entitlements import load_catalog
     from webapp.billing.registry import provider_for
@@ -152,6 +172,8 @@ def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | No
         "autonomy.tick": _autonomy_tick_handler(providers_factory),
         "outbox.dispatch": _outbox_dispatch_handler(settings, email_provider),
         "email.webhook.process": _email_webhook_handler,
+        "notify.digest": _notify_digest,
+        "notify.approval_expiry_scan": _approval_expiry_scan,
     }
     webhooks = billing_webhooks if billing_webhooks is not None else _billing_webhooks(settings)
     if webhooks is not None:

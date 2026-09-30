@@ -16,7 +16,6 @@ from webapp.config import Settings
 from webapp.persistence import identity
 from webapp.persistence.db import connect, init_db
 from webapp.services import billing_webhooks as hooks
-from webapp.services import notifications
 from webapp.services.billing import BillingService
 from webapp.services.ownership import AccountScope
 from webapp.storage.profile_sources import DatabaseProfileSourceStore
@@ -43,7 +42,6 @@ def world(tmp_path):
         conn, email="ada@example.com", password_hash="h", display_name="Ada", legal_document_ids=[],
         now=NOW, profile_store=DatabaseProfileSourceStore())
     conn.commit()
-    notifications.reset_for_tests()
     scope = AccountScope(account_id=created["account"]["id"], profile_root=tmp_path, user_id=created["user"]["id"])
     clock = Clock(NOW)
     inbox: list[tuple[dict, bytes]] = []
@@ -157,8 +155,10 @@ def test_payment_failure_plan_change_and_cancellation_notify_the_account(world):
     _deliver_all(conn, webhooks, inbox, clock)
     assert _subscription(conn, scope.account_id)["state"] == "ENDED"
 
-    kinds = [n["kind"] for n in notifications.recorded_for_tests()]
+    kinds = [r[0] for r in conn.execute("SELECT kind FROM notifications ORDER BY created_at, id")]
     assert kinds == ["billing.payment_failed", "billing.subscription_changed", "billing.subscription_canceled"]
+    templates = sorted(r[0] for r in conn.execute("SELECT template_id FROM outbound_messages"))
+    assert templates == ["billing.payment_failed", "billing.subscription_canceled", "billing.subscription_changed"]
 
 
 def test_out_of_order_delivery_ends_at_the_provider_state(world):

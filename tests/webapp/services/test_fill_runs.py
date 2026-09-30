@@ -226,3 +226,21 @@ def test_a_surface_that_does_not_remount_after_the_reset_is_unsupported(grant_wo
     out = observe(grant_world, run, "REVALIDATION", doc)
     assert out["state"] == "UNSUPPORTED_FORM"
     assert f.run_state(grant_world.conn, run["id"])["detail"] == {"causes": ["RESET_SURFACE_MISMATCH"]}
+
+
+def _kinds(conn):
+    return [r[0] for r in conn.execute("SELECT kind FROM notifications ORDER BY created_at, id")]
+
+
+def test_a_filled_run_notifies_that_it_awaits_submit(grant_world):
+    """Bundle 7 §17.2 producer."""
+    run = to_active(grant_world)
+    run_immediate(grant_world.conn, lambda: fr.finish_in_transaction(
+        grant_world.conn, run_id=run["id"], event="FILLED_AWAITING_SUBMISSION", now=NOW))
+    assert "fill.completed_awaiting_submit" in _kinds(grant_world.conn)
+
+
+def test_a_run_that_ends_without_filling_notifies_that_it_failed(fill_world):
+    run = start(fill_world)
+    observe(fill_world, run, "INITIAL")  # ends PLAN_NEEDS_REVIEW
+    assert "fill.failed" in _kinds(fill_world.conn)

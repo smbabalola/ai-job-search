@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Inbox · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Inbox</p><h1>What needs you</h1>
+  <p>Action required is worked out live from your applications: an item disappears as soon as it's done.</p></div></section>
+<nav class="tabs" aria-label="Inbox sections">
+  <a href="/inbox?tab=action" {% if tab == "action" %}aria-current="page"{% endif %}>Action required ({{ inbox.action_required | length }})</a>
+  <a href="/inbox?tab=updates" {% if tab == "updates" %}aria-current="page"{% endif %}>Updates</a>
+  <a href="/inbox?tab=announcements" {% if tab == "announcements" %}aria-current="page"{% endif %}>Announcements</a>
+</nav>
+{% if tab == "action" %}
+<section class="panel" data-inbox-tab="action">
+  <div class="panel-heading"><h2>Action required</h2></div>
+  {% for item in inbox.action_required %}<article class="evidence-row" data-action-item="{{ item.kind }}">
+    <div><strong>{{ item.title }}</strong><p><a href="{{ item.href }}">Open</a></p></div>
+  </article>{% else %}<p>Nothing needs you right now.</p>{% endfor %}
+  <p><a href="/autonomy/inbox">Automation inbox</a></p>
+</section>
+{% elif tab == "updates" %}
+<section class="panel" data-inbox-tab="updates">
+  <div class="panel-heading"><h2>Updates</h2></div>
+  {% for note in inbox.updates %}<article class="evidence-row" data-notification="{{ note.kind }}" data-severity="{{ note.severity }}">
+    <div><strong>{{ note.title }}</strong>{% if not note.read_at %} <span class="badge">new</span>{% endif %}
+      <p><a href="{{ note.href }}">Open</a> · <time datetime="{{ note.created_at }}">{{ note.created_at[:16] | replace("T", " ") }}</time></p>
+      <button class="button button-small secondary" type="button" data-notification-read="{{ note.id }}">Mark read</button>
+      <button class="button button-small secondary" type="button" data-notification-archive="{{ note.id }}">Archive</button>
+    </div>
+  </article>{% else %}<p>No updates yet.</p>{% endfor %}
+</section>
+{% else %}
+<section class="panel" data-inbox-tab="announcements">
+  <div class="panel-heading"><h2>Announcements</h2></div>
+  {% for item in inbox.announcements %}<article class="evidence-row" data-announcement="{{ item.severity }}">
+    <div><strong>{{ item.title }}</strong><p>{{ item.body_markdown }}</p></div>
+  </article>{% else %}<p>No announcements.</p>{% endfor %}
+</section>
+{% endif %}
+<p><a href="/settings/communications">Email preferences</a></p>
+{% endblock %}

@@ -261,9 +261,24 @@ def record_submit_event(conn, *, attempt_id: str, event: str, detail: dict[str, 
     def work() -> dict[str, Any]:
         attempt = a._attempt(conn, attempt_id)
         auth = _authorization_for_attempt(conn, attempt)
-        return sp.append_submit_event(conn, authorization_id=auth["id"], attempt_id=attempt_id, event=event,
-                                      detail=detail, now=now)
+        recorded = sp.append_submit_event(conn, authorization_id=auth["id"], attempt_id=attempt_id, event=event,
+                                          detail=detail, now=now)
+        if event == "CHALLENGE_DETECTED":  # Bundle 7 §17.2: in-app only, time-critical
+            _notify(conn, auth, attempt, "submit.challenge_handoff", f"challenge:{attempt_id}:{now.isoformat()}", now)
+        return recorded
     return run_immediate(conn, work)
+
+
+_RESULT_KINDS = {"CONFIRMED_SUCCESS": "submit.confirmed", "SUBMISSION_AMBIGUOUS": "submit.ambiguous",
+                 "SUBMISSION_FAILED": "submit.failed"}
+
+
+def _notify(conn, auth: dict[str, Any], attempt: dict[str, Any], kind: str, dedupe_key: str, now: datetime) -> None:
+    """Bundle 7 §17.2: a notification in the same transaction as the event (no behaviour change)."""
+    from webapp.services.notifications import notify
+    notify(conn, account_id=auth["account_id"], kind=kind, subject_type="workspace",
+           subject_id=attempt["application_workspace_id"], dedupe_key=dedupe_key,
+           detail={"attempt_id": attempt["id"]}, now=now)
 
 
 def _attempt_events(conn, authorization_id: str, attempt_id: str) -> list[dict[str, Any]]:
@@ -358,6 +373,7 @@ def report_result(conn, *, settings: Settings, attempt_id: str, evidence: dict[s
         sp.insert_submission_result(conn, attempt_id=attempt_id, result=result, result_hash=result_hash, now=now)
         sp.append_submit_event(conn, authorization_id=auth["id"], attempt_id=attempt_id, event="RESULT_REPORTED",
                                detail={"state": recorded, "reason": reason}, now=now)
+        _notify(conn, auth, attempt, _RESULT_KINDS[recorded], f"submit_result:{attempt_id}", now)
         return {"state": recorded, "proven_not_submitted": proven, "reason": reason, "result_hash": result_hash}
     return run_immediate(conn, work)
 
