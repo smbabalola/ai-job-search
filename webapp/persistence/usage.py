@@ -103,6 +103,14 @@ def finish_action(conn: dbapi.Connection, claim_id: str, *, status: str, now: da
     return cursor.rowcount == 1
 
 
+def candidate_from_metered_run(conn: dbapi.Connection, *, account_id: str, candidate_id: str) -> bool:
+    """True when the candidate was found by a discovery run that consumed a
+    discovery allowance (the reservation's settlement_ref is the run id)."""
+    return _one(conn, "SELECT o.id FROM discovery_occurrences o JOIN usage_reservations r ON r.settlement_ref = o.run_id "
+                "WHERE o.candidate_id = ? AND r.account_id = ? AND r.allowance = 'discovery.on_demand_runs' "
+                "AND r.status = 'CONSUMED'", (candidate_id, account_id)) is not None
+
+
 def storage_bytes(conn: dbapi.Connection, account_id: str) -> int:
     row = conn.execute("SELECT COALESCE(SUM(byte_length), 0) FROM application_document_versions WHERE account_id = ?",
                        (account_id,)).fetchone()

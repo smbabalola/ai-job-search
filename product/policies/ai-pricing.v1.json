@@ -1,0 +1,10 @@
+{
+  "pricing_version": "v1",
+  "currency": "USD",
+  "_comment": "Operator AI pricing (DP-3). Micro-USD per million tokens. Values are unresolved until the operator sets them; while 'default' or 'missing_usage_call_micro_usd' is null every metered AI call is refused (fail closed) and release_readiness reports it.",
+  "missing_usage_call_micro_usd": null,
+  "models": {
+    "default": null,
+    "gpt-5.4-mini": null
+  }
+}

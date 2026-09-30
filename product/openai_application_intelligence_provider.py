@@ -40,6 +40,8 @@ OPENAI_MODEL_ID = "gpt-5.4-mini"
 OPENAI_MODEL_VERSION = OPENAI_MODEL
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 MAX_OUTPUT_TOKENS = 4_096
+# Bounds one call's spend (Bundle 7 §13.2: the call that crosses the AI cost ceiling may finish).
+MAX_INPUT_CHARACTERS = 200_000
 MAX_ATTEMPTS = 2
 CONNECT_TIMEOUT_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 60.0
@@ -75,6 +77,7 @@ class OpenAIApplicationIntelligenceProvider:
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
         self.last_audit: ProviderCallAudit | None = None
+        self.last_usage: dict[str, int | None] | None = None
 
     def __repr__(self) -> str:
         return (
@@ -84,8 +87,13 @@ class OpenAIApplicationIntelligenceProvider:
 
     def propose(self, request: dict[str, Any]) -> ProviderResponse:
         self.last_audit = None
+        self.last_usage = None
         api_key = self._credential()
         model_input = _hosted_input(request)
+        if len(model_input) > MAX_INPUT_CHARACTERS:
+            raise ApplicationIntelligenceProviderError(
+                f"openai application intelligence input exceeds {MAX_INPUT_CHARACTERS} characters"
+            )
 
         wire_schema = openai_atom_proposal_schema()
         call = openai_call_parameters(model_input=model_input, response_schema=wire_schema)
@@ -106,6 +114,7 @@ class OpenAIApplicationIntelligenceProvider:
                     ) from None
                 self._sleep(1.0)
 
+        self.last_usage = _response_usage(response)  # Bundle 7 §13.2: spend counts even if validation fails
         elapsed_ms = max(0, round((self._clock() - started) * 1000))
         payload = _decode_response(response)
         response_id = getattr(response, "id", None)
@@ -117,6 +126,9 @@ class OpenAIApplicationIntelligenceProvider:
             started_at=started_at,
             elapsed_ms=elapsed_ms,
             attempt_count=attempt_count,
+            input_tokens=_usage_count(response, "input_tokens"),
+            output_tokens=_usage_count(response, "output_tokens"),
+            total_tokens=_usage_count(response, "total_tokens"),
             local_request_id=request.get("request_id") if isinstance(request.get("request_id"), str) else None,
         )
         self.last_audit = audit
@@ -153,6 +165,12 @@ def _default_client_factory(api_key: str) -> Any:
         max_retries=0,
         timeout=openai.Timeout(REQUEST_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
     )
+
+
+def _usage_count(response: Any, name: str) -> int | None:
+    """Token usage for AI cost metering (Bundle 7 §13.2); None when absent."""
+    value = getattr(getattr(response, "usage", None), name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _hosted_input(request: dict[str, Any]) -> str:
@@ -307,3 +325,12 @@ def _decode_response(response: Any) -> Any:
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise ApplicationIntelligenceProviderError(f"openai response is not valid JSON: {exc}") from exc
+
+
+def _response_usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+
+    def count(name: str) -> int | None:
+        value = getattr(usage, name, None)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return {"input_tokens": count("input_tokens"), "output_tokens": count("output_tokens")}

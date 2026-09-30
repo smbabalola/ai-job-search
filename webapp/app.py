@@ -46,10 +46,11 @@ from webapp.observability import LogErrorReporter, RequestContextMiddleware, con
 from webapp.security_middleware import SecurityHeadersMiddleware
 from webapp.api.errors import (
     action_in_progress_handler, allowance_exhausted_handler, csrf_failed_handler, database_busy_handler,
-    feature_not_in_plan_handler, rate_limited_handler, scope_refused_handler,
+    fair_use_limit_handler, feature_not_in_plan_handler, rate_limited_handler, scope_refused_handler,
 )
 from webapp.api.usage import router as usage_router
 from webapp.persistence.dbapi import DatabaseBusy
+from webapp.services.metered_provider import FairUseLimitReached, load_pricing
 from webapp.services.usage import ActionInProgress, AllowanceExhausted, Metering, UsageService
 from product.entitlements import FeatureNotInPlan
 from webapp.api.route_classes import PUBLIC, ScopeRefused
@@ -150,6 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Bundle 7 spec §13: real accounts are metered; the local operator account is not.
     app.state.metering = Metering(app.state.entitlement_gate, UsageService(app.state.entitlement_gate),
                                   enforced=settings.auth_enabled)
+    app.state.ai_pricing = load_pricing(settings.ai_pricing_path)
     provider = provider_for(settings, catalog, deliver=lambda headers, body: _deliver_webhook(app, headers, body))
     app.state.billing_service = BillingService(provider, catalog, settings=settings)
     app.state.billing_webhooks = None if provider is None else BillingWebhooks(
@@ -164,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(FeatureNotInPlan, feature_not_in_plan_handler)
     app.add_exception_handler(AllowanceExhausted, allowance_exhausted_handler)
     app.add_exception_handler(ActionInProgress, action_in_progress_handler)
+    app.add_exception_handler(FairUseLimitReached, fair_use_limit_handler)
     app.add_exception_handler(DatabaseBusy, database_busy_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)

@@ -174,7 +174,8 @@ class Metering:
             self.usage.gauge_check(conn, scope, allowance=allowance, adding=adding, now=self._now())
 
     def metered(self, conn: dbapi.Connection, scope: Any, *, feature: str, allowance: str, subject_type: str,
-                subject_id: str, key: Callable[[str], str], action: str, work: Callable[[], T]) -> T:
+                subject_id: str, key: Callable[[str], str], action: str, work: Callable[[], T],
+                settlement_ref: Callable[[T], str] | None = None) -> T:
         """Feature check → claim ``action`` and reserve (key built from the
         window key) in one account transaction → work → consume on success /
         release on failure, and finish the claim.
@@ -187,7 +188,9 @@ class Metering:
         claim whose holder died is taken over once its lease (the reservation
         TTL) has passed. A reservation already CONSUMED in this window is reused
         at no charge (a later stage or a rerun, §11.3); one RESERVED by a
-        concurrent different action is left to its creator to settle."""
+        concurrent different action is left to its creator to settle.
+        ``settlement_ref`` names what the consumed unit paid for (default: the
+        subject), e.g. the discovery run id its candidates are authorized by."""
         if not self.enforced:
             return work()
         now = self._now()
@@ -201,20 +204,26 @@ class Metering:
             window_key = self.gate.entitlements(conn, scope, now=now).window.key
             reservation = self.usage.reserve(conn, scope, allowance=allowance, subject_type=subject_type,
                                              subject_id=subject_id, idempotency_key=key(window_key), now=now)
-        try:
-            result = work()
-        except BaseException:
-            if conn.in_transaction:
-                conn.rollback()  # the failed stage's uncommitted writes are not kept
-            with dbapi.account_transaction(conn, scope.account_id):
-                if reservation.created:
-                    self.usage.release(conn, reservation.id, now=self._now())
-                rows.finish_action(conn, claim_id, status="FAILED", now=self._now())
-            raise
+        from webapp.services.metered_provider import cost_buffer, record_cost_events
+
+        with cost_buffer() as spend:  # AI cost events of this action, written when it settles
+            try:
+                result = work()
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()  # the failed stage's uncommitted writes are not kept
+                with dbapi.account_transaction(conn, scope.account_id):
+                    record_cost_events(conn, spend.events)  # spend incurred before the failure still counts
+                    if reservation.created:
+                        self.usage.release(conn, reservation.id, now=self._now())
+                    rows.finish_action(conn, claim_id, status="FAILED", now=self._now())
+                raise
         if conn.in_transaction:
             conn.commit()  # the successful work's own writes
         with dbapi.account_transaction(conn, scope.account_id):
-            if reservation.created and not self.usage.consume(conn, reservation.id, settlement_ref=subject_id,
+            record_cost_events(conn, spend.events)
+            ref = settlement_ref(result) if settlement_ref else subject_id
+            if reservation.created and not self.usage.consume(conn, reservation.id, settlement_ref=ref,
                                                               now=self._now()):
                 logger.warning("usage_consume_after_release reservation=%s", reservation.id)
             if not rows.finish_action(conn, claim_id, status="SUCCEEDED", now=self._now()):

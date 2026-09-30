@@ -19,6 +19,7 @@ from webapp.services.http_api import (
     list_public_extensions,
     understand_job,
 )
+from webapp.services.autonomy_providers import request_providers
 from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 from webapp.persistence import dbapi
@@ -123,7 +124,7 @@ def post_understand(
     conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
-    provider = _job_understanding_provider(request)
+    provider = _providers(request, scope, workspace_id).understanding
     try:
         return {"artifact": _prepare_stage(request, conn, scope, workspace_id, "understand", lambda: understand_job(
             conn, workspace_id, provider, request_id=body.request_id,
@@ -142,7 +143,8 @@ def post_fit(
 ):
     try:
         artifact = _prepare_stage(request, conn, scope, workspace_id, "fit", lambda: fit_job(
-            conn, workspace_id, _semantic_adapter(request), request_id=body.request_id,
+            conn, workspace_id, _providers(request, scope, workspace_id).semantic_adapter,
+            request_id=body.request_id,
             extension_ids=body.extension_ids, extensions_dir=extensions_dir,
             account_id=scope.account_id,
         ))
@@ -163,7 +165,7 @@ def post_application_intelligence(
         return {
             "artifact": _prepare_stage(
                 request, conn, scope, workspace_id, "application-intelligence", lambda: generate_application_intelligence(
-                conn, workspace_id, _application_intelligence_provider(request),
+                conn, workspace_id, _providers(request, scope, workspace_id).intelligence,
                 request_id=body.request_id,
                 account_id=scope.account_id,
             ))
@@ -172,26 +174,5 @@ def post_application_intelligence(
         raise _service_error(exc) from exc
 
 
-def _job_understanding_provider(request: Request):
-    override = getattr(request.app.state, "job_understanding_provider", None)
-    if override is not None:
-        return override
-    from product.openai_job_understanding_provider import OpenAIJobUnderstandingProvider
-    return OpenAIJobUnderstandingProvider()
-
-
-def _semantic_adapter(request: Request):
-    override = getattr(request.app.state, "semantic_adapter", None)
-    if override is not None:
-        return override
-    from webapp.services.openai_semantic_proposer_client import OpenAISemanticProposerClient
-    from webapp.services.semantic_proposal_adapter import SemanticProposalAdapter
-    return SemanticProposalAdapter(OpenAISemanticProposerClient())
-
-
-def _application_intelligence_provider(request: Request):
-    override = getattr(request.app.state, "application_intelligence_provider", None)
-    if override is not None:
-        return override
-    from product.openai_application_intelligence_provider import OpenAIApplicationIntelligenceProvider
-    return OpenAIApplicationIntelligenceProvider()
+def _providers(request: Request, scope: AccountScope, workspace_id: str):
+    return request_providers(request.app.state, scope, "workspace", workspace_id)

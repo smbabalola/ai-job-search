@@ -18,9 +18,12 @@ from webapp.services.discovery import (
     promote_discovery_candidate,
     run_discovery_search,
 )
+from webapp.services.autonomy_providers import request_providers
 from webapp.services.extension_registry import resolve_active_extensions
+from webapp.services.metered_provider import reraise_metering_refusal
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
 from webapp.persistence import dbapi
+from webapp.persistence import usage as usage_rows
 from webapp.api.route_classes import USER
 
 
@@ -100,6 +103,7 @@ def post_search(
             conn, scope, feature="discovery.on_demand", allowance="discovery.on_demand_runs",
             subject_type="search_workspace", subject_id=search_workspace_id, key=lambda window_key: run_key,
             action=f"discovery:{search_workspace_id}",
+            settlement_ref=lambda result: result["run"]["id"],  # authorizes the run's candidates for evaluation
             work=lambda: run_discovery_search(
                 conn, runner, search_workspace_id=search_workspace_id,
                 sources=body.sources, queries=body.queries,
@@ -158,10 +162,20 @@ def post_evaluate(
         extensions = resolve_active_extensions(extensions_dir, body.extension_ids)
     except Exception as exc:
         raise _error(exc) from exc
-    understanding_provider = _job_understanding_provider(request)
-    semantic_adapter = _semantic_adapter(request)
+    # Candidate evaluation is part of the discovery action (Bundle 7 §11.4): it needs the discovery
+    # feature, and only a candidate found by a run that consumed a discovery allowance reaches the AI.
+    # Every AI call still passes the metered boundary (AI switch, hidden cost ceiling, cost recorded).
+    metering = request.app.state.metering
+    metering.require_feature(conn, scope, "discovery.on_demand")
+    providers = request_providers(request.app.state, scope, "search_workspace", search_workspace_id)
+    understanding_provider, semantic_adapter = providers.understanding, providers.semantic_adapter
     results = []
     for index, candidate_id in enumerate(body.candidate_ids):
+        if metering.enforced and not usage_rows.candidate_from_metered_run(
+                conn, account_id=scope.account_id, candidate_id=candidate_id):
+            results.append({"candidate_id": candidate_id, "status": "failed",
+                            "error": "this job was not found by a discovery search on your plan"})
+            continue
         try:
             fit = evaluate_discovery_candidate(
                 conn, candidate_id, semantic_adapter,
@@ -173,6 +187,7 @@ def post_evaluate(
             )
             results.append({"candidate_id": candidate_id, "status": "completed", "fit": fit})
         except Exception as exc:
+            reraise_metering_refusal(exc)  # the whole batch stops at the fair-use limit / AI switched off
             results.append({"candidate_id": candidate_id, "status": "failed", "error": str(exc)})
     return {"results": results}
 
@@ -192,20 +207,3 @@ def post_promote(
         )
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc
-
-
-def _job_understanding_provider(request: Request):
-    override = getattr(request.app.state, "job_understanding_provider", None)
-    if override is not None:
-        return override
-    from product.openai_job_understanding_provider import OpenAIJobUnderstandingProvider
-    return OpenAIJobUnderstandingProvider()
-
-
-def _semantic_adapter(request: Request):
-    override = getattr(request.app.state, "semantic_adapter", None)
-    if override is not None:
-        return override
-    from webapp.services.openai_semantic_proposer_client import OpenAISemanticProposerClient
-    from webapp.services.semantic_proposal_adapter import SemanticProposalAdapter
-    return SemanticProposalAdapter(OpenAISemanticProposerClient())

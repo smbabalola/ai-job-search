@@ -153,6 +153,9 @@ class Settings:
             os.environ.get("JOBSEARCH_RETENTION_POLICY", "product/policies/retention-policy.dev.json")
         )
     )
+    ai_pricing_path: Path = field(
+        default_factory=lambda: Path(os.environ.get("JOBSEARCH_AI_PRICING", "product/policies/ai-pricing.dev.json"))
+    )
 
     writer_lock_timeout_ms: int = field(default_factory=_parse_writer_lock_timeout)
 
@@ -175,6 +178,7 @@ class Settings:
     def __post_init__(self) -> None:
         self.plan_catalog_path = Path(self.plan_catalog_path)
         self.retention_policy_path = Path(self.retention_policy_path)
+        self.ai_pricing_path = Path(self.ai_pricing_path)
         self.extension_ids = tuple(self.extension_ids)
         self.db_path = Path(self.db_path)
         self.extensions_dir = Path(self.extensions_dir)

@@ -64,3 +64,10 @@ async def action_in_progress_handler(request: Request, exc: Exception) -> JSONRe
     retry_after = getattr(exc, "retry_after", 5)
     return error_response("ACTION_IN_PROGRESS", "This is already running. Refresh in a moment to see the result.", 409,
                           detail={"retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
+
+
+async def fair_use_limit_handler(request: Request, exc: Exception) -> JSONResponse:
+    # The ceiling is hidden (U3): never a number, only the fair-use message.
+    return error_response("FAIR_USE_LIMIT_REACHED",
+                          "You've reached the fair-use limit for AI features this period. "
+                          "It resets at the start of your next billing period.", 429)

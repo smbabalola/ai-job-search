@@ -26,6 +26,7 @@ def hosted_settings(**overrides) -> Settings:
         billing_provider="fake",
         email_provider="smtp",
         plan_catalog_path=PRODUCTION_CATALOG,
+        ai_pricing_path=Path("product/policies/ai-pricing.v1.json"),
     )
     values.update(overrides)
     return Settings(**values)
@@ -68,6 +69,8 @@ def test_hosted_settings_with_every_field_valid_have_no_problems():
         ({"email_provider": "console"}, "hosted mode requires a real JOBSEARCH_EMAIL_PROVIDER"),
         ({"plan_catalog_path": Path("product/plans/plan-catalog.dev.json")},
          "hosted mode refuses the development plan catalog"),
+        ({"ai_pricing_path": Path("product/policies/ai-pricing.dev.json")},
+         "hosted mode refuses the development AI pricing table"),
     ],
 )
 def test_hosted_mode_refuses_each_missing_or_invalid_setting(override, problem):

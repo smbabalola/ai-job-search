@@ -30,6 +30,7 @@ from product.semantic_job_fit import (
     build_semantic_job_fit_request,
     load_semantic_fit_policy,
 )
+from webapp.services.metered_provider import reraise_metering_refusal
 from webapp.services.resolved_blocker_answers import build_resolved_blocker_answers_payload
 
 from webapp.persistence.artifacts import get_current_artifact, save_artifact
@@ -217,9 +218,10 @@ def run_job_understanding(
         result = extract_job_understanding(
             job_artifact["payload"], provider, request_id, policy=policy,
         )
-    except JobUnderstandingProviderError as exc:
-        raise PipelineError(f"job understanding provider failed: {exc}") from exc
     except Exception as exc:
+        reraise_metering_refusal(exc)  # Bundle 7 §13.2: FAIR_USE_LIMIT_REACHED / FEATURE_NOT_IN_PLAN, not a 400
+        if isinstance(exc, JobUnderstandingProviderError):
+            raise PipelineError(f"job understanding provider failed: {exc}") from exc
         raise PipelineError(f"job understanding failed: {exc}") from exc
 
     result_artifact = save_artifact(
@@ -420,9 +422,10 @@ def run_application_intelligence(
     try:
         proposal_response = ai_provider.propose(request)
         result = analyze_application_intelligence(request, proposal_response.payload)
-    except ApplicationIntelligenceProviderError as exc:
-        raise PipelineError(f"application intelligence provider failed: {exc}") from exc
     except Exception as exc:
+        reraise_metering_refusal(exc)  # Bundle 7 §13.2
+        if isinstance(exc, ApplicationIntelligenceProviderError):
+            raise PipelineError(f"application intelligence provider failed: {exc}") from exc
         raise PipelineError(f"application intelligence analysis failed: {exc}") from exc
 
     result_saved = save_artifact(

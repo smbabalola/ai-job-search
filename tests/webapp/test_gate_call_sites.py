@@ -79,7 +79,7 @@ def test_every_prepare_stage_requires_ai_prepare_and_reserves_a_prepare(world, m
 
 def test_on_demand_discovery_requires_the_feature_and_reserves_a_run(world, monkeypatch):
     _, client, _, ids, _, calls = world
-    monkeypatch.setattr(discovery_api, "run_discovery_search", lambda *a, **k: {"run": "ok"})
+    monkeypatch.setattr(discovery_api, "run_discovery_search", lambda *a, **k: {"run": {"id": "run_fake"}, "candidate_ids": []})
     response = _post(client, f"/api/search-workspaces/{ids['search_workspace_id']}/discovery/search",
                      json={"sources": [], "queries": ["engineer"], "locations": []})
     assert response.status_code == 200, response.text
@@ -147,10 +147,144 @@ def test_a_prepare_stage_already_in_flight_is_refused_without_running(world, mon
 def test_a_discovery_run_already_in_flight_is_refused_without_running(world, monkeypatch):
     _, client, settings, ids, account_id, _ = world
     executions = []
-    monkeypatch.setattr(discovery_api, "run_discovery_search", lambda *a, **k: executions.append(1) or {"run": "ok"})
+    monkeypatch.setattr(discovery_api, "run_discovery_search", lambda *a, **k: executions.append(1) or {"run": {"id": "run_fake"}, "candidate_ids": []})
     _running(settings, account_id, f"discovery:{ids['search_workspace_id']}")
     response = _post(client, f"/api/search-workspaces/{ids['search_workspace_id']}/discovery/search",
                      json={"sources": [], "queries": ["engineer"], "locations": []})
     assert response.status_code == 409, response.text
     assert response.json()["error"] == "ACTION_IN_PROGRESS"
     assert executions == []
+
+
+class _CountingUnderstanding:
+    provider_id, model_id, model_version = "openai", "gpt-5.4-mini", "test"
+
+    def __init__(self):
+        self.calls = 0
+
+    def extract(self, request):
+        self.calls += 1
+        raise AssertionError("the provider must not be called past the ceiling")
+
+
+def test_the_ai_cost_ceiling_refuses_a_prepare_stage_with_the_fair_use_code(world):
+    """Task 17: the route's providers sit behind the metered boundary, and the
+    refusal reaches the caller as FAIR_USE_LIMIT_REACHED, not a pipeline 400."""
+    app, client, settings, ids, account_id, _ = world
+    provider = _CountingUnderstanding()
+    app.state.job_understanding_provider = provider
+    conn = connect(settings)
+    conn.execute("INSERT INTO ai_cost_events (id, account_id, subject_type, subject_id, provider, model, input_tokens, "
+                 "output_tokens, cost_micro_usd, request_ref, created_at) VALUES ('aic_1', ?, 'workspace', 'w', "
+                 "'openai', 'm', 0, 0, 2000000000, NULL, ?)",
+                 (account_id, __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+                  .isoformat(timespec="microseconds")))
+    conn.commit()
+    conn.close()
+    from tests.webapp.api.test_workspace_routes import _source_record
+    created = _post(client, "/api/workspaces", json={"company": "Acme", "title": "Backend Engineer",
+                                                      "source_record": _source_record(),
+                                                      "source_record_origin": "manual_entry"})
+    assert created.status_code == 201, created.text
+    workspace_id = created.json()["workspace"]["id"]
+    response = _post(client, f"/api/workspaces/{workspace_id}/understand", json={"request_id": "r9"})
+    assert response.status_code == 429, response.text
+    assert response.json()["error"] == "FAIR_USE_LIMIT_REACHED"
+    assert "2000000000" not in response.text and "micro" not in response.text  # the ceiling is never shown
+    assert provider.calls == 0
+    conn = connect(settings)
+    statuses = [r[0] for r in conn.execute("SELECT status FROM usage_reservations")]
+    conn.close()
+    assert statuses == ["RELEASED"]  # a refused stage is not charged
+
+
+# ---- discovery candidate evaluation inherits the discovery run's authorization ----
+
+class _DiscoveryRunner:
+    def search(self, source, **kwargs):
+        return [{"id": "planner-1", "title": "Project Planner", "company": "Energy Co", "location": "Aberdeen",
+                 "date": "2026-08-20", "url": "https://freehire.me/jobs/planner-1", "description": "Plan work."}]
+
+
+class _MeteredProbe:
+    """Stands in for the AI evaluation: it calls the (metered) understanding
+    provider the route hands it, so the boundary is exercised for real."""
+
+    def __init__(self):
+        self.provider_calls = 0
+
+    def extract(self, request):
+        self.provider_calls += 1
+        return SimpleNamespace(payload={}, audit=SimpleNamespace(input_tokens=1000, output_tokens=100))
+
+
+def _evaluate_through_provider(conn, candidate_id, semantic_adapter, *, understanding_provider, **kwargs):
+    understanding_provider.extract({})
+    return {"candidate_id": candidate_id}
+
+
+def _cost_events(settings):
+    conn = connect(settings)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM ai_cost_events").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_candidates_from_a_metered_discovery_run_are_evaluated_behind_the_ai_boundary(world, monkeypatch):
+    app, client, settings, ids, _, calls = world
+    probe = _MeteredProbe()
+    app.state.discovery_portal_runner = _DiscoveryRunner()
+    app.state.job_understanding_provider = probe
+    monkeypatch.setattr(discovery_api, "evaluate_discovery_candidate", _evaluate_through_provider)
+    base = f"/api/search-workspaces/{ids['search_workspace_id']}/discovery"
+    searched = _post(client, f"{base}/search", json={"queries": ["planner"], "locations": []})
+    assert searched.status_code == 200, searched.text
+    candidate_ids = searched.json()["candidate_ids"]
+    calls.clear()
+    response = _post(client, f"{base}/evaluate", json={"candidate_ids": candidate_ids, "request_id": "e1"})
+    assert response.status_code == 200, response.text
+    assert [r["status"] for r in response.json()["results"]] == ["completed"]
+    assert ("feature", "discovery.on_demand") in calls  # the discovery action's feature
+    assert ("reserve", "discovery.on_demand_runs") not in calls  # no second allowance: the run's covers it
+    assert probe.provider_calls == 1 and _cost_events(settings) == 1  # AI switch + ceiling passed, cost recorded
+
+
+def test_candidates_without_a_metered_discovery_run_never_reach_the_ai(world, monkeypatch):
+    app, client, settings, ids, account_id, _ = world
+    from webapp.services.discovery import run_discovery_search
+    probe = _MeteredProbe()
+    app.state.job_understanding_provider = probe
+    monkeypatch.setattr(discovery_api, "evaluate_discovery_candidate", _evaluate_through_provider)
+    conn = connect(settings)
+    try:  # a run that never passed the allowance (no consumed reservation)
+        run = run_discovery_search(conn, _DiscoveryRunner(), search_workspace_id=ids["search_workspace_id"],
+                                   queries=["planner"], locations=[], account_id=account_id)
+        conn.commit()
+    finally:
+        conn.close()
+    base = f"/api/search-workspaces/{ids['search_workspace_id']}/discovery"
+    response = _post(client, f"{base}/evaluate", json={"candidate_ids": run["candidate_ids"], "request_id": "e2"})
+    assert response.status_code == 200, response.text
+    assert [r["status"] for r in response.json()["results"]] == ["failed"]
+    assert probe.provider_calls == 0 and _cost_events(settings) == 0
+
+
+def test_candidate_evaluation_is_refused_when_discovery_is_switched_off(world, monkeypatch):
+    app, client, settings, ids, _, _ = world
+    from datetime import datetime, timezone
+    from webapp.services.entitlements import set_platform_control
+    probe = _MeteredProbe()
+    app.state.discovery_portal_runner = _DiscoveryRunner()
+    app.state.job_understanding_provider = probe
+    monkeypatch.setattr(discovery_api, "evaluate_discovery_candidate", _evaluate_through_provider)
+    base = f"/api/search-workspaces/{ids['search_workspace_id']}/discovery"
+    candidate_ids = _post(client, f"{base}/search", json={"queries": ["planner"], "locations": []}).json()["candidate_ids"]
+    conn = connect(settings)
+    set_platform_control(conn, "DISCOVERY_ENABLED", False, actor_user_id=None, reason="t",
+                         now=datetime.now(timezone.utc))
+    conn.commit()
+    conn.close()
+    response = _post(client, f"{base}/evaluate", json={"candidate_ids": candidate_ids, "request_id": "e3"})
+    assert response.status_code == 402 and response.json()["error"] == "FEATURE_NOT_IN_PLAN"
+    assert probe.provider_calls == 0

@@ -9,6 +9,7 @@ from webapp.config import Settings
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 DEV_PLAN_CATALOG_NAME = "plan-catalog.dev.json"
+DEV_AI_PRICING_NAME = "ai-pricing.dev.json"
 MIN_SECRET_KEY_LENGTH = 43  # 32 random bytes, base64url
 
 
@@ -46,6 +47,8 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append("hosted mode requires a real JOBSEARCH_EMAIL_PROVIDER")
     if settings.plan_catalog_path.name == DEV_PLAN_CATALOG_NAME:
         problems.append("hosted mode refuses the development plan catalog")
+    if settings.ai_pricing_path.name == DEV_AI_PRICING_NAME:
+        problems.append("hosted mode refuses the development AI pricing table")
     return problems
 
 
