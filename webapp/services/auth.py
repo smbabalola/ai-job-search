@@ -15,6 +15,7 @@ from typing import Any, Callable
 from webapp import comms
 from webapp.persistence import dbapi, identity
 from webapp.persistence.audit import audit
+from webapp.services.entitlements import platform_control
 from webapp.services.passwords import (
     DUMMY_PASSWORD_HASH,
     hash_password,
@@ -104,6 +105,8 @@ class AuthService:
         legal = latest_legal_documents(conn)
         if set(legal) != {"TERMS", "PRIVACY"}:
             raise SignupUnavailable("no published Terms and Privacy Notice")
+        if not platform_control(conn, "SIGNUPS_ENABLED", settings=self.settings):
+            raise SignupUnavailable("sign-ups are closed")
         errors: list[str] = []
         try:
             normalized = identity.normalize_email(email)

@@ -163,6 +163,10 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "extension_access_tokens": _internal(("extension_devices", "device_id")),
     "pairing_codes": _internal("account_id"),
     "handoff_tickets": _internal("account_id"),
+    # plans and entitlements (Bundle 7, 026_entitlements)
+    "entitlement_grants": A,
+    "plan_catalog_versions": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    "platform_controls": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

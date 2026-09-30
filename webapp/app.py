@@ -4,6 +4,7 @@ import logging
 import os
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -40,7 +41,9 @@ from webapp.api.errors import csrf_failed_handler, rate_limited_handler, scope_r
 from webapp.api.route_classes import PUBLIC, ScopeRefused
 from webapp.services.csrf import CsrfFailed, require_csrf
 from webapp.services.rate_limit import RateLimited
-from webapp.persistence.db import init_db
+from webapp.persistence.db import connect, init_db
+from webapp.services.entitlements import EntitlementGate, record_catalog
+from product.entitlements import load_catalog
 from product.onboarding_walkthroughs import register_default_walkthroughs
 
 
@@ -73,14 +76,31 @@ def _start_autonomy_driver(app: FastAPI, settings: Settings):
     return stop, thread
 
 
+def _project_path(path: Path) -> Path:
+    """Relative configuration paths are relative to the project root, not the cwd."""
+    return path if path.is_absolute() else Path(__file__).parents[1] / path
+
+
+def _record_catalog(settings: Settings, catalog) -> None:
+    conn = connect(settings.db_path)
+    try:
+        record_catalog(conn, catalog, now=datetime.now(timezone.utc))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     require_valid_settings(settings)
+    # Bundle 7 spec §11.1: the plan catalog is validated before anything serves.
+    catalog = load_catalog(_project_path(settings.plan_catalog_path))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         register_default_walkthroughs()
         init_db(settings.db_path)
+        _record_catalog(settings, catalog)
         stop, thread = _start_autonomy_driver(app, settings)
         try:
             yield
@@ -91,6 +111,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Job Application Workspace", lifespan=lifespan, dependencies=[Depends(require_csrf)])
     app.state.settings = settings
+    app.state.entitlement_gate = EntitlementGate(catalog, settings=settings)
     # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
     configure_logging()
     app.state.error_reporter = LogErrorReporter()

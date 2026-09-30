@@ -364,3 +364,80 @@ def _extension_devices(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("025_extension_devices", sqlite=_extension_devices("sqlite"),
                                     postgres=_extension_devices("postgres")))
+
+
+# ---- 026_entitlements (Task 13): recorded plan catalog versions, entitlement
+# grants and platform controls (spec §11, §12.1, §19.3) -----------------------
+
+_ENTITLEMENTS_DDL = """
+CREATE TABLE plan_catalog_versions (
+    catalog_version TEXT PRIMARY KEY,
+    catalog_hash TEXT NOT NULL,
+    catalog_json TEXT NOT NULL,
+    loaded_at TEXT NOT NULL
+);
+CREATE TABLE entitlement_grants (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    kind TEXT NOT NULL CHECK (kind IN ('PLAN_OVERRIDE', 'ALLOWANCE_BONUS')),
+    plan_id TEXT,
+    allowance TEXT,
+    amount INTEGER,
+    reason TEXT NOT NULL,
+    actor_user_id TEXT REFERENCES users(id),
+    starts_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((kind = 'PLAN_OVERRIDE' AND plan_id IS NOT NULL AND allowance IS NULL AND amount IS NULL
+            AND expires_at IS NOT NULL)
+        OR (kind = 'ALLOWANCE_BONUS' AND plan_id IS NULL AND allowance IS NOT NULL AND amount > 0))
+);
+CREATE INDEX idx_entitlement_grants_account ON entitlement_grants(account_id, seq);
+CREATE TABLE platform_controls (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL CHECK (key IN ('SIGNUPS_ENABLED', 'AI_ENABLED', 'AUTOMATION_ENABLED', 'DISCOVERY_ENABLED',
+                                     'SUBMIT_ENABLED', 'HOSTED_THREAT_MODEL_SIGNED_OFF')),
+    value INTEGER NOT NULL CHECK (value IN (0, 1)),
+    actor_user_id TEXT REFERENCES users(id),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_platform_controls_key ON platform_controls(key, seq)
+"""
+
+_GRANT_COLUMNS = ("seq", "id", "account_id", "kind", "plan_id", "allowance", "amount", "reason",
+                  "actor_user_id", "starts_at", "expires_at", "created_at")
+
+
+def _grants_revoke_once(conn, dialect: str) -> None:
+    """entitlement_grants is append-only except revoked_at, which is set once."""
+    message = "entitlement_grants is append-only; only revoked_at may be set, once"
+    changed = " OR ".join(
+        f"NEW.{c} IS NOT OLD.{c}" if dialect == "sqlite" else f"NEW.{c} IS DISTINCT FROM OLD.{c}"
+        for c in _GRANT_COLUMNS)
+    when = f"OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER entitlement_grants_revoke_once BEFORE UPDATE ON entitlement_grants "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+        conn.execute("CREATE TRIGGER entitlement_grants_append_only_delete BEFORE DELETE ON entitlement_grants "
+                     f"BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "entitlement_grants_revoke_once" BEFORE UPDATE ON "entitlement_grants" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+        conn.execute('CREATE TRIGGER "entitlement_grants_append_only_delete" BEFORE DELETE ON "entitlement_grants" '
+                     f"FOR EACH ROW EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _entitlements(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _ENTITLEMENTS_DDL)
+        _append_only(conn, dialect, "plan_catalog_versions", "platform_controls")
+        _grants_revoke_once(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("026_entitlements", sqlite=_entitlements("sqlite"),
+                                    postgres=_entitlements("postgres")))
