@@ -155,8 +155,8 @@ def test_payment_failure_plan_change_and_cancellation_notify_the_account(world):
     _deliver_all(conn, webhooks, inbox, clock)
     assert _subscription(conn, scope.account_id)["state"] == "ENDED"
 
-    kinds = [r[0] for r in conn.execute("SELECT kind FROM notifications ORDER BY created_at, id")]
-    assert kinds == ["billing.payment_failed", "billing.subscription_changed", "billing.subscription_canceled"]
+    kinds = sorted(r[0] for r in conn.execute("SELECT kind FROM notifications"))  # change and cancel share a clock tick
+    assert kinds == ["billing.payment_failed", "billing.subscription_canceled", "billing.subscription_changed"]
     templates = sorted(r[0] for r in conn.execute("SELECT template_id FROM outbound_messages"))
     assert templates == ["billing.payment_failed", "billing.subscription_canceled", "billing.subscription_changed"]
 

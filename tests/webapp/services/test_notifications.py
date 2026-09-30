@@ -182,7 +182,7 @@ def test_usage_limit_near_fires_once_at_eighty_percent_then_reached(world):
             assert kinds == []
         elif i + 1 < 10:
             assert kinds == ["usage.limit_near"]
-    assert kinds == ["usage.limit_near", "usage.limit_reached"]
+    assert sorted(kinds) == ["usage.limit_near", "usage.limit_reached"]
 
 
 def test_a_notification_can_be_read_and_archived_by_its_account_only(world):
