@@ -167,6 +167,13 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "entitlement_grants": A,
     "plan_catalog_versions": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     "platform_controls": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    # billing (Bundle 7, 027_billing)
+    "billing_customers": TableSpec("account_id", purge="RETAIN", retain_class="BILLING_FINANCIAL"),
+    "subscriptions": TableSpec("account_id", purge="RETAIN", retain_class="BILLING_FINANCIAL"),
+    "subscription_events": TableSpec("account_id", purge="RETAIN", retain_class="BILLING_FINANCIAL"),
+    "checkout_sessions": TableSpec("account_id", purge="RETAIN", retain_class="BILLING_FINANCIAL"),
+    # provider inbox: rows are reached through the provider ids they carry, not an account
+    "billing_webhook_events": TableSpec("GLOBAL", purge="GLOBAL", export=False),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

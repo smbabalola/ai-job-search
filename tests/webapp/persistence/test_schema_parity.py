@@ -104,3 +104,10 @@ def test_conditional_triggers_behave_like_sqlite(pg_url):
         conn.commit()
     finally:
         conn.close()
+
+
+def test_check_extraction_ignores_identifiers_that_start_with_check():
+    from webapp.persistence.schema_catalog import extract_checks
+
+    sql = "CREATE TABLE checkout_sessions (checked TEXT, status TEXT CHECK (status IN ('OPEN')), checks INT)"
+    assert extract_checks(sql) == ["status IN ('OPEN')"]

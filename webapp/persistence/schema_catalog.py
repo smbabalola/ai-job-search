@@ -29,7 +29,8 @@ def extract_checks(create_sql: str) -> list[str]:
         if ch == "'":
             in_string = not in_string
         elif (not in_string and create_sql[i:i + 5].upper() == "CHECK"
-              and (i == 0 or not (create_sql[i - 1].isalnum() or create_sql[i - 1] == "_"))):
+              and (i == 0 or not (create_sql[i - 1].isalnum() or create_sql[i - 1] == "_"))
+              and create_sql[i + 5:].lstrip().startswith("(")):
             j = create_sql.index("(", i)
             depth, k, quoted = 0, j, False
             while k < n:

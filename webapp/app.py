@@ -14,6 +14,11 @@ from fastapi.templating import Jinja2Templates
 from webapp.api.applications import router as applications_router
 from webapp.api.auth import AuthContextMiddleware, router as auth_router
 from webapp.api.extension_auth import router as extension_auth_router
+from webapp.api.billing import router as billing_router
+from webapp.api.dev_billing import router as dev_billing_router
+from webapp.billing.registry import provider_for
+from webapp.persistence import billing as billing_rows
+from webapp.services.billing import BillingService
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -111,7 +116,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Job Application Workspace", lifespan=lifespan, dependencies=[Depends(require_csrf)])
     app.state.settings = settings
-    app.state.entitlement_gate = EntitlementGate(catalog, settings=settings)
+    app.state.entitlement_gate = EntitlementGate(catalog, settings=settings,
+                                                 subscriptions=billing_rows.subscription_view)
+    app.state.billing_service = BillingService(provider_for(settings, catalog), catalog, settings=settings)
     # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
     configure_logging()
     app.state.error_reporter = LogErrorReporter()
@@ -137,6 +144,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(extension_auth_router)
+    app.include_router(billing_router)
+    if not settings.is_hosted:
+        app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)
     app.include_router(profile_router)
     app.include_router(application_documents_router)
     app.include_router(reusable_router)

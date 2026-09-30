@@ -441,3 +441,84 @@ def _entitlements(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("026_entitlements", sqlite=_entitlements("sqlite"),
                                     postgres=_entitlements("postgres")))
+
+
+# ---- 027_billing (Task 14): customers, subscriptions (derived from provider
+# snapshots), subscription history, webhook inbox, checkout sessions (§12.1) --
+
+_BILLING_DDL = """
+CREATE TABLE billing_customers (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_customer_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE subscriptions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_subscription_id TEXT NOT NULL UNIQUE,
+    plan_id TEXT NOT NULL,
+    interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+    catalog_version TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('INCOMPLETE', 'TRIALING', 'ACTIVE', 'PAST_DUE', 'CANCEL_SCHEDULED',
+                                         'ENDED', 'INCOMPLETE_EXPIRED', 'UNKNOWN')),
+    current_period_start TEXT NOT NULL,
+    current_period_end TEXT NOT NULL,
+    cancel_at_period_end INTEGER NOT NULL CHECK (cancel_at_period_end IN (0, 1)),
+    past_due_since TEXT,
+    snapshot_json TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_subscriptions_live_account ON subscriptions(account_id)
+    WHERE state IN ('INCOMPLETE', 'TRIALING', 'ACTIVE', 'PAST_DUE', 'CANCEL_SCHEDULED', 'UNKNOWN');
+CREATE TABLE subscription_events (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    provider_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_subscription_events_account ON subscription_events(account_id, seq);
+CREATE TABLE billing_webhook_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT UNIQUE,
+    received_at TEXT NOT NULL,
+    signature_verified INTEGER NOT NULL CHECK (signature_verified IN (0, 1)),
+    payload_json TEXT NOT NULL,
+    processed_at TEXT,
+    process_error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)
+);
+CREATE INDEX idx_billing_webhook_events_pending ON billing_webhook_events(processed_at, received_at);
+CREATE TABLE checkout_sessions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+    status TEXT NOT NULL CHECK (status IN ('OPEN', 'COMPLETED', 'EXPIRED', 'CANCELED')),
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE UNIQUE INDEX idx_checkout_sessions_open ON checkout_sessions(account_id, plan_id, interval)
+    WHERE status = 'OPEN';
+CREATE UNIQUE INDEX idx_checkout_sessions_provider ON checkout_sessions(provider, provider_session_id)
+"""
+
+
+def _billing(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _BILLING_DDL)
+        _append_only(conn, dialect, "subscription_events")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("027_billing", sqlite=_billing("sqlite"), postgres=_billing("postgres")))
