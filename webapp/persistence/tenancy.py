@@ -174,6 +174,9 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "checkout_sessions": TableSpec("account_id", purge="RETAIN", retain_class="BILLING_FINANCIAL"),
     # provider inbox: rows are reached through the provider ids they carry, not an account
     "billing_webhook_events": TableSpec("GLOBAL", purge="GLOBAL", export=False),
+    # usage (Bundle 7, 028_usage)
+    "usage_reservations": A,
+    "ai_cost_events": TableSpec("account_id", export=False),
     # operations (Bundle 7)
     "audit_log": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT"),
     # global

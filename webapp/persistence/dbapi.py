@@ -24,6 +24,7 @@ import sqlite3
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequence
 
@@ -151,6 +152,16 @@ class SqliteConnection(sqlite3.Connection):
             LOCK_STATS.acquired(site, time.monotonic() - started)
             self._hold = (site, time.monotonic())
         return cursor
+
+    def begin_account(self, account_id: str) -> None:
+        """SQLite serializes writers already: an immediate transaction is the
+        account lock. Not a writer-lock site (spec §10.7 counts literals only)."""
+        try:
+            sqlite3.Connection.execute(self, "BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            if "database is locked" in str(exc):
+                raise DatabaseBusy("sqlite_locked", _call_site(), str(exc)) from exc
+            raise
 
     def _end_hold(self) -> None:
         if self._hold is not None:
@@ -353,6 +364,7 @@ class PgConnection:
         self._in_tx = False
         self._outer_savepoint: str | None = None
         self._writer_hold: tuple[str, float] | None = None
+        self._account_key: int | None = None
         self.row_factory = None  # accepted for sqlite3 API compatibility; rows are always PgRow
 
     @property
@@ -389,6 +401,41 @@ class PgConnection:
             raise
         self._in_tx = True
 
+    def begin_account(self, account_id: str) -> None:
+        """Take the account's session-level advisory lock, then BEGIN: the
+        REPEATABLE READ snapshot is taken after the lock, so it includes the
+        previous holder's commit. Bounded by lock_timeout."""
+        if self._in_tx:
+            raise OperationalError("cannot start a transaction within a transaction")
+        import psycopg
+        from psycopg import errors
+
+        key = account_lock_key(account_id)
+        site = _call_site()
+        try:
+            self._conn.execute("SELECT pg_advisory_lock(%s, %s)", (ACCOUNT_LOCK_NAMESPACE, key))
+        except errors.LockNotAvailable as exc:
+            logger.warning("account_lock_timeout site=%s", site)
+            raise DatabaseBusy("account_lock_timeout", site, str(exc)) from exc
+        except psycopg.Error as exc:
+            raise _map_pg_error(exc, site) from exc
+        self._account_key = key
+        try:
+            self._conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        except Exception:
+            self._release_account()
+            raise
+        self._in_tx = True
+
+    def _release_account(self) -> None:
+        if self._account_key is None:
+            return
+        key, self._account_key = self._account_key, None
+        try:
+            self._conn.execute("SELECT pg_advisory_unlock(%s, %s)", (ACCOUNT_LOCK_NAMESPACE, key))
+        except Exception:  # the session ends on close, which releases it anyway
+            logger.exception("account lock release failed")
+
     def _release_writer(self) -> None:
         if self._writer_hold is None:
             return
@@ -413,6 +460,7 @@ class PgConnection:
             self._in_tx = False
             self._outer_savepoint = None
             self._release_writer()
+            self._release_account()
 
     def commit(self) -> None:
         self._end("COMMIT")
@@ -426,6 +474,7 @@ class PgConnection:
                 self.rollback()
         finally:
             self._release_writer()
+            self._release_account()
             self._conn.close()
 
     # -- statements --
@@ -538,6 +587,41 @@ def _writer_lock_timeout(settings: Any, override: int | None) -> int:
 # SQLite file paths used by existing tests to per-path PostgreSQL databases.
 # Production never sets it.
 _sqlite_redirect: Callable[[Path], str | None] | None = None
+
+
+ACCOUNT_LOCK_NAMESPACE = 0x4A53  # the two-key advisory lock space for per-account locks
+
+
+def account_lock_key(account_id: str) -> int:
+    import hashlib
+
+    return int.from_bytes(hashlib.sha256(account_id.encode()).digest()[:4], "big", signed=True)
+
+
+@contextmanager
+def account_transaction(conn: Any, account_id: str) -> Iterator[Any]:
+    """Start a transaction holding ``account_id``'s lock; commit on success,
+    roll back on error. The per-account lock of spec §10.7 for new invariants
+    (usage reservations, ...).
+
+    Invariant: this primitive owns the transaction boundary and takes the
+    account lock before the first protected read. On PostgreSQL the lock is
+    acquired, then ``BEGIN ISOLATION LEVEL REPEATABLE READ`` takes the
+    snapshot, so every holder sees the previous holder's commit. A lock taken
+    inside a transaction that had already read would keep a stale snapshot and
+    lose updates, so a caller already inside a transaction is refused
+    (``OperationalError``) rather than silently joined. Acquisition is bounded
+    by ``lock_timeout`` → ``DatabaseBusy("account_lock_timeout")``. Different
+    accounts take different locks on PostgreSQL; SQLite serializes all writers."""
+    if conn.in_transaction:
+        raise OperationalError("account_transaction must start its own transaction")
+    conn.begin_account(account_id)
+    try:
+        yield conn
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 def set_sqlite_redirect(redirect: Callable[[Path], str | None] | None) -> None:

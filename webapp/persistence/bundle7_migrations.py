@@ -522,3 +522,73 @@ def _billing(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("027_billing", sqlite=_billing("sqlite"), postgres=_billing("postgres")))
+
+
+# ---- 028_usage (Task 16): the usage reservation ledger and AI cost events
+# (spec §13.1) ----------------------------------------------------------------
+
+_USAGE_DDL = """
+CREATE TABLE usage_reservations (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    allowance TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    window_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RESERVED', 'CONSUMED', 'RELEASED')),
+    reserved_at TEXT NOT NULL,
+    settled_at TEXT,
+    expires_at TEXT NOT NULL,
+    settlement_ref TEXT,
+    CHECK ((status = 'RESERVED') = (settled_at IS NULL))
+);
+CREATE UNIQUE INDEX idx_usage_reservations_live_key ON usage_reservations(idempotency_key)
+    WHERE status IN ('RESERVED', 'CONSUMED');
+CREATE INDEX idx_usage_reservations_window ON usage_reservations(account_id, allowance, window_key, status);
+CREATE INDEX idx_usage_reservations_expiry ON usage_reservations(status, expires_at);
+CREATE TABLE ai_cost_events (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+    cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+    request_ref TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_ai_cost_events_account ON ai_cost_events(account_id, created_at)
+"""
+
+_RESERVATION_FIXED = ("id", "account_id", "allowance", "amount", "subject_type", "subject_id", "idempotency_key",
+                      "window_key", "reserved_at", "expires_at")
+
+
+def _reservation_transitions(conn, dialect: str) -> None:
+    """Only RESERVED→CONSUMED and RESERVED→RELEASED; nothing else changes."""
+    message = "usage_reservations may only move RESERVED to CONSUMED or RELEASED"
+    distinct = "IS NOT" if dialect == "sqlite" else "IS DISTINCT FROM"
+    changed = " OR ".join(f"NEW.{c} {distinct} OLD.{c}" for c in _RESERVATION_FIXED)
+    when = f"OLD.status <> 'RESERVED' OR NEW.status NOT IN ('CONSUMED', 'RELEASED') OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER usage_reservations_transition BEFORE UPDATE ON usage_reservations "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "usage_reservations_transition" BEFORE UPDATE ON "usage_reservations" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _usage(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _USAGE_DDL)
+        _reservation_transitions(conn, dialect)
+        _append_only(conn, dialect, "ai_cost_events")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("028_usage", sqlite=_usage("sqlite"), postgres=_usage("postgres")))

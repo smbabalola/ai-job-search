@@ -77,6 +77,7 @@ def post_authorize(workspace_id: str, body: AuthorizeBody, request: Request,
                    conn: dbapi.Connection = Depends(get_conn),
                    scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _owned(conn, workspace_id, scope)
+    request.app.state.metering.require_feature(conn, scope, "apply.human_submit")  # §11.4: feature only
     return call(lambda: hs.authorize(conn, settings=request.app.state.settings, account_id=scope.account_id,
                                      application_workspace_id=workspace_id, review_hash=body.review_hash,
                                      actor=scope.account_id, now=_now()))

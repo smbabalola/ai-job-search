@@ -111,6 +111,7 @@ def _owned_run(conn, scope: SessionScope, session_id: str, run_id: str) -> dict[
 def post_run(session_id: str, body: StartBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
              scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _scope(session_id, scope)
+    request.app.state.metering.require_feature(conn, scope, "apply.assisted_fill")  # §11.4: feature only
     return call(lambda: fill_runs.start_run(
         conn, settings=request.app.state.settings, account_id=scope.account_id,
         handoff_session_id=scope.handoff_session_id, application_workspace_id=scope.workspace_id,

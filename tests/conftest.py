@@ -96,6 +96,10 @@ _SQLITE_CHAIN_REASON = ("tests the SQLite legacy migration chain 001-021; Postgr
 
 def pytest_collection_modifyitems(config, items):
     if config.getoption("--db") != "postgres":
+        skip_pg = pytest.mark.skip(reason="exercises PostgreSQL-specific behaviour; run with --db postgres")
+        for item in items:
+            if item.get_closest_marker("postgres_only"):
+                item.add_marker(skip_pg)
         return
     skip = pytest.mark.skip(reason=_SQLITE_CHAIN_REASON)
     for item in items:
@@ -107,3 +111,4 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "sqlite_only: exercises SQLite-specific behaviour; skipped under --db postgres")
+    config.addinivalue_line("markers", "postgres_only: exercises PostgreSQL-specific behaviour; runs only under --db postgres")

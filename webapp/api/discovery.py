@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -93,14 +94,18 @@ def post_search(
     runner = getattr(request.app.state, "discovery_portal_runner", None)
     if runner is None:
         runner = CliDiscoveryPortalRunner(Path(request.app.state.settings.profile_root).resolve())
+    run_key = f"discovery:{search_workspace_id}:{uuid.uuid4().hex}"
     try:
-        return run_discovery_search(
-            conn, runner, search_workspace_id=search_workspace_id,
-            sources=body.sources, queries=body.queries,
-            locations=body.locations, limit_per_source=body.limit_per_source,
-            account_id=scope.account_id,
-            deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
-        )
+        return request.app.state.metering.metered(
+            conn, scope, feature="discovery.on_demand", allowance="discovery.on_demand_runs",
+            subject_type="search_workspace", subject_id=search_workspace_id, key=lambda window_key: run_key,
+            work=lambda: run_discovery_search(
+                conn, runner, search_workspace_id=search_workspace_id,
+                sources=body.sources, queries=body.queries,
+                locations=body.locations, limit_per_source=body.limit_per_source,
+                account_id=scope.account_id,
+                deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
+            ))
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc
 

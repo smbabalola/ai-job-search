@@ -44,7 +44,14 @@ from webapp.config import Settings
 from webapp.deployment import require_valid_settings
 from webapp.observability import LogErrorReporter, RequestContextMiddleware, configure_logging, unhandled_error_handler
 from webapp.security_middleware import SecurityHeadersMiddleware
-from webapp.api.errors import csrf_failed_handler, rate_limited_handler, scope_refused_handler
+from webapp.api.errors import (
+    allowance_exhausted_handler, csrf_failed_handler, database_busy_handler, feature_not_in_plan_handler,
+    rate_limited_handler, scope_refused_handler,
+)
+from webapp.api.usage import router as usage_router
+from webapp.persistence.dbapi import DatabaseBusy
+from webapp.services.usage import AllowanceExhausted, Metering, UsageService
+from product.entitlements import FeatureNotInPlan
 from webapp.api.route_classes import PUBLIC, ScopeRefused
 from webapp.services.csrf import CsrfFailed, require_csrf
 from webapp.services.rate_limit import RateLimited
@@ -140,6 +147,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.entitlement_gate = EntitlementGate(catalog, settings=settings,
                                                  subscriptions=billing_rows.subscription_view)
+    # Bundle 7 spec §13: real accounts are metered; the local operator account is not.
+    app.state.metering = Metering(app.state.entitlement_gate, UsageService(app.state.entitlement_gate),
+                                  enforced=settings.auth_enabled)
     provider = provider_for(settings, catalog, deliver=lambda headers, body: _deliver_webhook(app, headers, body))
     app.state.billing_service = BillingService(provider, catalog, settings=settings)
     app.state.billing_webhooks = None if provider is None else BillingWebhooks(
@@ -151,6 +161,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(CsrfFailed, csrf_failed_handler)
     app.add_exception_handler(RateLimited, rate_limited_handler)
     app.add_exception_handler(ScopeRefused, scope_refused_handler)
+    app.add_exception_handler(FeatureNotInPlan, feature_not_in_plan_handler)
+    app.add_exception_handler(AllowanceExhausted, allowance_exhausted_handler)
+    app.add_exception_handler(DatabaseBusy, database_busy_handler)
     app.add_middleware(AuthContextMiddleware, settings=settings)
     app.add_middleware(SecurityHeadersMiddleware, hosted=settings.is_hosted)
     app.add_middleware(RequestContextMiddleware)  # outermost: every response carries the request id
@@ -171,6 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(extension_auth_router)
     app.include_router(billing_router)
     app.include_router(webhooks_router)
+    app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)
     app.include_router(profile_router)

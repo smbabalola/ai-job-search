@@ -39,3 +39,22 @@ async def scope_refused_handler(request: Request, exc: Exception):
             target = f"{target}?next={quote(request.url.path)}"
         return RedirectResponse(target, status_code=303)
     return error_response(exc.code, exc.message, exc.status)
+
+
+async def feature_not_in_plan_handler(request: Request, exc: Exception) -> JSONResponse:
+    message = (f"Your plan doesn't include this. Upgrade to {exc.upgrade_to.title()} to use it."
+               if exc.upgrade_to else "This feature is not available right now.")
+    return error_response("FEATURE_NOT_IN_PLAN", message, 402,
+                          detail={"feature": exc.feature, "plan_id": exc.plan_id, "upgrade_to": exc.upgrade_to})
+
+
+async def allowance_exhausted_handler(request: Request, exc: Exception) -> JSONResponse:
+    return error_response(
+        "ALLOWANCE_EXHAUSTED", "You've used your plan's allowance for this period. Upgrade for more.", 402,
+        detail={"allowance": exc.allowance, "used": exc.used, "limit": exc.limit,
+                "window_end": exc.window_end.isoformat()})
+
+
+async def database_busy_handler(request: Request, exc: Exception) -> JSONResponse:
+    return error_response("DATABASE_BUSY", "The service is busy. Please try again in a moment.", 503,
+                          headers={"Retry-After": "2"})

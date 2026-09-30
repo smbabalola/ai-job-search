@@ -80,11 +80,13 @@ def post_generate(workspace_id: str, request: Request, body: GenerateBody | None
 
 
 @router.post("/upload/{kind}", status_code=201)
-def post_upload(workspace_id: str, kind: str, file: UploadFile = File(...), conn: dbapi.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
+def post_upload(workspace_id: str, kind: str, request: Request, file: UploadFile = File(...), conn: dbapi.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
     try:
         content = file.file.read(10 * 1024 * 1024 + 1)
         if file.file.read(1):
             raise DocxPackageError("DOCX exceeds the compressed-size limit")
+        # §13.2: the storage gauge is checked before any blob is written
+        request.app.state.metering.gauge_check(conn, scope, "storage.bytes", adding=len(content))
         return upload_application_document(conn, workspace_id, kind=kind, filename=file.filename or "", content=content, documents_root=documents_root, account_id=scope.account_id)
     except (PipelineError, DocxPackageError, ApplicationDocumentContractError, DocumentBlobError) as exc:
         raise _error(exc) from exc
