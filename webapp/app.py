@@ -19,6 +19,8 @@ from webapp.api.dev_billing import router as dev_billing_router
 from webapp.billing.registry import provider_for
 from webapp.persistence import billing as billing_rows
 from webapp.services.billing import BillingService
+from webapp.services.billing_webhooks import BillingWebhooks
+from webapp.api.webhooks import router as webhooks_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -95,6 +97,26 @@ def _record_catalog(settings: Settings, catalog) -> None:
         conn.close()
 
 
+def _deliver_webhook(app: FastAPI, headers: dict[str, str], body: bytes) -> None:
+    """The fake provider delivers in-process, on its own connection, as a real
+    provider's HTTP call would. A failure keeps the webhook in the provider's
+    outbox for redelivery instead of failing the caller's action."""
+    webhooks = app.state.billing_webhooks
+    conn = connect(app.state.settings.db_path)
+    try:
+        now = datetime.now(timezone.utc)
+        webhooks.ingest(conn, headers=headers, body=body, now=now)
+        conn.commit()
+        webhooks.process_pending(conn, now=now)
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        logging.getLogger("webapp.billing").exception("fake_webhook_delivery_failed")
+        webhooks.provider.outbox.append((headers, body))
+    finally:
+        conn.close()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     require_valid_settings(settings)
@@ -118,7 +140,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.entitlement_gate = EntitlementGate(catalog, settings=settings,
                                                  subscriptions=billing_rows.subscription_view)
-    app.state.billing_service = BillingService(provider_for(settings, catalog), catalog, settings=settings)
+    provider = provider_for(settings, catalog, deliver=lambda headers, body: _deliver_webhook(app, headers, body))
+    app.state.billing_service = BillingService(provider, catalog, settings=settings)
+    app.state.billing_webhooks = None if provider is None else BillingWebhooks(
+        provider, catalog_version=catalog.catalog_version)
     # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
     configure_logging()
     app.state.error_reporter = LogErrorReporter()
@@ -145,6 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(extension_auth_router)
     app.include_router(billing_router)
+    app.include_router(webhooks_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)
     app.include_router(profile_router)

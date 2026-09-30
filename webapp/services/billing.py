@@ -83,7 +83,8 @@ class BillingService:
         if plan_id == "free":
             return self._url("/settings/billing")
         price = self._price(plan_id, interval)
-        if rows.live_subscription(conn, scope.account_id) is not None:
+        live = rows.live_subscription(conn, scope.account_id)
+        if live is not None and live["state"] != "INCOMPLETE":  # a failed first payment may be retried
             raise BillingRefused("SUBSCRIPTION_EXISTS", 409,
                                  "You already have a subscription. Change plan from Billing instead.")
         open_row = rows.open_checkout(conn, scope.account_id, plan_id, interval)

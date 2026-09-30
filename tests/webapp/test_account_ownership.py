@@ -58,7 +58,9 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
     for route in app.routes:
         if not isinstance(route, APIRoute) or route.path in system_routes or route.path in user_session_routes:
             continue
-        if route_class_of(route) == ["PUBLIC"]:
+        # WEBHOOK routes are authenticated by the provider's signature and
+        # attribute events through provider ids, never a caller's account.
+        if route_class_of(route) in (["PUBLIC"], ["WEBHOOK"]):
             continue
         dependency_calls = {
             dependency.call for dependency in route.dependant.dependencies
