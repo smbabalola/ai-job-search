@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Sessions · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Where you're signed in</h1></div></section>
+{% include "settings/_nav.html" %}
+<section class="panel"><ul>{% for s in sessions %}<li data-session>{{ s.user_agent_summary or "A browser" }} · last active {{ s.last_seen_at[:16] | replace("T", " ") }}</li>{% endfor %}</ul>
+<form method="post" action="/settings/sessions/revoke-all"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button secondary" type="submit">Sign out everywhere</button></form></section>
+{% endblock %}

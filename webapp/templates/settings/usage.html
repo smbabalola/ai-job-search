@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Usage · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Usage this period</h1></div></section>
+{% include "settings/_nav.html" %}
+<section class="panel">
+  <table><thead><tr><th scope="col">Allowance</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">Resets</th></tr></thead><tbody>
+  {% for row in rows %}<tr data-allowance="{{ row.allowance }}" data-used="{{ row.used }}" data-limit="{{ row.limit }}"><th scope="row">{{ row.label }}</th><td>{{ row.used_label }}</td><td>{{ row.limit_label }}</td><td>{{ "—" if row.gauge else row.window_end[:10] }}</td></tr>{% endfor %}
+  </tbody></table>
+  <p>Heavy use of AI features is also subject to a fair-use limit. <a href="/plans">Compare plans</a></p>
+</section>
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Browser extensions · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Browser extensions</h1></div></section>
+{% include "settings/_nav.html" %}
+<section class="panel"><ul>{% for d in devices %}<li data-device="{{ d.id }}">{{ d.label }} · connected {{ d.created_at[:10] }}{% if d.last_seen_at %} · last used {{ d.last_seen_at[:10] }}{% endif %}
+  <button class="button button-small secondary" type="button" data-device-revoke="{{ d.id }}">Disconnect</button></li>{% else %}<li>No extension is connected. <a href="/pairing">Connect one</a>.</li>{% endfor %}</ul></section>
+{% endblock %}

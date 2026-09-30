@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Choose a plan · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Plans</p><h1>Choose a plan</h1><p>You're on <strong data-current-plan="{{ current }}">{{ current | title }}</strong>.</p></div></section>
+<section class="panel"><table class="plan-matrix" data-plan-matrix>
+  <thead><tr><th scope="col"></th>{% for p in plans %}<th scope="col" data-plan="{{ p.plan_id }}">{{ p.name }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    <tr><th scope="row">Monthly price</th>{% for p in plans %}<td>{{ "Free" if p.plan_id == "free" else p.prices.month }}</td>{% endfor %}</tr>
+    <tr><th scope="row">Yearly price</th>{% for p in plans %}<td>{{ "Free" if p.plan_id == "free" else p.prices.year }}</td>{% endfor %}</tr>
+    {% for key, label in allowance_labels.items() %}<tr><th scope="row">{{ label }}</th>{% for p in plans %}<td>{{ p.allowances[key] }}</td>{% endfor %}</tr>{% endfor %}
+    {% for key, label in feature_labels.items() %}<tr><th scope="row">{{ label }}</th>{% for p in plans %}<td>{{ "✓" if p.features[key] else "—" }}</td>{% endfor %}</tr>{% endfor %}
+  </tbody>
+</table>
+  <div class="plan-choices">{% for p in plans %}<form method="post" action="/plans/choose" class="inline-form"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <input type="hidden" name="plan_id" value="{{ p.plan_id }}"><input type="hidden" name="interval" value="month">
+    <button class="button{% if p.plan_id == current %} secondary{% endif %}" type="submit" data-choose-plan="{{ p.plan_id }}" {% if p.plan_id == current %}disabled{% endif %}>{% if p.plan_id == current %}Current plan{% elif p.plan_id == "free" %}Continue with Free{% else %}Choose {{ p.name }}{% if p.trial_days %} ({{ p.trial_days }}-day trial){% endif %}{% endif %}</button>
+  </form>{% endfor %}</div>
+</section>
+{% endblock %}

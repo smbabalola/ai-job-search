@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Account · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Account</h1><p>{{ user.display_name }} · {{ user.email_display or user.email_normalized }}</p></div></section>
+{% include "settings/_nav.html" %}
+<form class="panel" data-json-form="/settings/password"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h2>Change password</h2></div>
+  <label class="field"><span>Current password</span><input type="password" name="current_password" autocomplete="current-password" required></label>
+  <label class="field"><span>New password (12 characters or more)</span><input type="password" name="new_password" autocomplete="new-password" minlength="12" required></label>
+  <button class="button" type="submit">Change password</button>
+</form>
+<form class="panel" data-json-form="/settings/email"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h2>Change email</h2></div>
+  <label class="field"><span>New email</span><input type="email" name="new_email" required></label>
+  <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+  <button class="button" type="submit">Send confirmation</button>
+</form>
+<section class="panel" data-account-data>
+  <div class="panel-heading"><h2>Your data</h2></div>
+  <p><a href="/settings/account/export">Export your data</a> · <a href="/settings/account/delete">Delete your account</a></p>
+</section>
+{% endblock %}

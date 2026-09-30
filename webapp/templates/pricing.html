@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Pricing · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Pricing</p><h1>Plans</h1>
+  <p>Every plan keeps you in charge: nothing is submitted without your review.</p></div></section>
+<section class="panel"><table class="plan-matrix" data-plan-matrix>
+  <thead><tr><th scope="col"></th>{% for p in plans %}<th scope="col" data-plan="{{ p.plan_id }}">{{ p.name }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    <tr><th scope="row">Monthly price</th>{% for p in plans %}<td>{{ "Free" if p.plan_id == "free" else p.prices.month }}</td>{% endfor %}</tr>
+    <tr><th scope="row">Yearly price</th>{% for p in plans %}<td>{{ "Free" if p.plan_id == "free" else p.prices.year }}</td>{% endfor %}</tr>
+    {% for key, label in allowance_labels.items() %}<tr><th scope="row">{{ label }}</th>{% for p in plans %}<td>{{ p.allowances[key] }}</td>{% endfor %}</tr>{% endfor %}
+    {% for key, label in feature_labels.items() %}<tr><th scope="row">{{ label }}</th>{% for p in plans %}<td>{{ "✓" if p.features[key] else "—" }}</td>{% endfor %}</tr>{% endfor %}
+  </tbody>
+</table>
+  <p><a class="button" href="/signup">Get started</a></p>
+</section>
+{% endblock %}

@@ -348,9 +348,18 @@ def workspace_detail_page(
             "cv_quality_v2_enabled": request.app.state.settings.cv_quality_v2_enabled,
             "onboarding_replay_expected": onboarding_replay_expected,
             **_cv_library_context(conn, scope.account_id, workspace_id),
+            "prepare_cost": _prepare_cost(request, conn, scope, workspace_id),
             **_search_context(conn, scope.account_id),
         }
     )
+
+
+def _prepare_cost(request: Request, conn, scope: AccountScope, workspace_id: str):
+    from webapp.api.settings import prepare_cost
+    try:
+        return prepare_cost(request, conn, scope, workspace_id)
+    except Exception:  # noqa: BLE001 - the disclosure never breaks the page
+        return None
 
 
 def _cv_library_context(conn, account_id: str, workspace_id: str) -> dict:

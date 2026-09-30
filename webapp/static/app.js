@@ -552,3 +552,48 @@ document.addEventListener("click", async (event) => {
     window.location.reload();
   } catch (error) { showMessage(error.message, true); button.disabled = false; }
 });
+
+// Bundle 7 §12.3/§13.3: billing actions, device revocation, account forms and the checkout return poll.
+(function () {
+  document.addEventListener("click", async (event) => {
+    const portal = event.target.closest("button[data-billing-portal]");
+    const cancel = event.target.closest("button[data-billing-cancel]");
+    const device = event.target.closest("button[data-device-revoke]");
+    const button = portal || cancel || device;
+    if (!button) return;
+    button.disabled = true;
+    try {
+      if (portal) { window.location.href = (await api("/api/billing/portal", {method: "POST"})).url; return; }
+      if (cancel) { await api("/api/billing/cancel", {method: "POST"}); window.location.reload(); return; }
+      const r = await fetch(`/api/settings/devices/${encodeURIComponent(device.dataset.deviceRevoke)}/revoke`, {method: "POST"});
+      if (!r.ok) throw new Error("Could not disconnect the extension");
+      button.closest("li").remove();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("form[data-json-form]");
+    if (!form) return;
+    event.preventDefault();
+    const response = await fetch(form.dataset.jsonForm, {method: "POST", body: new FormData(form)});
+    const body = await response.json().catch(() => ({}));
+    showMessage(response.ok ? "Saved." : (body.errors || [body.message || "Request failed"]).join(" "), !response.ok);
+    if (response.ok) form.reset();
+  });
+  const polling = document.querySelector("[data-checkout-polling]");
+  if (polling) {
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const status = await (await fetch("/api/billing/status")).json();
+        if (status.checkout && status.checkout.status === "COMPLETED" && status.state) {
+          polling.querySelector("[data-checkout-message]").textContent = `You're on ${status.plan_id}. Thank you!`;
+          return;
+        }
+      } catch (error) { /* keep polling */ }
+      if (tries < 30) setTimeout(tick, 2000);
+      else polling.querySelector("[data-checkout-message]").textContent = "Still confirming. Refresh this page in a minute.";
+    };
+    tick();
+  }
+})();
