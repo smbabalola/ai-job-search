@@ -358,6 +358,7 @@ class PgConnection:
                 text = bytes(data).decode()
                 return float(text) if any(c in text for c in ".eEN") else int(text)
 
+        self.dsn = dsn  # another connection to the same database (6C fenced steps)
         self._conn = psycopg.connect(dsn, autocommit=True, row_factory=_pg_row_factory)
         self._conn.adapters.register_loader("numeric", _NumericLoader)
         self._conn.execute(f"SET lock_timeout = '{int(writer_lock_timeout_ms)}ms'")

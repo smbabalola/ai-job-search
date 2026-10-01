@@ -154,3 +154,22 @@ class EntitlementGate:
         in_plan = resolved.plan_id in plans and plans[resolved.plan_id].features.get(feature)
         upgrade_to = None if in_plan else self.catalog.upgrade_for(feature, resolved.plan_id)
         raise FeatureNotInPlan(feature, resolved.plan_id, upgrade_to)
+
+
+# ---- a gate outside the web app (the worker, the 6C driver) -------------------
+
+_GATES: dict[tuple[str, str], EntitlementGate] = {}
+
+
+def gate_for(settings: Any) -> EntitlementGate:
+    """The same gate the app builds (catalog + billing reader), cached per
+    catalog path and database."""
+    from product.entitlements import load_catalog
+    from webapp.app import _project_path
+    from webapp.persistence import billing as billing_rows
+    key = (str(settings.plan_catalog_path), str(settings.database_url or settings.db_path))
+    gate = _GATES.get(key)
+    if gate is None:
+        catalog = load_catalog(_project_path(settings.plan_catalog_path))
+        gate = _GATES[key] = EntitlementGate(catalog, settings=settings, subscriptions=billing_rows.subscription_view)
+    return gate

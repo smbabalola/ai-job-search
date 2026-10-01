@@ -52,9 +52,10 @@ def _parse(value: str | None) -> datetime | None:
 
 
 class BillingWebhooks:
-    def __init__(self, provider: BillingProvider, *, catalog_version: str) -> None:
+    def __init__(self, provider: BillingProvider, *, catalog_version: str, settings: Any = None) -> None:
         self.provider = provider
         self.catalog_version = catalog_version  # pinned onto new subscriptions (DP-8)
+        self.settings = settings  # Task 26: entitlement-dependent automation is reconciled after a change
 
     # ---- ingestion ----------------------------------------------------------------
     def ingest(self, conn: dbapi.Connection, *, headers: Mapping[str, str], body: bytes, now: datetime) -> str:
@@ -160,6 +161,9 @@ class BillingWebhooks:
         if previous != new_state or plan_changed:
             self._record(conn, row_id, account_id, previous, new_state, event, now=now,
                          detail={"plan_id": snapshot.plan_id, "interval": snapshot.interval})
+            if self.settings is not None:  # §20.3: a downgrade below Power disables schedules at once
+                from webapp.services.search_schedules import reconcile_entitlements
+                reconcile_entitlements(conn, account_id, settings=self.settings, now=now)
         if new_state == "PAST_DUE" and previous != "PAST_DUE":
             self._notify(conn, account_id, "billing.payment_failed", row_id,
                          f"billing.payment_failed:{row_id}:{past_due_since.isoformat()}", now=now)

@@ -296,6 +296,20 @@ def _budgets(conn, *, doc: dict, account_id: str, workspace_id: str, now: dateti
     return tuple(out)
 
 
+def _automation_ceiling(conn, settings: Settings, account_id: str, requested_stage: Capability,
+                        now: datetime) -> Capability:
+    """Bundle 7 §11.3: autonomous PREPARE (the 6C engine, the only stage
+    automation runs) is also capped by the plan and AUTOMATION_ENABLED, read at
+    every decision. FILL is requested by the user's own 6D-B fill
+    (apply.assisted_fill, every plan) and the 6E-A human submit has its own
+    ceiling, so neither is capped by the automation entitlement."""
+    if requested_stage is not Capability.PREPARE:
+        return settings.autonomy_deployment_ceiling()
+    from webapp.services.autonomy_entitlements import entitlement_ceiling
+    return min(settings.autonomy_deployment_ceiling(), entitlement_ceiling(conn, account_id, settings=settings,
+                                                                           now=now))
+
+
 def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str, application_workspace_id: str,
                   requested_stage: Capability, mode: Mode, now: datetime, sentinel_present: bool,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
@@ -394,7 +408,8 @@ def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str
     return AuthorizationContext(
         mode=mode, requested_stage=requested_stage, now=now, account_id=account_id,
         application_workspace_id=ws, search_workspace_id=search_ws,
-        deployment_ceiling=settings.human_submit_ceiling() if human else settings.autonomy_deployment_ceiling(),
+        deployment_ceiling=settings.human_submit_ceiling() if human else _automation_ceiling(
+            conn, settings, account_id, requested_stage, now),
         account_max=account_max, workspace_ceiling=workspace_ceiling,
         kill_switch_engaged=kill_switch["halted"], control_epoch=kill_switch["latest_engage_seq"],
         sentinel_present=sentinel_present,

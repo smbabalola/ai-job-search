@@ -77,9 +77,15 @@ def _cv_items(conn: dbapi.Connection, account_id: str) -> int:
     return active_item_count(conn, account_id)
 
 
+def _scheduled_searches(conn: dbapi.Connection, account_id: str) -> int:
+    from webapp.services.search_schedules import active_schedule_count
+    return active_schedule_count(conn, account_id)
+
+
 GAUGE_READERS: dict[str, Callable[[dbapi.Connection, str], int]] = {
     "storage.bytes": rows.storage_bytes,
     "library.cv_items": _cv_items,  # Task 21: ACTIVE library items
+    "discovery.scheduled_searches": _scheduled_searches,  # Task 26: enabled schedules
 }
 
 

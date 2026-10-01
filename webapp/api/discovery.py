@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from product.discovery_search import CliDiscoveryPortalRunner, available_discovery_source_ids
 from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_dir
 from webapp.persistence.discovery import set_discovery_candidate_status
-from webapp.persistence.discovery_sources import list_discovery_source_settings
+from webapp.persistence.discovery_sources import list_discovery_source_settings, list_enabled_discovery_source_ids
 from webapp.services.discovery import (
     DiscoveryServiceError,
     evaluate_discovery_candidate,
@@ -69,13 +69,14 @@ def _authorize_search_workspace(
 @router.get("/api/search-workspaces/{search_workspace_id}/discovery/sources")
 def get_sources(
     search_workspace_id: str,
+    request: Request,
     conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
     registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
     available = available_discovery_source_ids(
-        [source_id for source_id, row in registry.items() if row["enabled"]]
+        list_enabled_discovery_source_ids(conn, hosted=request.app.state.settings.is_hosted)  # DP-9
     )
     return {
         "sources": [
@@ -110,6 +111,7 @@ def post_search(
                 locations=body.locations, limit_per_source=body.limit_per_source,
                 account_id=scope.account_id,
                 deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
+                hosted=request.app.state.settings.is_hosted,
             ))
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc

@@ -10,7 +10,7 @@ from product.user_profile import normalize_user_profile
 from webapp.persistence.user_profile import get_current_user_profile
 from product.discovery_search import available_discovery_source_ids
 from webapp.persistence.discovery import get_latest_discovery_run
-from webapp.persistence.discovery_sources import list_discovery_source_settings
+from webapp.persistence.discovery_sources import list_discovery_source_settings, list_enabled_discovery_source_ids
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
     get_search_workspace,
@@ -203,7 +203,7 @@ def scoped_discovery_page(
     latest_run = get_latest_discovery_run(conn, search_workspace_id)
     registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
     available_sources = available_discovery_source_ids(
-        [source_id for source_id, row in registry.items() if row["enabled"]]
+        list_enabled_discovery_source_ids(conn, hosted=request.app.state.settings.is_hosted)  # DP-9
     )
     response = request.app.state.templates.TemplateResponse(
         request,

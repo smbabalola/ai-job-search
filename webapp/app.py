@@ -28,6 +28,7 @@ from webapp.api.cv_strategy import router as cv_strategy_router
 from webapp.api.preferences import router as preferences_router
 from webapp.api.onboarding_v1 import router as onboarding_v1_router
 from webapp.api.settings import header_status, router as settings_router
+from webapp.api.search_schedules import router as search_schedules_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -168,7 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     provider = provider_for(settings, catalog, deliver=lambda headers, body: _deliver_webhook(app, headers, body))
     app.state.billing_service = BillingService(provider, catalog, settings=settings)
     app.state.billing_webhooks = None if provider is None else BillingWebhooks(
-        provider, catalog_version=catalog.catalog_version)
+        provider, catalog_version=catalog.catalog_version, settings=settings)
     # Bundle 7 spec §20.6/§20.7: request ids, JSON logs, safe 500s, strict CSP.
     configure_logging()
     app.state.error_reporter = LogErrorReporter()
@@ -214,6 +215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(preferences_router)
     app.include_router(onboarding_v1_router)
     app.include_router(settings_router)
+    app.include_router(search_schedules_router)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)

@@ -87,6 +87,7 @@ def test_human_applied_while_autonomous_claim_is_live_confirms_it_and_blocks_the
     assert conn.execute("SELECT COUNT(*) FROM limit_reservations WHERE status = 'RESERVED'").fetchone()[0] == 0
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_covers_applications_applied_before_6b(conn):
     ws = _ws(conn)
     conn.execute(
@@ -104,6 +105,7 @@ def test_backfill_covers_applications_applied_before_6b(conn):
     assert conn.execute("SELECT COUNT(*) FROM submission_intents").fetchone()[0] == 1
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_covers_handoff_confirmations(conn):
     ws = _ws(conn)
     add_handoff_confirmation(conn, ws)
@@ -114,6 +116,7 @@ def test_backfill_covers_handoff_confirmations(conn):
     assert live_intent(conn, account_id=ACCOUNT, job_identity_key=key)["source"] == "HUMAN_HANDOFF"
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     """A database created and populated before Bundle 6B: no autonomy tables,
     applied workspaces recorded through the real flow, handoff confirmations,

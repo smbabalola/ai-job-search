@@ -191,9 +191,7 @@ def test_preference_staleness_is_derived_and_isolated_by_search_workspace(tmp_pa
     assert discovery_run_is_stale(
         conn, other_run, search_workspace_id=other["id"]
     , account_id=DEFAULT_ACCOUNT_ID) is True
-    columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(discovery_runs)")
-    }
+    columns = set(conn.execute("SELECT * FROM discovery_runs LIMIT 1").fetchone().keys())  # either dialect
     assert "stale" not in columns
 
 

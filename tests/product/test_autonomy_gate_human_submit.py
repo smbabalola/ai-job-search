@@ -17,10 +17,18 @@ from tests.product.autonomy_fixtures import NOW, good_target, make_ctx
 
 C, R, H = Capability, ResultKind, AuthorityKind.HUMAN_SUBMIT
 
-# Pinned before AuthorityKind existed (Task 4, acceptance 18).
+# Pinned before AuthorityKind existed (Task 4, acceptance 18), over the 6E-A
+# subject policy: the context schema is unchanged.
 PINNED = {
     "submit": "sha256:4a406b3e94e5eacf9d2c9bd09172b9ba6bd5e2d4a20e556ea83bbe47aa331803",
     "fill": "sha256:12a6d58326860fd56568927915a983dad2f0b15dcbd89aeebd15c0cb7ab9c78d",
+}
+# Bundle 7 Task 24 added these subjects to the policy (data, part of the
+# context): the same contexts over the current policy.
+BUNDLE7_SUBJECTS = ("contact.email", "contact.phone", "location.current")
+PINNED_CURRENT = {
+    "submit": "sha256:9294eed8d5b41f8823e8dc99aab3e818a5ac4c283e3213a1a400fc63e998715e",
+    "fill": "sha256:ece6ced4eac600d75220e9d2a6de69eea11307590ab7770651a6e81610f2d276",
 }
 
 
@@ -32,11 +40,20 @@ def human(**overrides):
     return make_ctx(authority=H, **overrides)
 
 
+def _without_bundle7_subjects(ctx):
+    policy = dict(ctx.subject_policy)
+    policy["subjects"] = {k: v for k, v in policy["subjects"].items() if k not in BUNDLE7_SUBJECTS}
+    return replace(ctx, subject_policy=policy)
+
+
 def test_existing_context_fingerprints_are_unchanged():
     for key, stage in (("submit", C.SUBMIT), ("fill", C.FILL)):
         ctx = make_ctx(requested_stage=stage)
-        assert canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ctx) == PINNED[key]
-        assert evaluate_authorization(ctx).input_fingerprint == PINNED[key]
+        legacy = _without_bundle7_subjects(ctx)
+        assert canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, legacy) == PINNED[key]
+        assert evaluate_authorization(legacy).input_fingerprint == PINNED[key]
+        assert canonical_hash(CONTEXT_SCHEMA, CONTEXT_SCHEMA_VERSION, ctx) == PINNED_CURRENT[key]
+        assert evaluate_authorization(ctx).input_fingerprint == PINNED_CURRENT[key]
 
 
 def test_human_authority_changes_the_fingerprint():

@@ -200,6 +200,7 @@ TENANT_TABLES: dict[str, TableSpec] = {
     # onboarding and CV import (Bundle 7, 035_onboarding)
     "account_onboarding": A,
     "profile_import_runs": A,
+    "search_schedules": A,  # Task 26
     "profile_proposals": A,
     "profile_proposal_resolutions": TableSpec(("profile_proposals", "proposal_id")),
     # operations (Bundle 7)

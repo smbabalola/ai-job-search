@@ -28,15 +28,19 @@ def list_discovery_source_settings(conn: dbapi.Connection) -> list[dict[str, Any
     ]
 
 
-def list_enabled_discovery_source_ids(conn: dbapi.Connection) -> list[str]:
+def list_enabled_discovery_source_ids(conn: dbapi.Connection, *, hosted: bool = False) -> list[str]:
     """Source IDs with enabled = 1 in the registry -- not yet intersected
     with code-level adapter availability. Callers deciding what is actually
-    runnable must still intersect against SOURCE_CLI_PATHS.keys()."""
+    runnable must still intersect against SOURCE_CLI_PATHS.keys().
+
+    Hosted mode (Bundle 7 DP-9): portal-CLI sources run server-side only
+    once an operator enabled them; the seeded registry rows do not count."""
+    operator = " AND operator_enabled = 1" if hosted else ""
     return [
         row["source_id"]
         for row in conn.execute(
             "SELECT source_id FROM discovery_source_settings "
-            "WHERE enabled = 1 ORDER BY source_id"
+            f"WHERE enabled = 1{operator} ORDER BY source_id"
         )
     ]
 
@@ -49,9 +53,9 @@ def set_discovery_source_enabled(
     row, since a row with no matching code-level adapter would be inert and
     misleading (see the registry's design note in migrations.py)."""
     cursor = conn.execute(
-        "UPDATE discovery_source_settings SET enabled = ?, updated_at = ? "
+        "UPDATE discovery_source_settings SET enabled = ?, operator_enabled = ?, updated_at = ? "
         "WHERE source_id = ?",
-        (1 if enabled else 0, _now(), source_id),
+        (1 if enabled else 0, 1 if enabled else 0, _now(), source_id),
     )
     if cursor.rowcount == 0:
         raise KeyError(f"unknown discovery source {source_id!r}")

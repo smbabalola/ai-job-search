@@ -151,6 +151,36 @@ def _approval_expiry_scan(ctx: JobContext, payload: dict) -> None:
         conn.close()
 
 
+def _scheduled_discovery_handler(runner_factory: Callable[[Any], Any]) -> Handler:
+    """§20.3. The periodic job (no payload) fans out one job per due schedule
+    (deduplicated per schedule and slot); a per-schedule job runs it."""
+    def handle(ctx: JobContext, payload: dict) -> None:
+        from webapp.services import search_schedules
+        from webapp.worker.runner import enqueue
+        conn = ctx.connect()
+        try:
+            search_workspace_id = payload.get("search_workspace_id")
+            if search_workspace_id is None:
+                for schedule in search_schedules.due_schedules(conn, now=ctx.clock()):
+                    enqueue(conn, kind="discovery.scheduled_run", account_id=schedule["account_id"],
+                            payload={"search_workspace_id": schedule["search_workspace_id"]},
+                            dedupe_key=f"schedule:{schedule['search_workspace_id']}:{schedule['next_run_at']}",
+                            now=ctx.clock())
+                conn.commit()
+                return
+            search_schedules.run_scheduled(conn, settings=ctx.settings, runner=runner_factory(ctx.settings),
+                                           search_workspace_id=search_workspace_id, now=ctx.clock())
+        finally:
+            conn.close()
+    return handle
+
+
+def _cli_discovery_runner(settings: Any) -> Any:
+    from pathlib import Path
+    from product.discovery_search import CliDiscoveryPortalRunner
+    return CliDiscoveryPortalRunner(Path(settings.profile_root).resolve())
+
+
 def _billing_webhooks(settings: Any) -> Any:
     from product.entitlements import load_catalog
     from webapp.billing.registry import provider_for
@@ -158,11 +188,13 @@ def _billing_webhooks(settings: Any) -> Any:
     from webapp.app import _project_path
     catalog = load_catalog(_project_path(settings.plan_catalog_path))
     provider = provider_for(settings, catalog)
-    return None if provider is None else BillingWebhooks(provider, catalog_version=catalog.catalog_version)
+    return None if provider is None else BillingWebhooks(provider, catalog_version=catalog.catalog_version,
+                                                              settings=settings)
 
 
 def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | None = None,
-                     billing_webhooks: Any = None, email_provider: Any = None) -> dict[str, Handler]:
+                     billing_webhooks: Any = None, email_provider: Any = None,
+                     discovery_runner: Callable[[Any], Any] | None = None) -> dict[str, Handler]:
     if providers_factory is None:
         from webapp.services.autonomy_providers import default_providers
         providers_factory = default_providers
@@ -174,6 +206,7 @@ def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | No
         "email.webhook.process": _email_webhook_handler,
         "notify.digest": _notify_digest,
         "notify.approval_expiry_scan": _approval_expiry_scan,
+        "discovery.scheduled_run": _scheduled_discovery_handler(discovery_runner or _cli_discovery_runner),
     }
     webhooks = billing_webhooks if billing_webhooks is not None else _billing_webhooks(settings)
     if webhooks is not None:

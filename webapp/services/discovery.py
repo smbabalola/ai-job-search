@@ -86,6 +86,7 @@ def run_discovery_search(
     limit_per_source: int = 20,
     account_id: str,
     deployment_ceiling: Any = None,
+    hosted: bool = False,
 ) -> dict[str, Any]:
     _require_active_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -96,7 +97,7 @@ def run_discovery_search(
     if profile is None:
         raise DiscoveryServiceError("set up User Profile before searching for jobs")
     preferences = profile["payload"]
-    available_sources = available_discovery_source_ids(list_enabled_discovery_source_ids(conn))
+    available_sources = available_discovery_source_ids(list_enabled_discovery_source_ids(conn, hosted=hosted))
     if sources is not None:
         # An explicit request names exactly what it wants -- a disabled or
         # unimplemented source here is a real error, not something to

@@ -83,7 +83,8 @@ def _screened(conn, settings, record_id):
 def test_a_stale_promoter_cannot_promote(conn, candidates, monkeypatch):
     from webapp.services import autonomy_candidates as ac
     cid = _screened(conn, candidates, "stale-1")
-    db = conn.execute("PRAGMA database_list").fetchone()["file"]
+    from webapp.services.autonomy_fence import database_file
+    db = database_file(conn)
     real = ac.candidate_next_action
 
     def then_lose_the_lease(c, ctx):

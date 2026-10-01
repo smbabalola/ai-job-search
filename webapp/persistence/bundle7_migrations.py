@@ -1146,3 +1146,37 @@ def _onboarding(dialect: str):
 
 
 BUNDLE7_MIGRATIONS.append(Migration("035_onboarding", sqlite=_onboarding("sqlite"), postgres=_onboarding("postgres")))
+
+
+# ---- 036_search_schedules (Task 26): Power saved searches that run on a
+# schedule (spec 20.3), and the DP-9 operator marker on discovery sources ----
+
+_SEARCH_SCHEDULES_DDL = """
+CREATE TABLE search_schedules (
+    search_workspace_id TEXT PRIMARY KEY REFERENCES search_workspaces(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    cadence TEXT NOT NULL CHECK (cadence IN ('DAILY', 'WEEKLY')),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    next_run_at TEXT NOT NULL,
+    last_run_id TEXT,
+    disabled_reason TEXT CHECK (disabled_reason IN ('USER', 'ENTITLEMENT', 'SUSPENDED')),
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_search_schedules_due ON search_schedules(enabled, next_run_at);
+CREATE INDEX idx_search_schedules_account ON search_schedules(account_id)
+"""
+
+
+def _search_schedules(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _SEARCH_SCHEDULES_DDL)
+        # DP-9: a source runs in hosted mode only once an operator enabled it
+        # (the seeded registry rows are not an operator decision).
+        if _table_exists(conn, "discovery_source_settings"):
+            conn.execute("ALTER TABLE discovery_source_settings ADD COLUMN operator_enabled INTEGER NOT NULL "
+                         "DEFAULT 0 CHECK (operator_enabled IN (0, 1))")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("036_search_schedules", sqlite=_search_schedules("sqlite"),
+                                    postgres=_search_schedules("postgres")))
