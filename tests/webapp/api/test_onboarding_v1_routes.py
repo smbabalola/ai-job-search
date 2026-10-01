@@ -76,3 +76,48 @@ def test_the_walk_leaves_the_account_ready_to_prepare(client):
 
 def test_the_first_step_cannot_be_skipped_over_http(client):
     assert _post(client, "/onboarding/about/skip").status_code == 400
+
+
+def _answers(client):
+    from webapp.persistence.db import connect
+    settings = client.app.state.settings
+    account = client.get("/auth/me").json()["account_id"]
+    conn = connect(settings)
+    try:
+        import json
+        return {r[0]: json.loads(r[1]) for r in conn.execute(
+            "SELECT subject, value_json FROM approved_answers WHERE account_id = ? ORDER BY seq", (account,))}
+    finally:
+        conn.close()
+
+
+def test_the_about_step_puts_the_contact_details_in_the_evidence_profile(client):
+    """A fill maps an employer form's Email/Phone fields from the profile's contact
+    claims, so the details given at onboarding must reach the profile snapshot."""
+    assert _post(client, "/onboarding/about", data={"display_name": "Ada Lovelace", "contact_email": "ada@work.example",
+                                                     "phone": "+44 7700 900000", "city": "Aberdeen",
+                                                     "country": "gb"}).status_code == 303
+    claims = {(c["category"], c["field"]): c["value"] for c in client.get("/api/profile").json()["profile"]["payload"]
+              ["claims"]}
+    assert claims[("contact", "email")] == "ada@work.example"
+    assert claims[("contact", "phone")] == "+44 7700 900000"
+    # submitting the step again updates the details rather than duplicating them
+    assert _post(client, "/onboarding/about", data={"display_name": "Ada Lovelace", "contact_email": "ada@new.example",
+                                                     "phone": "+44 7700 900001"}).status_code == 303
+    claims = [c for c in client.get("/api/profile").json()["profile"]["payload"]["claims"] if c["category"] == "contact"]
+    assert sorted(c["value"] for c in claims) == ["+44 7700 900001", "ada@new.example"]
+
+
+def test_onboarding_answers_are_stored_as_plain_values(client):
+    """Approved answers hold the value itself (as the review page writes them);
+    a wrapped {"value": ...} would be shown and filled as its text."""
+    _post(client, "/onboarding/about", data={"display_name": "Ada Lovelace", "contact_email": "ada@work.example",
+                                             "phone": "+44 7700 900000"})
+    _post(client, "/onboarding/eligibility", data={"country": "GB", "right_to_work": "yes", "sponsorship": "no",
+                                                   "notice_period": "1 month", "start_date": "2026-11-01"})
+    answers = _answers(client)
+    assert answers["contact.email"] == "ada@work.example" and answers["contact.phone"] == "+44 7700 900000"
+    assert answers["employment.notice_period"] == "1 month"
+    assert answers["employment.availability_start"] == "2026-11-01"
+    assert answers["work_authorization.right_to_work"] == "yes"
+    assert answers["work_authorization.sponsorship_required"] == "no"

@@ -4,8 +4,10 @@ binding hash is what makes an application eligible for bulk approval."""
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+import uuid
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from webapp.api.applications import prepared_applications
 from webapp.api.dependencies import get_account_scope, get_conn
@@ -59,7 +61,34 @@ def review_page(workspace_id: str, request: Request, conn: dbapi.Connection = De
         "revisions": payload["selection_revisions"],
         "classification_proposals": classification_proposals(conn, workspace_id),
         "provenance_words": PROVENANCE_WORDS,
-        "rule_advisories": rule_advisories(conn, scope.account_id, workspace_id)})
+        "rule_advisories": rule_advisories(conn, scope.account_id, workspace_id),
+        "open_questions": _open_questions(conn, scope.account_id, workspace_id)})
+
+
+def _open_questions(conn, account_id: str, workspace_id: str) -> list[dict]:
+    from webapp.services.autonomy_inbox import open_questions
+    return [q for q in open_questions(conn, account_id=account_id, workspace_id=workspace_id) if q["status"] == "open"]
+
+
+@router.post("/workspaces/{workspace_id}/review/blockers/{blocker_id}/answer")
+def answer_question(workspace_id: str, blocker_id: str, answer: str = Form(...),
+                    answer_scope: str = Form("APPLICATION_ONLY", alias="scope"),
+                    conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+    """The review page's answer form for one open question (the JSON twin is
+    POST /api/workspaces/{id}/review/blockers/{blocker_id}/answer)."""
+    from webapp.services.autonomy_inbox import answer_open_question
+    text = " ".join(answer.split())
+    if not text or len(text) > 2000:
+        raise HTTPException(status_code=422, detail="Enter an answer.")
+    try:
+        answer_open_question(conn, account_id=scope.account_id, workspace_id=workspace_id, blocker_id=blocker_id,
+                             answer=text, scope=answer_scope, request_id=f"page-{uuid.uuid4().hex}",
+                             actor=scope.account_id, now=_now())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(f"/workspaces/{workspace_id}/review", status_code=303)
 
 
 def rule_advisories(conn, account_id: str, workspace_id: str) -> list[dict]:

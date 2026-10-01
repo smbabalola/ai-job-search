@@ -30,8 +30,9 @@ T = TypeVar("T")
 
 
 class AllowanceExhausted(Exception):
-    def __init__(self, allowance: str, used: int, limit: int, window_end: datetime):
+    def __init__(self, allowance: str, used: int, limit: int, window_end: datetime, upgrade_to: str | None = None):
         super().__init__(f"{allowance} allowance exhausted ({used} of {limit} used)")
+        self.upgrade_to = upgrade_to
         self.allowance = allowance
         self.used = used
         self.limit = limit
@@ -112,7 +113,8 @@ class UsageService:
         limit = resolved.allowances.get(allowance, 0)
         used = rows.used(conn, account_id=scope.account_id, allowance=allowance, window_key=resolved.window.key)
         if used + amount > limit:
-            raise AllowanceExhausted(allowance, used, limit, resolved.window.end)
+            raise AllowanceExhausted(allowance, used, limit, resolved.window.end,
+                                     self.gate.catalog.upgrade_for_allowance(allowance, resolved.plan_id))
         row = rows.insert(conn, account_id=scope.account_id, allowance=allowance, amount=amount,
                           subject_type=subject_type, subject_id=subject_id, idempotency_key=idempotency_key,
                           window_key=resolved.window.key, now=now, expires_at=now + RESERVATION_TTL)
@@ -153,7 +155,8 @@ class UsageService:
         limit = resolved.allowances.get(allowance, 0)
         current = GAUGE_READERS[allowance](conn, scope.account_id)
         if current + adding > limit:
-            raise AllowanceExhausted(allowance, current, limit, resolved.window.end)
+            raise AllowanceExhausted(allowance, current, limit, resolved.window.end,
+                                     self.gate.catalog.upgrade_for_allowance(allowance, resolved.plan_id))
 
     def summary(self, conn: dbapi.Connection, scope: Any, *, now: datetime) -> list[dict[str, Any]]:
         """Every visible allowance: used / limit / window end (§13.3)."""

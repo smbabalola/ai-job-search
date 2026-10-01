@@ -106,6 +106,19 @@ class Catalog:
                 return plan.plan_id
         return None
 
+    def upgrade_for_allowance(self, allowance: str, from_plan: str) -> str | None:
+        """The lowest-ranked plan above ``from_plan`` with more of ``allowance``
+        (``None`` is unlimited)."""
+        current = self.plans[from_plan].allowances.get(allowance, 0) if from_plan in self.plans else 0
+        floor = self.plans[from_plan].rank if from_plan in self.plans else -1
+        if current is None:
+            return None
+        for plan in self.ranked():
+            limit = plan.allowances.get(allowance, 0)
+            if plan.rank > floor and (limit is None or limit > current):
+                return plan.plan_id
+        return None
+
 
 @dataclass(frozen=True)
 class CatalogSet:

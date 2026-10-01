@@ -32,10 +32,10 @@
       {% endif %}
     </nav>
   </header>
-  {% set status = account_header(request) %}
-  {% if status %}<div class="account-status" data-account-status><a href="/settings/billing" class="badge" data-plan-badge>{{ status.plan_name }}</a>
-    <a href="/settings/usage" data-prepare-meter data-used="{{ status.prepare_used }}" data-limit="{{ status.prepare_limit }}">{{ status.prepare_used }} of {{ status.prepare_limit }} prepares used</a></div>
-  {% if status.past_due %}<div class="blocked-note" role="alert" data-past-due-banner>Your last payment didn't go through. <a href="/settings/billing">Update your payment details</a> to keep your plan.</div>{% endif %}{% endif %}
+  {% set account_bar = account_header(request) %}
+  {% if account_bar %}<div class="account-status" data-account-status><a href="/settings/billing" class="badge" data-plan-badge>{{ account_bar.plan_name }}</a>
+    <a href="/settings/usage" data-prepare-meter data-used="{{ account_bar.prepare_used }}" data-limit="{{ account_bar.prepare_limit }}">{{ account_bar.prepare_used }} of {{ account_bar.prepare_limit }} prepares used</a></div>
+  {% if account_bar.past_due %}<div class="blocked-note" role="alert" data-past-due-banner>Your last payment didn't go through. <a href="/settings/billing">Update your payment details</a> to keep your plan.</div>{% endif %}{% endif %}
   <main class="page-shell">{% block content %}{% endblock %}</main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/static/app.js" defer></script>

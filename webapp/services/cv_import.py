@@ -193,7 +193,7 @@ def resolve_batch(conn: dbapi.Connection, scope: Any, *, items: list[tuple[str, 
             ref = entry_ids[proposal["id"]]
         else:
             answer = approve_answer(conn, account_id=scope.account_id, subject=proposal["kind"],
-                                    value={"value": fields.get("value")}, reach=Reach.ACCOUNT, scope_id=None,
+                                    value=fields.get("value"), reach=Reach.ACCOUNT, scope_id=None,
                                     context={}, basis={"kind": "USER_ASSERTION"},
                                     approved_by=actor, now=now, commit=False)
             ref = answer["id"]

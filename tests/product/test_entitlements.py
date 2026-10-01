@@ -152,3 +152,11 @@ def test_resolved_features_never_exceed_the_plan_and_granted_plan(plan, state, g
     if granted is not None:
         allowed |= {f for f in FEATURES if CATALOG.plan(granted).features[f]}
     assert {f for f in FEATURES if resolved.features[f]} <= allowed
+
+
+def test_an_exhausted_allowance_points_to_the_next_plan_with_more_of_it():
+    assert CATALOG.upgrade_for_allowance("applications.prepare", "free") == "pro"
+    assert CATALOG.upgrade_for_allowance("applications.prepare", "pro") == "power"
+    assert CATALOG.upgrade_for_allowance("applications.prepare", "power") is None
+    # pro has no more automation.prepare than free (both 0): the way up is power
+    assert CATALOG.upgrade_for_allowance("automation.prepare", "free") == "power"

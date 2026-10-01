@@ -9,10 +9,10 @@ from __future__ import annotations
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from product.application_document_contract import ApplicationDocumentContractError
 from product.autonomy_contract import Reach
@@ -185,6 +185,34 @@ def post_save(workspace_id: str, request: Request, conn: dbapi.Connection = Depe
                                              application_workspace_id=workspace_id, actor=scope.account_id,
                                              now=_now())
     return call(action)
+
+
+class QuestionAnswerBody(_Body):
+    answer: str = Field(min_length=1, max_length=2000)
+    scope: Literal["APPLICATION_ONLY", "SEARCH_WORKSPACE", "CANDIDATE_FACT"]
+    request_id: str = Field(min_length=1, max_length=100)
+
+
+@router.get("/blockers")
+def get_blockers(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
+                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """The job check's open questions (governing blockers) for this application."""
+    from webapp.services.autonomy_inbox import open_questions
+    return {"blockers": call(lambda: open_questions(conn, account_id=scope.account_id, workspace_id=workspace_id))}
+
+
+@router.post("/blockers/{blocker_id}/answer")
+def post_blocker_answer(workspace_id: str, blocker_id: str, body: QuestionAnswerBody,
+                        conn: dbapi.Connection = Depends(get_conn),
+                        scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_inbox import answer_open_question
+    try:
+        return call(lambda: answer_open_question(
+            conn, account_id=scope.account_id, workspace_id=workspace_id, blocker_id=blocker_id,
+            answer=body.answer.strip(), scope=body.scope, request_id=body.request_id, actor=scope.account_id,
+            now=_now()))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/answers")

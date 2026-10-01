@@ -39,6 +39,12 @@ if (__FILL_TEST_HOOKS__) {
       return true;
     },
     fillView: (tabId: number) => fillViewFor(tabId),
+    // Bundle 7 release journey: exactly what the popup's "Fill this page"
+    // button sends (popup_start_fill), minus the toolbar gesture.
+    startSafeFill: (tabId: number) => {
+      void startSafeFillOnTab(tabId).catch(() => undefined);
+      return true;
+    },
   };
 }
 

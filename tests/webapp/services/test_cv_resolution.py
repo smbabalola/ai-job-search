@@ -233,3 +233,30 @@ def test_the_cv_used_label(world):
     cs.resolve_for_workspace(conn, scope, workspace_id=ws, metering=None, now=NOW)
     conn.commit()
     assert cs.cv_used_label(conn, account_id=scope.account_id, workspace_id=ws) == "Drilling CV v1 (uploaded)"
+
+
+def test_a_library_cv_selected_by_the_strategy_can_be_confirmed_into_the_v2_pack(v2_chain):
+    """Spec §14.4: the approval binds the exact library version the family rule
+    resolved, so the v2 pack must accept a CV library document as the final CV."""
+    from types import SimpleNamespace
+    from webapp.persistence.application_documents import get_selection
+    from webapp.services.application_documents import select_application_document
+    from webapp.services.application_pack import confirm_application_pack
+
+    w = v2_chain
+    scope = SimpleNamespace(account_id=V2_ACCOUNT, user_id=None)
+    now = datetime.now(timezone.utc)
+    item = lib.create_item(w.conn, scope, title="My CV", now=now)
+    version = lib.add_version(w.conn, scope, item_id=item["id"], content=docx_bytes("Library CV"), filename="cv.docx",
+                              media_type_hint=None, documents_root=w.settings.documents_root, note=None, now=now)
+    w.conn.commit()
+    current = get_selection(w.conn, w.ws, "cv", account_id=V2_ACCOUNT)
+    select_application_document(w.conn, w.ws, kind="cv", document_version_id=version["document_version_id"],
+                                expected_revision=current["revision"], account_id=V2_ACCOUNT)
+    revisions = {kind: get_selection(w.conn, w.ws, kind, account_id=V2_ACCOUNT)["revision"]
+                 for kind in ("cv", "cover_letter")}
+    result = confirm_application_pack(w.conn, w.ws, effective_date="2026-09-25",
+                                      documents_root=w.settings.documents_root, account_id=V2_ACCOUNT,
+                                      document_selection_revisions=revisions)
+    pack = result["pack"] if "pack" in result else result["artifact"]["payload"]
+    assert pack["final_documents"]["cv"]["document_version_id"] == version["document_version_id"]

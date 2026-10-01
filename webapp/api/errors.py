@@ -120,7 +120,7 @@ async def allowance_exhausted_handler(request: Request, exc: Exception):
     return error_response_for(
         request, "ALLOWANCE_EXHAUSTED", "You've used your plan's allowance for this period. Upgrade for more.", 402,
         detail={"allowance": exc.allowance, "used": exc.used, "limit": exc.limit,
-                "window_end": exc.window_end.isoformat()})
+                "window_end": exc.window_end.isoformat(), "upgrade_to": getattr(exc, "upgrade_to", None)})
 
 
 async def database_busy_handler(request: Request, exc: Exception):

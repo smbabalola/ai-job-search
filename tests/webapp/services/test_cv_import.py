@@ -145,7 +145,7 @@ def test_an_answer_proposal_creates_an_approved_answer_and_a_confirmation(world)
     proposal = _proposal(conn, scope, run, "employment.notice_period")
     [resolution] = cv_import.resolve_batch(conn, scope, items=[(proposal["id"], "ACCEPTED", None)], now=NOW)
     answer = conn.execute("SELECT id, subject, value_json FROM approved_answers").fetchone()
-    assert answer["subject"] == "employment.notice_period" and json.loads(answer["value_json"]) == {"value": "3 months"}
+    assert answer["subject"] == "employment.notice_period" and json.loads(answer["value_json"]) == "3 months"  # the plain value, as the review writes it
     assert resolution["resulting_ref"] == answer["id"]
     assert conn.execute("SELECT COUNT(*) FROM answer_confirmations WHERE approved_answer_id = ?",
                         (answer["id"],)).fetchone()[0] == 1

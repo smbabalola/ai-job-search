@@ -525,10 +525,12 @@ def _confirm_application_pack_v2(
         if generation is None:
             raise PipelineError("generate reviewed application documents before confirmation")
         selected: dict[str, dict[str, Any]] = {}
+        # what apply_selection accepts: saved-for-reuse documents and (Bundle 7) any CV library version
         reusable_ids = {
             row["document_version_id"] for row in conn.execute(
-                "SELECT document_version_id FROM reusable_application_documents WHERE account_id=?",
-                (account_id,),
+                "SELECT document_version_id FROM reusable_application_documents WHERE account_id=? UNION "
+                "SELECT document_version_id FROM cv_library_versions WHERE account_id=?",
+                (account_id, account_id),
             ).fetchall()
         }
         store = DocumentBlobStore(documents_root)

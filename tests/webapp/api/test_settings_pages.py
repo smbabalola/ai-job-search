@@ -142,3 +142,27 @@ def test_a_page_request_gets_html_and_an_api_request_gets_json(world):
     scope = {"type": "http", "method": "GET", "path": "/workspaces/x", "headers": [(b"accept", b"text/html")]}
     page = error_response_for(Request(scope), "ONBOARDING_INCOMPLETE", "Finish setting up.", 409, detail={})
     assert page.status_code == 409 and b"/onboarding" in page.body and page.media_type == "text/html"
+
+
+def test_pages_with_their_own_status_render_for_a_signed_in_account(tmp_path):
+    """The header's plan/usage block must not shadow a page's own ``status``
+    (the Submit Review and fill pages render one)."""
+    from fastapi.testclient import TestClient
+    from tests.webapp.auth_helpers import csrf_token, publish_legal_documents, sign_in, sign_up_and_verify
+    from webapp.app import create_app
+    from webapp.config import Settings
+    settings = Settings(db_path=tmp_path / "db.sqlite3", documents_root=tmp_path / "documents",
+                        auth_required_in_local=True)
+    with TestClient(create_app(settings)) as client:
+        publish_legal_documents(settings)
+        sign_up_and_verify(client)
+        sign_in(client)
+        ws = client.post("/api/workspaces", headers={"X-CSRF-Token": csrf_token(client)}, json={
+            "company": "Acme", "title": "Engineer", "source_record_origin": "manual_entry",
+            "source_record": {"schema_version": "job-source-record.v0", "source": "manual",
+                              "captured_at": "2026-10-01T00:00:00Z", "company": "Acme", "title": "Engineer",
+                              "description": "Python."}}).json()["workspace"]["id"]
+        for path in (f"/workspaces/{ws}/submit", f"/workspaces/{ws}/fill-plan", f"/workspaces/{ws}"):
+            page = client.get(path)
+            assert page.status_code == 200, (path, page.text[:300])
+            assert "data-plan-badge" in page.text, path  # the header still renders

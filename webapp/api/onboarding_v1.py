@@ -115,6 +115,24 @@ def _answer(conn: dbapi.Connection, scope: AccountScope, subject: str, value: An
                    approved_by=scope.user_id or scope.account_id, now=_now(), commit=False)
 
 
+def _set_identity(conn: dbapi.Connection, scope: AccountScope, label: str, value: str) -> None:
+    """The contact detail as an Identity line of the candidate profile, where the
+    evidence snapshot (and so the review's contact fields and the fill) read it.
+    Updates the line with the same label rather than adding a second one."""
+    from webapp.services.profile_manager import create_profile_entry, get_profile_manager, update_profile_entry
+    root = scope.profile_sources(conn)
+    manager = get_profile_manager(conn, root=root, account_id=scope.account_id)
+    existing = next((e for e in manager["entries"] if e["kind"] == "identity"
+                     and str(e["fields"].get("label", "")).strip().lower() == label.lower()), None)
+    fields = {"label": label, "value": value}
+    if existing is None:
+        create_profile_entry(conn, root=root, expected_revision=manager["revision"], kind="identity", fields=fields,
+                             account_id=scope.account_id)
+    elif existing["fields"].get("value") != value:
+        update_profile_entry(conn, root=root, expected_revision=manager["revision"], entry_id=existing["entry_id"],
+                             kind="identity", fields=fields, account_id=scope.account_id)
+
+
 @router.post("/onboarding/about")
 def save_about(display_name: str = Form(...), contact_email: str = Form(""), phone: str = Form(""),
                city: str = Form(""), country: str = Form(""), conn: dbapi.Connection = Depends(get_conn),
@@ -126,9 +144,11 @@ def save_about(display_name: str = Form(...), contact_email: str = Form(""), pho
         conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, scope.user_id))
         email = contact_email.strip() or conn.execute("SELECT email_normalized FROM users WHERE id = ?",
                                                       (scope.user_id,)).fetchone()[0]
-        _answer(conn, scope, "contact.email", {"value": email})
+        _answer(conn, scope, "contact.email", email)
+        _set_identity(conn, scope, "Email", email)
     if phone.strip():
-        _answer(conn, scope, "contact.phone", {"value": " ".join(phone.split())})
+        _answer(conn, scope, "contact.phone", " ".join(phone.split()))
+        _set_identity(conn, scope, "Phone", " ".join(phone.split()))
     if city.strip() or country.strip():
         _answer(conn, scope, "location.current", {"city": " ".join(city.split()), "country": country.strip().upper()})
     return _done(conn, scope, "about")
@@ -212,14 +232,13 @@ def save_eligibility(country: str = Form(""), right_to_work: str = Form(""), spo
                      conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     code = country.strip().upper()
     if code and right_to_work in ("yes", "no"):
-        _answer(conn, scope, "work_authorization.right_to_work", {"value": right_to_work == "yes"}, {"country": code})
+        _answer(conn, scope, "work_authorization.right_to_work", right_to_work, {"country": code})
     if code and sponsorship in ("yes", "no"):
-        _answer(conn, scope, "work_authorization.sponsorship_required", {"value": sponsorship == "yes"},
-                {"country": code})
+        _answer(conn, scope, "work_authorization.sponsorship_required", sponsorship, {"country": code})
     if notice_period.strip():
-        _answer(conn, scope, "employment.notice_period", {"value": " ".join(notice_period.split())})
+        _answer(conn, scope, "employment.notice_period", " ".join(notice_period.split()))
     if start_date.strip():
-        _answer(conn, scope, "employment.availability_start", {"value": start_date.strip()})
+        _answer(conn, scope, "employment.availability_start", start_date.strip())
     return _done(conn, scope, "eligibility")
 
 
