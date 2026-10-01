@@ -20,11 +20,17 @@ def _statements(conn, script: str) -> None:
             conn.execute(statement)
 
 
+def _purge_guard_ready(conn) -> bool:
+    """After 037_purge, new append-only DELETE triggers carry the purge guard at once."""
+    return _table_exists(conn, "purge_in_progress")
+
+
 def sqlite_append_only(conn, table: str) -> None:
     message = f"{table} is append-only audit history"
     for event in ("UPDATE", "DELETE"):
+        guard = " WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)" if event == "DELETE" and _purge_guard_ready(conn)             else ""
         conn.execute(
-            f"CREATE TRIGGER {table}_append_only_{event.lower()} BEFORE {event} ON {table} "
+            f"CREATE TRIGGER {table}_append_only_{event.lower()} BEFORE {event} ON {table}{guard} "
             f"BEGIN SELECT RAISE(ABORT, '{message}'); END"
         )
 
@@ -32,9 +38,10 @@ def sqlite_append_only(conn, table: str) -> None:
 def postgres_append_only(conn, table: str) -> None:
     message = f"{table} is append-only audit history"
     for event in ("UPDATE", "DELETE"):
+        function = "jobsearch_raise_unless_purging" if event == "DELETE" and _purge_guard_ready(conn)             else "jobsearch_raise"
         conn.execute(
             f'CREATE TRIGGER "{table}_append_only_{event.lower()}" BEFORE {event} ON "{table}" '
-            f"FOR EACH ROW EXECUTE FUNCTION jobsearch_raise('{message}')"
+            f"FOR EACH ROW EXECUTE FUNCTION {function}('{message}')"
         )
 
 
@@ -1180,3 +1187,108 @@ def _search_schedules(dialect: str):
 
 BUNDLE7_MIGRATIONS.append(Migration("036_search_schedules", sqlite=_search_schedules("sqlite"),
                                     postgres=_search_schedules("postgres")))
+
+
+# ---- 037_purge (Task 28): the purge guard, retention tags, deletion requests
+# and data exports (spec 20.4, 20.5) ---------------------------------------------
+
+_PURGE_DDL = """
+CREATE TABLE purge_in_progress (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    started_at TEXT NOT NULL
+);
+CREATE TABLE purge_retention_tags (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    table_name TEXT NOT NULL,
+    retain_class TEXT NOT NULL,
+    row_count INTEGER NOT NULL CHECK (row_count >= 0),
+    owner_user_ids_json TEXT NOT NULL,
+    tagged_at TEXT NOT NULL,
+    expired_at TEXT,
+    UNIQUE (account_id, table_name)
+);
+CREATE TABLE account_deletions (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    purge_after TEXT NOT NULL,
+    canceled_at TEXT,
+    completed_at TEXT
+);
+CREATE TABLE account_exports (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    requested_by TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'READY', 'FAILED')),
+    object_key TEXT,
+    byte_length INTEGER,
+    created_at TEXT NOT NULL,
+    ready_at TEXT,
+    expires_at TEXT,
+    downloaded_at TEXT
+);
+CREATE INDEX idx_account_exports_account ON account_exports(account_id, created_at)
+"""
+
+PURGE_GUARD_SQLITE = "WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)"
+
+_PG_RAISE_UNLESS_PURGING = """
+CREATE FUNCTION jobsearch_raise_unless_purging() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF EXISTS (SELECT 1 FROM purge_in_progress) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION USING MESSAGE = TG_ARGV[0], ERRCODE = '23000';
+END
+$fn$
+"""
+
+
+def _guard_sqlite_delete_triggers(conn) -> int:
+    """Every unconditional BEFORE DELETE ... RAISE trigger gets the purge guard."""
+    import re
+    rewritten = 0
+    rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall()
+    for name, sql in rows:
+        flat = " ".join(sql.split())
+        match = re.fullmatch(r"CREATE TRIGGER (\S+) BEFORE DELETE ON (\S+) BEGIN (SELECT RAISE\(ABORT, .*\);) END", flat)
+        if not match:
+            continue
+        conn.execute(f"DROP TRIGGER {name}")
+        conn.execute(f"CREATE TRIGGER {match.group(1)} BEFORE DELETE ON {match.group(2)} {PURGE_GUARD_SQLITE} "
+                     f"BEGIN {match.group(3)} END")
+        rewritten += 1
+    return rewritten
+
+
+def _guard_postgres_delete_triggers(conn) -> int:
+    import re
+    conn.execute(_PG_RAISE_UNLESS_PURGING)
+    rewritten = 0
+    rows = conn.execute(
+        "SELECT t.tgname, c.relname, pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND p.proname = 'jobsearch_raise'").fetchall()
+    for name, table, definition in rows:
+        if " BEFORE DELETE " not in definition or " WHEN " in definition:
+            continue
+        message = re.search(r"jobsearch_raise\('((?:[^']|'')*)'\)", definition).group(1)
+        conn.execute(f'DROP TRIGGER "{name}" ON "{table}"')
+        conn.execute(f'CREATE TRIGGER "{name}" BEFORE DELETE ON "{table}" FOR EACH ROW '
+                     f"EXECUTE FUNCTION jobsearch_raise_unless_purging('{message}')")
+        rewritten += 1
+    return rewritten
+
+
+def _purge(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _PURGE_DDL)
+        if dialect == "sqlite":
+            _guard_sqlite_delete_triggers(conn)
+        else:
+            _guard_postgres_delete_triggers(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("037_purge", sqlite=_purge("sqlite"), postgres=_purge("postgres")))

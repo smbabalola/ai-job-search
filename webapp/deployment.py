@@ -62,6 +62,8 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append("the smtp email provider requires JOBSEARCH_SMTP with host and from_address")
     if settings.plan_catalog_path.name == DEV_PLAN_CATALOG_NAME:
         problems.append("hosted mode refuses the development plan catalog")
+    if settings.retention_policy_path.name == "retention-policy.dev.json":
+        problems.append("hosted mode refuses the development retention policy")
     if settings.ai_pricing_path.name == DEV_AI_PRICING_NAME:
         problems.append("hosted mode refuses the development AI pricing table")
     return problems

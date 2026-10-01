@@ -210,7 +210,8 @@ def test_periodic_slots_are_enqueued_once_per_slot(settings):
         conn.commit()
         kinds = sorted({r[0] for r in conn.execute("SELECT kind FROM jobs")})
         assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind = 'tokens.sweep'").fetchone()[0] == 1
-        assert kinds == ["discovery.scheduled_run", "notify.approval_expiry_scan", "notify.digest", "outbox.dispatch",
+        assert kinds == ["account.purge", "discovery.scheduled_run", "notify.approval_expiry_scan", "notify.digest",
+                         "outbox.dispatch",
                          "tokens.sweep", "usage.sweep"]
         enqueue_periodic(conn, settings=settings, now=NOW + timedelta(minutes=5))  # the next usage.sweep slot
         conn.commit()

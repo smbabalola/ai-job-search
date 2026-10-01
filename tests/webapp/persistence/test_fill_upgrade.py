@@ -136,15 +136,23 @@ def test_a_6da_database_upgrades_to_020_with_6da_rows_and_triggers_unchanged(bas
     c = connect(db)
     assert _migrations(c) == [*before_ids, FILL_MIGRATION_ID, "021_human_submit"]
     assert {t: _rows(c, t) for t in SIX_D_A_TABLES} == rows_before
-    assert {t: _objects_on(c, t) for t in SIX_D_A_TABLES} == objects_before
+    # Bundle 7's 037_purge adds the purge guard to every append-only DELETE trigger; nothing else may differ.
+    guard = " WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)"
+    assert {t: [tuple(None if v is None else v.replace(guard, "") for v in o) for o in _objects_on(c, t)]
+            for t in SIX_D_A_TABLES} == {t: [tuple(o) for o in objs] for t, objs in objects_before.items()}
     tables_after = {r[0]: r[1] for r in c.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
     # No table DDL changed, except 6E-A's declared 021 rebuild of
     # submission_intents, which only adds the HUMAN_AUTHORIZED source.
     rebuilt = "submission_intents"
     # Bundle 7's 022_storage rebuilds user_profile_versions (per-account versions).
     unchanged = lambda k: k != rebuilt and k != "user_profile_versions"  # noqa: E731
-    assert {k: v for k, v in tables_after.items() if k in tables_before and unchanged(k)} == \
-        {k: v for k, v in tables_before.items() if unchanged(k)}
+
+    def legacy_ddl(after: str, before: str) -> bool:
+        """Byte-identical, or Bundle 7 only appended columns (ALTER TABLE ... ADD COLUMN)."""
+        head = before.rstrip()[:-1]  # without the closing parenthesis
+        return after == before or (after.startswith(head) and after[len(head):].lstrip().startswith(","))
+    changed = {k for k, v in tables_before.items() if unchanged(k) and not legacy_ddl(tables_after.get(k, ""), v)}
+    assert changed == set(), changed
     assert tables_after[rebuilt].replace('"submission_intents"', "submission_intents").replace(
         ", 'HUMAN_AUTHORIZED'", "") == tables_before[rebuilt]
     new_tables = set(tables_after) - set(tables_before)

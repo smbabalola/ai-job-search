@@ -29,6 +29,7 @@ def hosted_settings(**overrides) -> Settings:
         smtp={"host": "smtp.example.test", "port": 587, "from_address": "JobSearch <no-reply@example.test>"},
         plan_catalog_path=PRODUCTION_CATALOG,
         ai_pricing_path=Path("product/policies/ai-pricing.v1.json"),
+        retention_policy_path=Path("product/policies/retention-policy.v1.json"),
     )
     values.update(overrides)
     return Settings(**values)

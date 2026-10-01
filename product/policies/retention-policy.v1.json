@@ -1,0 +1,13 @@
+{
+  "schema_version": "retention-policy.v1",
+  "policy_version": "2026-10.1",
+  "payment_grace_days": 0,
+  "deletion_cooling_off_days": 0,
+  "export_link_days": 7,
+  "retained_periods_days": {
+    "BILLING_FINANCIAL": null,
+    "SECURITY_AUDIT": null,
+    "CONSENT_PROOF": null,
+    "SUPPRESSION": null
+  }
+}

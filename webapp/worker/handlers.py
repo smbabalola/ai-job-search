@@ -175,6 +175,43 @@ def _scheduled_discovery_handler(runner_factory: Callable[[Any], Any]) -> Handle
     return handle
 
 
+def _policy(settings: Any) -> Any:
+    from product.retention_policy import load_retention_policy
+    from webapp.app import _project_path
+    return load_retention_policy(_project_path(settings.retention_policy_path))
+
+
+def _account_purge(ctx: JobContext, payload: dict) -> None:
+    """§20.4. With an account id: purge it (revalidated; idempotent). The
+    periodic run (no payload) expires retained records past their period."""
+    from webapp.storage.object_store import object_store_from_settings
+    if payload.get("account_id"):
+        from webapp.services.purge import purge_account
+        report = purge_account(ctx.connect, account_id=payload["account_id"],
+                               object_store=object_store_from_settings(ctx.settings), now=ctx.clock(),
+                               settings=ctx.settings)
+        if report.status == "not_due":
+            raise RetryLater("the cooling-off period has not passed")
+        return
+    from webapp.services.purge import expire_retained
+    conn = ctx.connect()
+    try:
+        expire_retained(conn, policy=_policy(ctx.settings), now=ctx.clock())
+    finally:
+        conn.close()
+
+
+def _account_export(ctx: JobContext, payload: dict) -> None:
+    from webapp.services.export import build_export
+    from webapp.storage.object_store import object_store_from_settings
+    conn = ctx.connect()
+    try:
+        build_export(conn, export_id=payload["export_id"], object_store=object_store_from_settings(ctx.settings),
+                     now=ctx.clock(), settings=ctx.settings, policy=_policy(ctx.settings))
+    finally:
+        conn.close()
+
+
 def _cli_discovery_runner(settings: Any) -> Any:
     from pathlib import Path
     from product.discovery_search import CliDiscoveryPortalRunner
@@ -207,6 +244,8 @@ def default_handlers(settings: Any, *, providers_factory: Callable[[], Any] | No
         "notify.digest": _notify_digest,
         "notify.approval_expiry_scan": _approval_expiry_scan,
         "discovery.scheduled_run": _scheduled_discovery_handler(discovery_runner or _cli_discovery_runner),
+        "account.purge": _account_purge,
+        "account.export": _account_export,
     }
     webhooks = billing_webhooks if billing_webhooks is not None else _billing_webhooks(settings)
     if webhooks is not None:

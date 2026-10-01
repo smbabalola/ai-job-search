@@ -85,7 +85,9 @@ async def rate_limited_handler(request: Request, exc: Exception):
 
 
 _PAGE_REDIRECTS = {"SIGN_IN_REQUIRED": "/login", "EMAIL_NOT_VERIFIED": "/check-email",
-                   "STAFF_SIGN_IN_REQUIRED": "/admin/login"}
+                   "STAFF_SIGN_IN_REQUIRED": "/admin/login",
+                   # Task 28: a suspended or deletion-requested account lands on what it can still do
+                   "ACCOUNT_SUSPENDED": "/account/restricted", "ACCOUNT_UNAVAILABLE": "/account/restricted"}
 
 
 async def scope_refused_handler(request: Request, exc: Exception):
@@ -98,6 +100,8 @@ async def scope_refused_handler(request: Request, exc: Exception):
     page = (request.method == "GET" and not request.url.path.startswith(("/api/", "/auth/"))
             and "application/json" not in accept)
     target = _PAGE_REDIRECTS.get(exc.code)
+    if target == request.url.path:  # never redirect a page to itself
+        target = None
     if page and target:
         if exc.code == "SIGN_IN_REQUIRED" and request.url.path not in ("/", "/login"):
             target = f"{target}?next={quote(request.url.path)}"

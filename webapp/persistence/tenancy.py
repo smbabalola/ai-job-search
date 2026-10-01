@@ -201,6 +201,11 @@ TENANT_TABLES: dict[str, TableSpec] = {
     "account_onboarding": A,
     "profile_import_runs": A,
     "search_schedules": A,  # Task 26
+    # account lifecycle (Task 28, 037_purge)
+    "purge_in_progress": TableSpec("GLOBAL", purge="GLOBAL", export=False),  # transient, never committed
+    "purge_retention_tags": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT", export=False),
+    "account_deletions": TableSpec("account_id", purge="RETAIN", retain_class="SECURITY_AUDIT", export=False),
+    "account_exports": _internal("account_id"),
     "profile_proposals": A,
     "profile_proposal_resolutions": TableSpec(("profile_proposals", "proposal_id")),
     # operations (Bundle 7)

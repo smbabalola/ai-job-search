@@ -209,3 +209,111 @@ def prepare_cost(request: Request, conn: dbapi.Connection, scope: AccountScope, 
     used = rows.used(conn, account_id=scope.account_id, allowance="applications.prepare",
                      window_key=resolved.window.key)
     return f"Uses 1 of your {max(limit - used, 0)} remaining prepares this period."
+
+
+# ---- account lifecycle: deletion, export, the restricted page (Task 28, §20.4, §20.5) ----------
+
+def _retention_policy(request: Request):
+    from product.retention_policy import load_retention_policy
+    from webapp.app import _project_path
+    return load_retention_policy(_project_path(request.app.state.settings.retention_policy_path))
+
+
+def _object_store(request: Request):
+    from webapp.storage.object_store import object_store_from_settings
+    return object_store_from_settings(request.app.state.settings)
+
+
+def _account_status(conn: dbapi.Connection, account_id: str) -> str:
+    return conn.execute("SELECT status FROM accounts WHERE id = ?", (account_id,)).fetchone()[0]
+
+
+def _exports(conn: dbapi.Connection, account_id: str) -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, status, created_at, ready_at, expires_at, downloaded_at FROM account_exports WHERE account_id = ? "
+        "ORDER BY created_at DESC LIMIT 10", (account_id,)).fetchall()]
+
+
+@router.get("/account/restricted", dependencies=[Depends(USER)])
+def restricted_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
+                    scope: AccountScope = Depends(restricted_scope)):
+    """What a suspended or deletion-requested account can still do (§11.5)."""
+    deletion = conn.execute("SELECT purge_after FROM account_deletions WHERE account_id = ? AND canceled_at IS NULL "
+                            "AND completed_at IS NULL", (scope.account_id,)).fetchone()
+    return _render(request, "settings/restricted.html", {
+        "account_status": _account_status(conn, scope.account_id), "purge_after": deletion[0] if deletion else None,
+        "exports": _exports(conn, scope.account_id), "now": _now().isoformat()})
+
+
+@router.get("/settings/account/delete", dependencies=[Depends(USER)])
+def delete_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
+                scope: AccountScope = Depends(restricted_scope)):
+    policy = _retention_policy(request)
+    return _render(request, "settings/delete.html", {"errors": [], "cooling_off_days": policy.deletion_cooling_off.days,
+                                                     "account_status": _account_status(conn, scope.account_id)})
+
+
+@router.post("/settings/account/delete", dependencies=[Depends(USER)])
+def delete_account(request: Request, password: str = Form(""), email: str = Form(""),
+                   conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(restricted_scope)):
+    from webapp.api.auth import _client_ip, _set_session_cookie
+    from webapp.services.account_lifecycle import DeletionRefused, request_deletion
+    policy = _retention_policy(request)
+    try:
+        raw, _ = request_deletion(conn, scope, password=password, typed_email=email, now=_now(),
+                                  settings=request.app.state.settings, policy=policy,
+                                  billing_provider=request.app.state.billing_service.provider, ip=_client_ip(request),
+                                  user_agent=request.headers.get("user-agent"))
+    except DeletionRefused as exc:
+        return request.app.state.templates.TemplateResponse(
+            request, "settings/delete.html", {"errors": [exc.message], "cooling_off_days": policy.deletion_cooling_off.days,
+                                              "account_status": _account_status(conn, scope.account_id)}, status_code=400)
+    response = RedirectResponse("/account/restricted", status_code=303)
+    _set_session_cookie(request, response, raw)  # the deletion-restricted session replaces every other
+    return response
+
+
+@router.post("/settings/account/delete/cancel", dependencies=[Depends(USER)])
+def cancel_delete(request: Request, conn: dbapi.Connection = Depends(get_conn),
+                  scope: AccountScope = Depends(restricted_scope)):
+    from webapp.services.account_lifecycle import DeletionRefused, cancel_deletion
+    try:
+        cancel_deletion(conn, scope, now=_now(), settings=request.app.state.settings)
+    except DeletionRefused:
+        return RedirectResponse("/account/restricted", status_code=303)
+    return RedirectResponse("/autonomy", status_code=303)  # the kill switch stays engaged until the user releases it
+
+
+@router.get("/settings/account/export", dependencies=[Depends(USER)])
+def export_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
+                scope: AccountScope = Depends(restricted_scope)):
+    return _render(request, "settings/export.html", {"exports": _exports(conn, scope.account_id), "errors": [],
+                                                     "now": _now().isoformat()})
+
+
+@router.post("/settings/account/export", dependencies=[Depends(USER)])
+def request_data_export(request: Request, conn: dbapi.Connection = Depends(get_conn),
+                        scope: AccountScope = Depends(restricted_scope)):
+    from webapp.services.export import ExportRefused, request_export
+    try:
+        request_export(conn, scope, now=_now(), settings=request.app.state.settings)
+    except ExportRefused as exc:
+        return request.app.state.templates.TemplateResponse(
+            request, "settings/export.html", {"exports": _exports(conn, scope.account_id), "errors": [exc.message],
+                                              "now": _now().isoformat()}, status_code=429 if exc.code == "RATE_LIMITED"
+            else 409)
+    return RedirectResponse("/settings/account/export", status_code=303)
+
+
+@router.get("/settings/account/export/{export_id}/download", dependencies=[Depends(USER)])
+def download_export(export_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
+                    scope: AccountScope = Depends(restricted_scope)):
+    from fastapi.responses import Response
+    from webapp.services.export import ExportRefused, read_export
+    try:
+        data = read_export(conn, scope, export_id, object_store=_object_store(request), now=_now(),
+                           settings=request.app.state.settings)
+    except ExportRefused as exc:
+        return Response(exc.message, status_code=410 if exc.code == "EXPIRED" else 404, media_type="text/plain")
+    return Response(data, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="jobsearch-export-{export_id}.zip"', "Cache-Control": "no-store"})

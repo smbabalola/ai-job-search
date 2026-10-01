@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Export your data · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Export your data</h1><p>A ZIP with your records, your documents and your profile. Links last 7 days; up to 3 exports a day.</p></div></section>
+{% for error in errors %}<p class="blocked-note" role="alert">{{ error }}</p>{% endfor %}
+<form class="panel" method="post" action="/settings/account/export" data-request-export><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button" type="submit">Prepare an export</button></form>
+<section class="panel" data-exports><table><thead><tr><th>Requested</th><th>Status</th><th></th></tr></thead><tbody>
+{% for e in exports %}<tr><td>{{ e.created_at[:16] }}</td><td>{{ "Preparing" if e.status == "QUEUED" else ("Expired" if e.status == "READY" and e.expires_at <= now else e.status.title()) }}</td>
+<td>{% if e.status == "READY" and e.expires_at > now %}<a href="/settings/account/export/{{ e.id }}/download" data-export-download>Download</a> (until {{ e.expires_at[:10] }}){% endif %}</td></tr>{% else %}<tr><td colspan="3">No exports yet.</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

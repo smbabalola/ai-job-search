@@ -28,13 +28,19 @@ def test_document_metadata_is_database_immutable(tmp_path):
     conn.execute("INSERT INTO application_document_versions VALUES ('docv_1','account_local',?,'cv','user_uploaded','x.docx',?,1,?,'sha256/aa/x.docx',NULL,'now')", (workspace["id"], "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "a" * 64))
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         conn.execute("UPDATE application_document_versions SET original_filename='y.docx' WHERE id='docv_1'")
-    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+    # Bundle 7 Task 21 (L3): a version is undeletable only while referenced; unreferenced ones can be purged.
+    conn.execute("INSERT INTO document_version_references (document_version_id, referrer_type, referrer_id, "
+                 "created_at) VALUES ('docv_1', 'APPROVAL', 'appr_1', 'now')")
+    with pytest.raises(sqlite3.IntegrityError, match="referenced"):
         conn.execute("DELETE FROM application_document_versions WHERE id='docv_1'")
 
 
 def _return_to_003(conn):
     conn.execute("DROP TRIGGER application_document_versions_immutable_update")
-    conn.execute("DROP TRIGGER application_document_versions_immutable_delete")
+    conn.execute("DROP TRIGGER IF EXISTS application_document_versions_immutable_delete")  # pre-Bundle 7
+    conn.execute("DROP TRIGGER IF EXISTS application_document_versions_referenced_delete")  # Task 21
+    conn.execute("DROP TRIGGER IF EXISTS application_document_versions_media_type")
+    conn.execute("DROP TABLE IF EXISTS document_version_references")
     conn.execute("DROP TRIGGER accounts_owned_aggregate_delete")
     conn.execute("DROP TABLE reusable_application_documents")
     conn.execute("DROP TABLE application_document_selections")

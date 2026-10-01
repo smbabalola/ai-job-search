@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Delete your account · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Delete your account</h1></div></section>
+<form class="panel" method="post" action="/settings/account/delete" data-delete-account><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  {% for error in errors %}<p class="blocked-note" role="alert">{{ error }}</p>{% endfor %}
+  <p>Deleting your account signs you out everywhere, disconnects your extension, stops all automation and cancels your subscription straight away (no refund).</p>
+  <p>{% if cooling_off_days %}Your data is erased after {{ cooling_off_days }} days. Until then you can sign in and keep your account.{% else %}Your data is erased as soon as the deletion runs; this cannot be undone.{% endif %} Billing, consent and security records the law requires us to keep are retained without your profile, documents or job data.</p>
+  <p><a href="/settings/account/export">Export your data first</a> if you want a copy.</p>
+  <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+  <label class="field"><span>Type your account email to confirm</span><input type="email" name="email" required></label>
+  <button class="button" type="submit">Delete my account</button>
+</form>
+{% endblock %}

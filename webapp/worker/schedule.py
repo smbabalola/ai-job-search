@@ -17,6 +17,7 @@ PERIODIC: tuple[tuple[str, int], ...] = (
     ("notify.approval_expiry_scan", 60 * 60),
     ("notify.digest", 60 * 60),  # hourly slot; the handler sends each account's digest at its local 07:00
     ("discovery.scheduled_run", 5 * 60),  # fans out the due saved-search schedules (Task 26)
+    ("account.purge", 24 * 60 * 60),  # no payload: retention expiry (Task 28)
 )
 
 
