@@ -4,17 +4,18 @@
 
 1. revalidate: the account is DELETION_REQUESTED, its deletion was not
    canceled, and the cooling-off period has passed;
-2. delete the account's object-store prefix (safe to repeat);
-3. one database transaction: insert the ``purge_in_progress`` guard (the
-   append-only DELETE triggers of 037 let deletes through only while it
-   exists, and it is never visible to another transaction), walk the tenant
-   registry children-first: DELETE-class rows are deleted, PSEUDONYMIZE
+2. one database transaction that first re-checks (1) under the account lock
+   (a cancel that committed meanwhile wins): insert the ``purge_in_progress``
+   guard (the append-only DELETE triggers of 037 let deletes through only
+   while it exists, and it is never visible to another transaction), walk the
+   tenant registry children-first: DELETE-class rows are deleted, PSEUDONYMIZE
    columns overwritten, RETAIN rows kept and tagged with their class; remove
    the guard; tombstone the account and its users (``PURGED``, the email
-   replaced by ``purged:{sha256}`` so it can sign up again); audit
-   ``ACCOUNT_PURGED``;
-4. the service email ``account.deletion_completed`` to the address captured
-   before the purge.
+   replaced by ``purged:{user_id}:{sha256}`` so the address can sign up, and
+   be purged, again); audit ``ACCOUNT_PURGED``; queue the service email
+   ``account.deletion_completed`` to the address captured before the purge;
+3. after the commit, delete the account's object-store prefix (safe to
+   repeat: an already-purged account finishes it on the next run).
 
 Rows are reached through the registry's owner chain as nested ``IN``
 subqueries, so no table needs a single-column key and both dialects run the
@@ -113,10 +114,33 @@ def _pseudonymize(conn: dbapi.Connection, table: str, account_id: str, users: li
             if user["status"] == "PURGED":
                 continue
             digest = hashlib.sha256(user["email_normalized"].encode()).hexdigest()
+            # the user id keeps the tombstone unique: the same address may sign up and be purged again
             conn.execute("UPDATE users SET email_normalized = ?, email_display = ?, display_name = ? WHERE id = ?",
-                         (f"purged:{digest}", f"deleted-{user['id']}@invalid", TOMBSTONE_USER_NAME, user["id"]))
+                         (f"purged:{user['id']}:{digest}", f"deleted-{user['id']}@invalid", TOMBSTONE_USER_NAME,
+                          user["id"]))
     else:
         raise ValueError(f"no pseudonymization rule for {table}")
+
+
+class _Withdrawn(Exception):
+    """Raised inside the purge transaction to roll it back: the request changed meanwhile."""
+
+
+def _due(conn: dbapi.Connection, account_id: str, now: datetime, report: PurgeReport) -> bool:
+    """True when the account is due for purge; otherwise False with report.status set."""
+    account = conn.execute("SELECT status FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if account is not None and account[0] == "PURGED":
+        report.status = "already_purged"
+        return False
+    deletion = conn.execute("SELECT purge_after, canceled_at FROM account_deletions WHERE account_id = ?",
+                            (account_id,)).fetchone()
+    if account is None or account[0] != "DELETION_REQUESTED" or deletion is None or deletion[1] is not None:
+        report.status = "not_requested"
+        return False
+    if _iso(now) < deletion[0]:
+        report.status = "not_due"
+        return False
+    return True
 
 
 def purge_account(conn_factory: Callable[[], dbapi.Connection], *, account_id: str, object_store: Any,
@@ -125,28 +149,20 @@ def purge_account(conn_factory: Callable[[], dbapi.Connection], *, account_id: s
     conn = conn_factory()
     try:
         # 1. revalidate
-        account = conn.execute("SELECT status FROM accounts WHERE id = ?", (account_id,)).fetchone()
-        if account is not None and account[0] == "PURGED":
-            report.status = "already_purged"
-            return report
-        deletion = conn.execute("SELECT purge_after, canceled_at FROM account_deletions WHERE account_id = ?",
-                                (account_id,)).fetchone()
-        if account is None or account[0] != "DELETION_REQUESTED" or deletion is None or deletion[1] is not None:
-            report.status = "not_requested"
-            return report
-        if _iso(now) < deletion[0]:
-            report.status = "not_due"
+        if not _due(conn, account_id, now, report):
+            if report.status == "already_purged":  # finish an interrupted object phase (idempotent)
+                report.objects_deleted = object_store.delete_prefix(f"accounts/{account_id}/")
             return report
         users = _owner_users(conn, account_id)
         user_ids = [u["id"] for u in users]
         mailbox = next((u["email_display"] for u in users if u["status"] != "PURGED"), None)
 
-        # 2. the object store (documents, exports); repeating it is harmless
-        report.objects_deleted = object_store.delete_prefix(f"accounts/{account_id}/")
-
-        # 3. the database, in one transaction under the purge guard
+        # 2. the database, in one transaction under the purge guard. The request is re-checked
+        #    under the account lock, so a cancel that committed meanwhile wins and nothing is deleted.
         order = purge_sequence(conn)
         with dbapi.account_transaction(conn, account_id):
+            if not _due(conn, account_id, now, report):
+                raise _Withdrawn()
             conn.execute("INSERT INTO purge_in_progress (account_id, started_at) VALUES (?, ?)",
                          (account_id, _iso(now)))
             for table in order:
@@ -177,14 +193,18 @@ def purge_account(conn_factory: Callable[[], dbapi.Connection], *, account_id: s
             from webapp.persistence.audit import audit
             audit(conn, actor_type="SYSTEM", actor_id="purge", account_id=account_id, action="ACCOUNT_PURGED", now=now,
                   target_type="account", target_id=account_id,
-                  detail={"deleted_tables": len(report.deleted), "retained": report.retained,
-                          "objects_deleted": report.objects_deleted},
+                  detail={"deleted_tables": len(report.deleted), "retained": report.retained},
                   secret=getattr(settings, "secret_key", None))
             # 4. tell the person, at the address captured before the purge
             if mailbox:
                 from webapp import comms
                 comms.enqueue(conn, category="SERVICE", template_id="account.deletion_completed", to_address=mailbox,
                               payload={}, idempotency_key=f"account.deletion_completed:{account_id}", now=now)
+        # 3. the object store (documents, exports), only once the rows are committed; if this fails the
+        #    account is already PURGED and the next run (already_purged) finishes it
+        report.objects_deleted = object_store.delete_prefix(f"accounts/{account_id}/")
+        return report
+    except _Withdrawn:
         return report
     finally:
         conn.close()

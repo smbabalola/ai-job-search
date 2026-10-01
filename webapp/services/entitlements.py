@@ -118,6 +118,13 @@ def _no_subscription(conn: dbapi.Connection, account_id: str) -> SubscriptionVie
     return None
 
 
+def payment_grace(settings: Any) -> timedelta:
+    """DP-4: the payment grace period of the deployment's retention policy."""
+    from product.retention_policy import load_retention_policy
+    from webapp.app import _project_path
+    return load_retention_policy(_project_path(settings.retention_policy_path)).payment_grace
+
+
 class EntitlementGate:
     """Reads an account's inputs and resolves them. ``subscriptions`` reads the
     account's current subscription (Task 14 supplies the billing reader);
@@ -171,5 +178,6 @@ def gate_for(settings: Any) -> EntitlementGate:
     gate = _GATES.get(key)
     if gate is None:
         catalog = load_catalog(_project_path(settings.plan_catalog_path))
-        gate = _GATES[key] = EntitlementGate(catalog, settings=settings, subscriptions=billing_rows.subscription_view)
+        gate = _GATES[key] = EntitlementGate(catalog, settings=settings, subscriptions=billing_rows.subscription_view,
+                                             grace=payment_grace(settings))
     return gate

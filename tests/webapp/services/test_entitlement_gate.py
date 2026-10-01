@@ -199,3 +199,17 @@ def test_the_app_refuses_to_start_with_an_invalid_catalog(tmp_path):
     path.write_text(json.dumps(broken), encoding="utf-8")
     with pytest.raises(ent.CatalogError):
         create_app(Settings(db_path=tmp_path / "db.sqlite3", plan_catalog_path=path))
+
+
+def test_every_gate_applies_the_retention_policy_payment_grace(tmp_path):
+    """DP-4: a PAST_DUE payer keeps the plan for the configured grace period, in
+    the web app's gate and in the gate the worker and 6C build (gate_for)."""
+    from product.retention_policy import load_retention_policy
+    from webapp.app import _project_path, create_app
+    from webapp.config import Settings
+    from webapp.services.entitlements import gate_for
+    settings = Settings(db_path=tmp_path / "db.sqlite3", documents_root=tmp_path / "documents")
+    grace = load_retention_policy(_project_path(settings.retention_policy_path)).payment_grace
+    assert grace > timedelta(0)  # the dev policy has a grace period, so a zero would show
+    assert create_app(settings).state.entitlement_gate.grace == grace
+    assert gate_for(settings).grace == grace

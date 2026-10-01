@@ -107,8 +107,11 @@ def post_archive(item_id: str, conn: dbapi.Connection = Depends(get_conn),
 
 
 @router.post("/api/cvs/{item_id}/unarchive")
-def post_unarchive(item_id: str, conn: dbapi.Connection = Depends(get_conn),
+def post_unarchive(item_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                    scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    item = lib.get_item(conn, account_id=scope.account_id, item_id=item_id)
+    if item is not None and item["status"] != "ACTIVE":  # a restored item counts like a new one (§13.2)
+        request.app.state.metering.gauge_check(conn, scope, "library.cv_items", adding=1)
     return _state_change(conn, scope, item_id, lib.unarchive_item)
 
 

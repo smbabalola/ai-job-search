@@ -158,8 +158,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Job Application Workspace", lifespan=lifespan, dependencies=[Depends(require_csrf)])
     app.state.settings = settings
+    from webapp.services.entitlements import payment_grace
     app.state.entitlement_gate = EntitlementGate(catalog, settings=settings,
-                                                 subscriptions=billing_rows.subscription_view)
+                                                 subscriptions=billing_rows.subscription_view,
+                                                 grace=payment_grace(settings))
     # Bundle 7 spec §13: real accounts are metered; the local operator account is not.
     app.state.metering = Metering(app.state.entitlement_gate, UsageService(app.state.entitlement_gate),
                                   enforced=settings.auth_enabled)

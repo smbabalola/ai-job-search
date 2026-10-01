@@ -240,3 +240,14 @@ def test_password_and_email_changes_are_security_notifications_without_a_second_
     post(client, "/auth/email-change/confirm", data={"token": token}, follow_redirects=False)
     assert _notification_kinds(settings) == ["security.password_changed", "security.email_changed"]
     assert _mail("notify.immediate") == []
+
+
+def test_signup_pays_for_one_password_hash_whether_or_not_the_email_exists(world, monkeypatch):
+    """Spec 7: the existing-email response is in the same timing class as a new signup."""
+    client, _ = world
+    calls = []
+    real = auth_service.hash_password
+    monkeypatch.setattr(auth_service, "hash_password", lambda p: calls.append(p) or real(p))
+    _signup(client)
+    _signup(client, email=" ADA@Example.com ")
+    assert len(calls) == 2  # one argon2 hash per attempt, new or existing

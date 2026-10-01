@@ -122,3 +122,16 @@ def test_the_export_page_requests_an_export(world):
                                  follow_redirects=False)
     assert response.status_code == 303
     assert "Preparing" in world.client.get("/settings/account/export").text
+
+
+def test_an_export_whose_job_died_does_not_block_the_next_one(world):
+    """A build that kept failing leaves its job DEAD; the export is then FAILED and
+    the person can ask again (export is a never-gated privacy surface)."""
+    now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+    first = request_export(world.conn, world.scope, now=now, settings=world.settings)
+    world.conn.execute("UPDATE jobs SET status = 'DEAD' WHERE dedupe_key = ?", (f"export:{first}",))
+    world.conn.commit()
+    second = request_export(world.conn, world.scope, now=now + timedelta(minutes=5), settings=world.settings)
+    statuses = dict(world.conn.execute("SELECT id, status FROM account_exports WHERE id IN (?, ?)",
+                                       (first, second)).fetchall())
+    assert statuses == {first: "FAILED", second: "QUEUED"}

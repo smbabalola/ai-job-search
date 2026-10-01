@@ -12,7 +12,7 @@ releasable.
 
 | Process | Command | Notes |
 |---|---|---|
-| Web | `uvicorn --factory webapp.app:create_app --host 0.0.0.0 --port 8000` | Behind TLS termination. `create_app()` reads every setting from the environment and refuses to start on an incomplete hosted configuration (`webapp/deployment.py`). Run two or more for availability. |
+| Web | `uvicorn --factory webapp.app:create_app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips <load balancer address>` | Behind TLS termination. `--forwarded-allow-ips` must name only the trusted proxy: the client address (sign-up, login, pairing and other rate limits, audit IP hashes) then comes from its `X-Forwarded-For`; without it every request appears to come from the proxy and the per-IP limits become site-wide. `create_app()` reads every setting from the environment and refuses to start on an incomplete hosted configuration (`webapp/deployment.py`). Run two or more for availability. |
 | Worker | `python -m webapp.worker` | Exactly the same environment as the web process. Runs the durable jobs: outbox dispatch, billing and email webhooks, usage sweeps, scheduled discovery, exports, purge, retention expiry, the 6C automation driver. Run one or more; jobs are leased, so extra workers are safe. |
 | One-off | `python -m webapp.worker --once` | Enqueue due periodic jobs, run one batch, exit. Useful in a cron-only platform or for a smoke test. |
 

@@ -123,7 +123,7 @@ def test_the_purge_removes_a_and_leaves_b_untouched(world):
             assert rows <= _all(conn, table), f"{table}: a B row changed"
         user = conn.execute("SELECT email_normalized, email_display, display_name, status FROM users WHERE id = ?",
                             (a_users[0],)).fetchone()
-        assert user[0] == "purged:" + hashlib.sha256(b"ada@example.com").hexdigest()
+        assert user[0] == f"purged:{a_users[0]}:" + hashlib.sha256(b"ada@example.com").hexdigest()
         assert (user[1], user[2], user[3]) == (f"deleted-{a_users[0]}@invalid", "Deleted user", "PURGED")
         account = conn.execute("SELECT display_name, status FROM accounts WHERE id = ?", (world.a,)).fetchone()
         assert tuple(account) == ("Deleted account", "PURGED")
@@ -221,3 +221,54 @@ def test_retained_rows_expire_after_their_period_only(world):
         assert expire_retained(conn, policy=production, now=NOW + timedelta(days=99999)) == 0
     finally:
         conn.close()
+
+
+def test_the_same_email_can_be_purged_twice(world):
+    """A purged address may sign up again (pseudonymized email); deleting that
+    second account must purge too, not collide on the tombstone."""
+    _request_deletion(world)
+    assert _purge(world).status == "purged"
+    _, again, _ = _signed_up(world.app, "ada@example.com", "Ada Again")
+    first = world.a
+    world.a = again
+    _request_deletion(world)
+    assert _purge(world).status == "purged"
+    conn = connect(world.settings)
+    try:
+        tombstones = [r[0] for r in conn.execute("SELECT email_normalized FROM users WHERE status = 'PURGED'")]
+        statuses = {r[0]: r[1] for r in conn.execute("SELECT id, status FROM accounts WHERE id IN (?, ?)",
+                                                      (first, again))}
+    finally:
+        conn.close()
+    assert len(tombstones) == len(set(tombstones)) == 2
+    assert set(statuses.values()) == {"PURGED"}
+
+
+def test_a_cancel_that_lands_during_the_purge_wins_and_keeps_the_documents(world, monkeypatch):
+    """The purge re-checks the request under the account lock; nothing is deleted
+    (rows or objects) for a deletion the user cancelled meanwhile."""
+    from webapp.services import purge as purge_module
+    from webapp.services.account_lifecycle import cancel_deletion
+    _request_deletion(world)
+    real_sequence = purge_module.purge_sequence
+
+    def cancel_then_order(conn):
+        other = connect(world.settings)
+        try:
+            user_id = _users(other, world.a)[0]
+            scope = AccountScope(account_id=world.a, profile_root=world.settings.profile_root, user_id=user_id)
+            cancel_deletion(other, scope, now=NOW, settings=world.settings)
+        finally:
+            other.close()
+        return real_sequence(conn)
+
+    monkeypatch.setattr(purge_module, "purge_sequence", cancel_then_order)
+    keys_before = _keys(world.settings, world.a)
+    report = _purge(world)
+    assert report.status == "not_requested"
+    conn = connect(world.settings)
+    try:
+        assert conn.execute("SELECT status FROM accounts WHERE id = ?", (world.a,)).fetchone()[0] == "ACTIVE"
+    finally:
+        conn.close()
+    assert keys_before and _keys(world.settings, world.a) == keys_before

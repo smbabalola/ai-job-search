@@ -218,3 +218,24 @@ def test_refuses_without_the_operator_verification_assertion(source, target, tmp
                              object_store=LocalFsObjectStore(tmp_path / "o"), email=EMAIL,
                              display_name="Founder Person", assume_verified=False)
     assert refused.value.code == "VERIFICATION_NOT_ASSERTED"
+
+
+def test_the_local_only_profile_pointer_is_not_carried(source, target, tmp_path):
+    """current_user_profile is the legacy local singleton (RETAIN LOCAL_ONLY): a hosted
+    database must not get it (a retained pointer would block the account's purge)."""
+    from webapp.persistence import dbapi
+    from webapp.storage.object_store import LocalFsObjectStore
+    src = source["conn"]
+    version = src.execute("SELECT id FROM user_profile_versions WHERE account_id = ? ORDER BY rowid LIMIT 1",
+                          (V2_ACCOUNT,)).fetchone()
+    assert version is not None
+    src.execute("INSERT INTO current_user_profile (id, version_id, updated_at) VALUES ('current', ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET version_id = excluded.version_id", (version[0], NOW.isoformat()))
+    src.commit()
+    result = _run(source, target, LocalFsObjectStore(tmp_path / "hosted-objects"))
+    assert result.not_copied.get("current_user_profile") == 1 and "current_user_profile" not in result.copied
+    dst = dbapi.connect(target)
+    try:
+        assert dst.execute("SELECT COUNT(*) FROM current_user_profile").fetchone()[0] == 0
+    finally:
+        dst.close()

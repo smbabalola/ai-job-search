@@ -99,8 +99,15 @@ def cancel_deletion(conn: dbapi.Connection, scope: Any, *, now: datetime, settin
                        "ON d.account_id = a.id WHERE a.id = ?", (scope.account_id,)).fetchone()
     if row is None or row[0] != "DELETION_REQUESTED" or row[1] is not None:
         raise DeletionRefused("There is no deletion to cancel.")
+    # A suspended user may ask for deletion; cancelling it restores the suspension, never lifts it.
+    # Suspension and unsuspension are audited (append-only): the latest of the two decides.
+    last = conn.execute("SELECT action FROM audit_log WHERE account_id = ? AND action IN "
+                        "('ACCOUNT_SUSPENDED', 'ACCOUNT_UNSUSPENDED') ORDER BY seq DESC LIMIT 1",
+                        (scope.account_id,)).fetchone()
+    restored = "SUSPENDED" if last is not None and last[0] == "ACCOUNT_SUSPENDED" else "ACTIVE"
     with dbapi.account_transaction(conn, scope.account_id):
-        conn.execute("UPDATE accounts SET status = 'ACTIVE', updated_at = ? WHERE id = ?", (_iso(now), scope.account_id))
+        conn.execute("UPDATE accounts SET status = ?, updated_at = ? WHERE id = ?",
+                     (restored, _iso(now), scope.account_id))
         conn.execute("UPDATE users SET status = 'ACTIVE', updated_at = ? WHERE id = ?", (_iso(now), scope.user_id))
         conn.execute("UPDATE account_deletions SET canceled_at = ? WHERE account_id = ?", (_iso(now), scope.account_id))
         conn.execute("DELETE FROM jobs WHERE kind = 'account.purge' AND account_id = ? AND status = 'QUEUED'",

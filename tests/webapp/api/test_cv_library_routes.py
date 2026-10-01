@@ -94,3 +94,15 @@ def test_another_accounts_cv_is_404(client, tmp_path):
     sign_in(other, email="eve@example.com")
     assert other.get(f"/cvs/{item_id}").status_code == 404
     assert other.post(f"/api/cvs/{item_id}/archive", headers={"X-CSRF-Token": csrf_token(other)}).status_code == 404
+
+
+def test_unarchiving_cannot_take_the_library_over_its_item_limit(client):
+    """Archive one, create another at the limit, then unarchiving the first is refused."""
+    ids = [_create(client, title=f"CV {n}").json()["item"]["id"] for n in range(5)]  # Free: 5
+    headers = {"X-CSRF-Token": csrf_token(client)}
+    assert client.post(f"/api/cvs/{ids[0]}/archive", headers=headers).status_code == 200
+    assert _create(client, title="CV 6").status_code == 201
+    refused = client.post(f"/api/cvs/{ids[0]}/unarchive", headers={"X-CSRF-Token": csrf_token(client)})
+    assert refused.status_code == 402 and refused.json()["error"] == "ALLOWANCE_EXHAUSTED"
+    active = [i for i in client.get("/api/cvs").json()["items"] if i["status"] == "ACTIVE"]
+    assert len(active) == 5

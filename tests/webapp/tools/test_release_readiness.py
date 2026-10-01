@@ -137,3 +137,11 @@ def test_the_command_reads_an_env_file_and_exits_non_zero(tmp_path, capsys, monk
     assert code == 1 and report["ok"] is False
     assert "DP7_REFUND_POLICY" not in {f["id"] for f in report["findings"]}  # read from the file
     assert "DP8_GRANDFATHERING" in {f["id"] for f in report["findings"]}
+
+
+def test_the_runbook_runs_the_web_process_with_the_client_address_from_the_trusted_proxy():
+    """Rate limits are keyed on the client address: behind TLS termination the web
+    process must take it from the trusted proxy's X-Forwarded-For, not the proxy's own."""
+    text = (ROOT / "docs/runbooks/hosted-deployment.md").read_text(encoding="utf-8")
+    command = next(line for line in text.splitlines() if "uvicorn --factory webapp.app:create_app" in line)
+    assert "--proxy-headers" in command and "--forwarded-allow-ips" in command

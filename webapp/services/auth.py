@@ -129,6 +129,8 @@ class AuthService:
             errors.append("Please accept the Terms and the Privacy Notice.")
         if errors:
             return Outcome(False, errors)
+        # Hashed on both paths: an existing email must not answer faster than a new one (spec 7).
+        password_hash = hash_password(password)
         existing = identity.get_user_by_email(conn, normalized)
         if existing is not None:
             self._mail(conn, template_id="auth.account_exists", to=existing["email_normalized"],
@@ -137,7 +139,7 @@ class AuthService:
             conn.commit()
             return Outcome(True)
         created = identity.create_user_with_account(
-            conn, email=email, password_hash=hash_password(password), display_name=display_name,
+            conn, email=email, password_hash=password_hash, display_name=display_name,
             legal_document_ids=sorted(legal.values()), now=self.clock(),
             profile_store=profile_source_store_from_settings(self.settings))
         self._mail(conn, template_id="auth.verify_email", to=normalized, user_id=created["user"]["id"],

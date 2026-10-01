@@ -118,3 +118,33 @@ def test_the_restricted_page_allows_export_and_keeping_the_account_only(world):
                              follow_redirects=False)
     assert kept.status_code == 303
     assert world.client.get("/api/notifications").status_code == 200
+
+
+def _set_suspended(world, suspended: bool):
+    """What the staff console's suspend/unsuspend write (account status + the audited action)."""
+    from webapp.persistence.audit import audit
+    conn = world.conn
+    conn.execute("UPDATE accounts SET status = ? WHERE id = ?", ("SUSPENDED" if suspended else "ACTIVE",
+                                                                 world.account_id))
+    audit(conn, actor_type="STAFF", actor_id="staff_1", account_id=world.account_id,
+          action="ACCOUNT_SUSPENDED" if suspended else "ACCOUNT_UNSUSPENDED", now=NOW, target_type="account",
+          target_id=world.account_id)
+    conn.commit()
+
+
+def test_cancelling_a_deletion_requested_while_suspended_keeps_the_account_suspended(world):
+    """A suspended user may request deletion (spec 22.2) but cancelling it must not lift the suspension."""
+    _set_suspended(world, True)
+    _request(world)
+    cancel_deletion(world.conn, world.scope, now=NOW + timedelta(days=1), settings=world.settings)
+    assert world.conn.execute("SELECT status FROM accounts WHERE id = ?", (world.account_id,)).fetchone()[0] \
+        == "SUSPENDED"
+
+
+def test_a_lifted_suspension_does_not_come_back_on_cancel(world):
+    _set_suspended(world, True)
+    _set_suspended(world, False)
+    _request(world)
+    cancel_deletion(world.conn, world.scope, now=NOW + timedelta(days=1), settings=world.settings)
+    assert world.conn.execute("SELECT status FROM accounts WHERE id = ?", (world.account_id,)).fetchone()[0] \
+        == "ACTIVE"

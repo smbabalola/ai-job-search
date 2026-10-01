@@ -50,10 +50,15 @@ def request_export(conn: dbapi.Connection, scope: Any, *, now: datetime, setting
     from webapp.persistence.audit import audit
     from webapp.worker.runner import enqueue
     with dbapi.account_transaction(conn, scope.account_id):
+        # a queued export whose job is no longer live (it died, or vanished) failed: it must not block
+        conn.execute("UPDATE account_exports SET status = 'FAILED' WHERE account_id = ? AND status = 'QUEUED' AND "
+                     "NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'export:' || account_exports.id AND "
+                     "j.status IN ('QUEUED', 'RUNNING'))", (scope.account_id,))
         if conn.execute("SELECT 1 FROM account_exports WHERE account_id = ? AND status = 'QUEUED'",
                         (scope.account_id,)).fetchone():
             raise ExportRefused("ACTION_IN_PROGRESS", "An export is already being prepared.")
-        today = conn.execute("SELECT COUNT(*) FROM account_exports WHERE account_id = ? AND created_at >= ?",
+        today = conn.execute("SELECT COUNT(*) FROM account_exports WHERE account_id = ? AND created_at >= ? "
+                             "AND status <> 'FAILED'",
                              (scope.account_id, _iso(now - timedelta(days=1)))).fetchone()[0]
         if today >= DAILY_LIMIT:
             raise ExportRefused("RATE_LIMITED", f"You can export your data {DAILY_LIMIT} times a day.")
