@@ -310,6 +310,27 @@ Upstream keeps improving the methodology files your fork has personalized, so pl
      Forks also inherit a `.github/workflows/upstream-watch.yml` that runs this weekly and writes the result into a single rolling issue (it no-ops on the upstream template itself, and stays disabled on a fork until you enable Actions).
 3. **Merge normally.** `git merge upstream/master` (or `git pull`) three-way-merges upstream's edits around your personalization; because methodology edits rarely touch the lines `/setup` filled in, most updates land cleanly. A conflict in a personalized file is a *feature*, not a failure — it means upstream changed methodology in a section you customized, and the version marker plus its changelog commit tell you why. Resolve by keeping your data and adopting the methodology change around it.
 
+## 9. Optional: the web app in local mode
+
+The web app (`webapp/`) is the developer path for the product the hosted service runs.
+Local mode is single-user: no login, SQLite at `.jobsearch/jobsearch.sqlite3`, documents
+under `documents/`, your profile files read from this repo.
+
+```bash
+pip install -r requirements.txt
+python -m webapp.main            # http://127.0.0.1:8420
+python -m webapp.worker          # optional: outbox, sweeps, scheduled work
+```
+
+Local mode only listens on a loopback address. To try real sign-in locally, set
+`auth_required_in_local` in a test or script (the release-journey tests do). The
+browser extension's default build (`cd extension && npm ci && npm run build`) talks
+to `http://127.0.0.1:8420`.
+
+Running the hosted service (PostgreSQL, object storage, email, billing, the staff
+console) is a different setup: follow `docs/runbooks/hosted-deployment.md`. Your local
+data can be moved into a hosted account with `python -m webapp.tools.import_local_account`.
+
 ## Troubleshooting
 
 ### "salary_data.json not found"

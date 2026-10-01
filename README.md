@@ -361,6 +361,23 @@ The framework supports two distinct modes of job searching:
 
 To get the most from this, invest time during `/setup` in describing not just your experience, but what energized you, what drained you, and what you'd want more of. This context directly shapes how the system evaluates fit and which roles it surfaces during `/scrape`.
 
+## The JobSearch web app: local and hosted
+
+The repo also contains a web product (`webapp/`) and a browser extension (`extension/`)
+that carry an application from a captured job to a reviewed, filled and human-submitted
+form. It runs in two modes:
+
+- **Local** (the default, for development): one user, no login, SQLite and files on
+  disk, the extension talking to `http://127.0.0.1:8420`. Start it with
+  `python -m webapp.main`; see [SETUP.md, section 9](SETUP.md#9-optional-the-web-app-in-local-mode).
+- **Hosted** (multi-tenant): sign-up, plans and billing, PostgreSQL, S3-compatible
+  storage, a worker process, a staff console and a hosted extension build. See
+  [docs/runbooks/hosted-deployment.md](docs/runbooks/hosted-deployment.md),
+  [docs/runbooks/hosted-incident.md](docs/runbooks/hosted-incident.md) and the open
+  business decisions in [docs/runbooks/decision-points.md](docs/runbooks/decision-points.md).
+  `python -m webapp.tools.release_readiness --config production.env` says what is
+  still open before a release.
+
 ## Contributing
 
 Thinking about a PR? Read [CONTRIBUTING.md](CONTRIBUTING.md) first - it explains what gets merged, what lives in forks, and why.
