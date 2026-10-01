@@ -18,4 +18,6 @@ AUDIT_ACTIONS = frozenset({
     # the staff console (Task 27): each staff action has its own entry
     "VERIFICATION_RESENT", "PASSWORD_RESET_SENT", "AUTONOMY_KILL_SWITCH_SET", "ANNOUNCEMENT_WITHDRAWN",
     "STAFF_TOTP_ENROLLED", "STAFF_REAUTHENTICATED",
+    # the local -> hosted import tool (Task 30)
+    "ACCOUNT_IMPORTED",
 })
