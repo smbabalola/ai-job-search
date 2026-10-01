@@ -1,0 +1,11 @@
+{% extends "admin/_base.html" %}
+{% block title %}Platform controls{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Platform controls</h1><p>Changes need a fresh <a href="/admin/reauth?next=/admin/controls">confirmation</a>. A missing control is off.</p></div></section>
+{% for key, value in data.current.items() %}<form class="panel" data-json-form="/api/admin/controls" data-control="{{ key }}"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><input type="hidden" name="key" value="{{ key }}"><input type="hidden" name="value" value="{{ 'false' if value else 'true' }}">
+  <div class="panel-heading"><h2>{{ key }}</h2><span class="badge">{{ "on" if value else "off" }}</span></div>
+  <label class="field"><span>Reason</span><input name="reason" required></label>
+  <button class="button" type="submit">Turn {{ "off" if value else "on" }}</button></form>{% endfor %}
+<section class="panel"><div class="panel-heading"><h2>History</h2></div><table><thead><tr><th>When</th><th>Control</th><th>Value</th><th>Reason</th></tr></thead><tbody>
+{% for h in data.history %}<tr><td>{{ h.created_at[:16] }}</td><td>{{ h.key }}</td><td>{{ "on" if h.value else "off" }}</td><td>{{ h.reason }}</td></tr>{% else %}<tr><td colspan="4">No changes yet.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

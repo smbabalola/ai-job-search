@@ -40,6 +40,14 @@ def validate_settings(settings: Settings) -> list[str]:
         problems.append("hosted mode requires a postgresql:// JOBSEARCH_DATABASE_URL")
     if len(settings.secret_key or "") < MIN_SECRET_KEY_LENGTH:
         problems.append(f"hosted mode requires JOBSEARCH_SECRET_KEY of at least {MIN_SECRET_KEY_LENGTH} characters")
+    if not settings.totp_encryption_keys:
+        problems.append("hosted mode requires JOBSEARCH_TOTP_ENCRYPTION_KEYS (staff TOTP secrets at rest)")
+    else:
+        from webapp.services.secret_box import SecretBoxError, parse_key_ring
+        try:
+            parse_key_ring(settings.totp_encryption_keys)
+        except SecretBoxError as exc:
+            problems.append(f"JOBSEARCH_TOTP_ENCRYPTION_KEYS is invalid: {exc}")
     if not _origin_is_https_without_path(settings.public_origin):
         problems.append("hosted mode requires an https JOBSEARCH_PUBLIC_ORIGIN without a path")
     if not settings.extension_ids:

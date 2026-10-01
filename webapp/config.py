@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 from product.autonomy_contract import Capability
 
@@ -136,6 +137,9 @@ class Settings:
     deployment: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_DEPLOYMENT", "local"))
     database_url: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_DATABASE_URL") or None)
     secret_key: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_SECRET_KEY") or None)
+    # Bundle 7: AES-256-GCM key ring for staff TOTP secrets, "kid:base64url-key[,kid:key]" (first encrypts).
+    totp_encryption_keys: str | None = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_TOTP_ENCRYPTION_KEYS") or None)
     public_origin: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_PUBLIC_ORIGIN") or None)
     extension_ids: tuple[str, ...] = field(
         default_factory=lambda: _parse_csv(os.environ.get("JOBSEARCH_EXTENSION_IDS", ""))
@@ -192,9 +196,28 @@ class Settings:
         except KeyError:
             return Capability.NONE  # fail closed on a mistyped setting
 
-    def human_submit_ceiling(self) -> Capability:
-        """The deployment ceiling for a HUMAN_SUBMIT evaluation (6E-A §8.2)."""
-        return Capability.SUBMIT if self.human_submit_enabled else Capability.FILL
+    def human_submit_ceiling(self, conn: Any = None, *, certification: Any = None) -> Capability:
+        """The deployment ceiling for a HUMAN_SUBMIT evaluation (6E-A §8.2).
+
+        Hosted mode (Bundle 7 §8.6, the live submission gate): SUBMIT only when
+        JOBSEARCH_HUMAN_SUBMIT_ENABLED, the SUBMIT_ENABLED and
+        HOSTED_THREAT_MODEL_SIGNED_OFF platform controls are on, and the target
+        adapter's certification is LIVE_CERTIFIED with evidence; otherwise
+        FILL. Local mode is unchanged (fixture origins are gated elsewhere)."""
+        if not self.human_submit_enabled:
+            return Capability.FILL
+        if not self.is_hosted:
+            return Capability.SUBMIT
+        from product.submit_certification import LIVE_CERTIFIED
+        from webapp.services.entitlements import platform_control
+        if conn is None or certification is None:
+            return Capability.FILL
+        if not (platform_control(conn, "SUBMIT_ENABLED", settings=self)
+                and platform_control(conn, "HOSTED_THREAT_MODEL_SIGNED_OFF", settings=self)):
+            return Capability.FILL
+        if certification.status != LIVE_CERTIFIED or not certification.live_evidence:
+            return Capability.FILL
+        return Capability.SUBMIT
 
     @property
     def autonomy_sentinel_path(self) -> Path:

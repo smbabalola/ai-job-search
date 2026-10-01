@@ -1,0 +1,20 @@
+{% extends "admin/_base.html" %}
+{% block title %}Announcements{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Announcements</h1></div></section>
+<form class="panel" data-json-form="/api/admin/announcements"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h2>New announcement</h2></div>
+  <label class="field"><span>Title</span><input name="title" required></label>
+  <label class="field"><span>Body (Markdown: paragraphs, - lists, **bold**, *italic*, [links](https://…))</span><textarea name="body_markdown" rows="6" required></textarea></label>
+  <label class="field"><span>Audience</span><select name="audience">{% for a in audiences %}<option>{{ a }}</option>{% endfor %}</select></label>
+  <label class="field"><span>Severity</span><select name="severity">{% for s in severities %}<option>{{ s }}</option>{% endfor %}</select></label>
+  <label class="field"><span>Expires (optional)</span><input name="expires_at" type="date"></label>
+  <button class="button" type="submit">Save draft</button>
+</form>
+{% for a in announcements %}<section class="panel" data-announcement="{{ a.id }}"><div class="panel-heading"><h2>{{ a.title }}</h2><span class="badge">{{ a.severity }} · {{ a.audience }}</span></div>
+  <div data-announcement-body>{{ a.html | safe }}</div>
+  <p class="muted">{% if a.withdrawn_at %}Withdrawn {{ a.withdrawn_at[:16] }}{% elif a.published_at %}Published {{ a.published_at[:16] }}{% else %}Draft{% endif %}</p>
+  {% if not a.withdrawn_at %}{% if not a.published_at %}<form data-json-form="/api/admin/announcements/{{ a.id }}/publish"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><label><input type="checkbox" name="email" value="true"> Also email</label> <button class="button button-small" type="submit">Publish</button></form>{% endif %}
+  <form data-json-form="/api/admin/announcements/{{ a.id }}/withdraw"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small secondary" type="submit">Withdraw</button></form>{% endif %}
+</section>{% endfor %}
+{% endblock %}

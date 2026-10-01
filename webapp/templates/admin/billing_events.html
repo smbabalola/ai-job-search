@@ -1,0 +1,9 @@
+{% extends "admin/_base.html" %}
+{% block title %}Billing events{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Billing events</h1></div></section>
+<section class="panel"><div class="panel-heading"><h2>Subscription changes</h2></div><table><thead><tr><th>When</th><th>Account</th><th>From</th><th>To</th><th>Cause</th></tr></thead><tbody>
+{% for e in data.subscription_events %}<tr><td>{{ e.created_at[:16] }}</td><td><a href="/admin/accounts/{{ e.account_id }}">{{ e.account_id }}</a></td><td>{{ e.from_state or "—" }}</td><td>{{ e.to_state }}</td><td>{{ e.cause }}</td></tr>{% else %}<tr><td colspan="5">None.</td></tr>{% endfor %}</tbody></table></section>
+<section class="panel"><div class="panel-heading"><h2>Webhooks</h2></div><table><thead><tr><th>Received</th><th>Provider event</th><th>Verified</th><th>Processed</th><th>Error</th></tr></thead><tbody>
+{% for e in data.webhook_events %}<tr><td>{{ e.received_at[:16] }}</td><td>{{ e.provider }} {{ e.provider_event_id }}</td><td>{{ "yes" if e.signature_verified else "no" }}</td><td>{{ (e.processed_at or "pending")[:16] }}</td><td>{{ e.process_error or "" }}</td></tr>{% else %}<tr><td colspan="5">None.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

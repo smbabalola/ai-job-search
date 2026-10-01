@@ -37,6 +37,9 @@ ERROR_PAGE_ACTIONS: dict[str, tuple[str, str]] = {
     "SUBSCRIPTION_EXISTS": ("Manage billing", "/settings/billing"),
     "NO_SUBSCRIPTION": ("See plans", "/plans"),
     "SIGN_IN_REQUIRED": ("Sign in", "/login"),
+    # the staff console (Task 27)
+    "STAFF_SIGN_IN_REQUIRED": ("Staff sign-in", "/admin/login"),
+    "PERMISSION_DENIED": ("Back to the start", "/"),
 }
 ERROR_CODES = tuple(ERROR_PAGE_ACTIONS)
 
@@ -81,7 +84,8 @@ async def rate_limited_handler(request: Request, exc: Exception):
                               detail={"retry_after": retry_after}, headers={"Retry-After": str(retry_after)})
 
 
-_PAGE_REDIRECTS = {"SIGN_IN_REQUIRED": "/login", "EMAIL_NOT_VERIFIED": "/check-email"}
+_PAGE_REDIRECTS = {"SIGN_IN_REQUIRED": "/login", "EMAIL_NOT_VERIFIED": "/check-email",
+                   "STAFF_SIGN_IN_REQUIRED": "/admin/login"}
 
 
 async def scope_refused_handler(request: Request, exc: Exception):

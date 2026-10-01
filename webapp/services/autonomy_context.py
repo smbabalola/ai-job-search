@@ -408,7 +408,9 @@ def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str
     return AuthorizationContext(
         mode=mode, requested_stage=requested_stage, now=now, account_id=account_id,
         application_workspace_id=ws, search_workspace_id=search_ws,
-        deployment_ceiling=settings.human_submit_ceiling() if human else _automation_ceiling(
+        deployment_ceiling=settings.human_submit_ceiling(conn, certification=(
+            submit_certified(observation.adapter_id, observation.adapter_version) if observation else None))
+        if human else _automation_ceiling(
             conn, settings, account_id, requested_stage, now),
         account_max=account_max, workspace_ceiling=workspace_ceiling,
         kill_switch_engaged=kill_switch["halted"], control_epoch=kill_switch["latest_engage_seq"],

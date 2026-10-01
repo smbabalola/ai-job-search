@@ -1,0 +1,7 @@
+{% extends "admin/_base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Audit log</h1></div></section>
+<section class="panel"><table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Account</th><th>Target</th></tr></thead><tbody>
+{% for e in entries %}<tr><td>{{ e.occurred_at[:16] }}</td><td>{{ e.actor_type }} {{ e.actor_id or "" }}</td><td>{{ e.action }}</td><td>{{ e.account_id or "" }}</td><td>{{ e.target_type or "" }} {{ e.target_id or "" }}</td></tr>{% else %}<tr><td colspan="5">Empty.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

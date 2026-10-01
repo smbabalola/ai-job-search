@@ -114,6 +114,7 @@ def test_no_filled_run_means_nothing_to_review(grant_world):  # noqa: F811
                              application_workspace_id=grant_world.ws, now=NOW)["reasons"] == ["no_filled_run"]
 
 
+@pytest.mark.sqlite_only  # turns SQLite foreign keys off to insert a placeholder grant
 def test_review_observations_are_refused_once_the_run_is_authorized(filled_world):
     reobserve(filled_world)
     filled_world.conn.execute("PRAGMA foreign_keys = OFF")

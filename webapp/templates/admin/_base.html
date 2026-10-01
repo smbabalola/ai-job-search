@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Staff console{% endblock %} · JobSearch</title>
+  <meta name="csrf-token" content="{{ request.state.csrf_token or '' }}">
+  <meta name="robots" content="noindex">
+  <script src="/static/csrf.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-admin-console>
+  <header class="site-header">
+    <a class="brand" href="/admin"><span class="brand-mark">JS</span><span>Staff console</span></a>
+    {% if staff %}<nav aria-label="Staff navigation">
+      {% if 'accounts.view' in permissions %}<a href="/admin">Dashboard</a><a href="/admin/accounts">Accounts</a>{% endif %}
+      {% if 'billing.view' in permissions %}<a href="/admin/billing/events">Billing events</a>{% endif %}
+      {% if 'ops.retry' in permissions %}<a href="/admin/jobs">Jobs</a><a href="/admin/outbox">Outbox</a>{% endif %}
+      {% if 'announcements.manage' in permissions %}<a href="/admin/announcements">Announcements</a>{% endif %}
+      {% if 'controls.manage' in permissions %}<a href="/admin/controls">Controls</a>{% endif %}
+      {% if 'staff.manage' in permissions %}<a href="/admin/staff">Staff</a>{% endif %}
+      {% if 'audit.all' in permissions %}<a href="/admin/audit">Audit</a>{% endif %}
+      <a href="/admin/reauth">Confirm identity</a>
+      <form class="inline-form" method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small secondary" type="submit">Sign out</button></form>
+    </nav>{% endif %}
+  </header>
+  <main class="page-shell">{% block content %}{% endblock %}</main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

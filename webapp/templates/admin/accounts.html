@@ -1,0 +1,14 @@
+{% extends "admin/_base.html" %}
+{% block title %}Accounts{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Accounts</h1></div></section>
+<form class="panel" method="get" action="/admin/accounts">
+  <label class="field"><span>Email or account id</span><input name="q" value="{{ filters.q }}"></label>
+  <label class="field"><span>Status</span><select name="status"><option value="">Any</option>{% for s in ["ACTIVE", "SUSPENDED", "DELETION_REQUESTED"] %}<option {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+  <label class="field"><span>Plan</span><select name="plan"><option value="">Any</option>{% for p in ["free", "pro", "power"] %}<option {% if filters.plan == p %}selected{% endif %}>{{ p }}</option>{% endfor %}</select></label>
+  <button class="button" type="submit">Search</button>
+</form>
+<section class="panel" data-admin-accounts><table><thead><tr><th>Email</th><th>Status</th><th>Plan</th><th>Created</th></tr></thead><tbody>
+{% for a in accounts %}<tr><td><a href="/admin/accounts/{{ a.id }}">{{ a.email }}</a></td><td>{{ a.status }}</td><td>{{ a.plan }}</td><td>{{ a.created_at[:10] }}</td></tr>{% else %}<tr><td colspan="4">No accounts match.</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

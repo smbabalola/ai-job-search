@@ -8,5 +8,6 @@ tzdata==2026.4
 psycopg[binary]==3.2.*
 argon2-cffi==23.1.*
 pyotp==2.9.*
+cryptography==46.*
 pypdf==5.*
 boto3==1.35.*

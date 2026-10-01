@@ -1,0 +1,23 @@
+{% extends "admin/_base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Dashboard</h1></div></section>
+<section class="panel" data-admin-dashboard>
+  <div class="panel-heading"><h2>Accounts</h2></div>
+  <p>By status: {% for status, n in data.accounts_by_status.items() %}{{ status }} {{ n }}{% if not loop.last %} · {% endif %}{% else %}none{% endfor %}</p>
+  <p>By plan: {% for plan, n in data.accounts_by_plan.items() %}{{ plan }} {{ n }}{% if not loop.last %} · {% endif %}{% else %}none{% endfor %}</p>
+  <p>Sign-ups: {{ data.signups_7d }} in 7 days · {{ data.signups_30d }} in 30 days · verified {{ data.verified_pct }}% · onboarded {{ data.onboarding_pct }}%</p>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Activity (7 days)</h2></div>
+  <p>Prepares {{ data.prepares_7d }} · fills {{ data.fills_7d }} · submits {{ data.submits_7d }}</p>
+  <p>AI cost ${{ '%.2f' % data.ai_cost_usd_7d }} (7 days) · ${{ '%.2f' % data.ai_cost_usd_30d }} (30 days)</p>
+</section>
+<section class="panel">
+  <div class="panel-heading"><h2>Operations</h2></div>
+  <p>Outbox: {{ data.outbox.QUEUED }} queued · {{ data.outbox.FAILED }} failed</p>
+  <p>Jobs: {{ data.jobs.QUEUED }} queued · {{ data.jobs.DEAD }} dead</p>
+  <p>Billing webhooks: {{ data.webhooks.unprocessed }} unprocessed · {{ data.webhooks.failed }} failed</p>
+  <p>Unresolved commercial decisions: {{ data.unresolved_decisions if data.unresolved_decisions is not none else "—" }}</p>
+</section>
+{% endblock %}

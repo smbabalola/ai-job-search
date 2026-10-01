@@ -9,7 +9,8 @@ dependency. The classes are not only labels:
   Task 11);
 * ``PUBLIC`` is reachable by anyone (these routes are rate-limited where
   they act);
-* ``ADMIN``, ``WEBHOOK`` and ``METRICS`` are used by later tasks.
+* ``ADMIN`` requires a STAFF session (Task 27); ``WEBHOOK`` and ``METRICS``
+  are used by later tasks.
 """
 from __future__ import annotations
 
@@ -42,15 +43,37 @@ def _marker(name: str, check=None):
     return dependency
 
 
+STAFF_SIGN_IN_REQUIRED = ("STAFF_SIGN_IN_REQUIRED", 401, "Please sign in to the staff console.")
+PERMISSION_DENIED = ("PERMISSION_DENIED", 403, "You don't have access to this.")
+
+
+def _session_kind(request: Request) -> str | None:
+    session = getattr(request.state, "session", None)
+    return session["kind"] if session else None
+
+
 def _require_session(request: Request) -> None:
-    if request.app.state.settings.auth_enabled and not getattr(request.state, "user", None):
+    if not request.app.state.settings.auth_enabled:
+        return
+    if not getattr(request.state, "user", None):
         raise ScopeRefused(*SIGN_IN_REQUIRED)
+    if _session_kind(request) != "CUSTOMER":  # spec §7: a staff session is never accepted on USER routes
+        raise ScopeRefused(*PERMISSION_DENIED)
+
+
+def _require_staff_session(request: Request) -> None:
+    """Spec §7: ADMIN routes take a STAFF session only (created after TOTP);
+    a customer session is refused. Without auth there is no staff console."""
+    if not request.app.state.settings.auth_enabled or not getattr(request.state, "user", None):
+        raise ScopeRefused(*STAFF_SIGN_IN_REQUIRED)
+    if _session_kind(request) != "STAFF":
+        raise ScopeRefused(*PERMISSION_DENIED)
 
 
 PUBLIC = _marker("PUBLIC")
 USER = _marker("USER", _require_session)
 EXTENSION = _marker("EXTENSION")
-ADMIN = _marker("ADMIN")
+ADMIN = _marker("ADMIN", _require_staff_session)
 WEBHOOK = _marker("WEBHOOK")
 METRICS = _marker("METRICS")
 
