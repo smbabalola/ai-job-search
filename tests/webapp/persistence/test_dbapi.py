@@ -267,6 +267,33 @@ def test_conflicting_repeatable_read_updates_raise_database_busy_on_postgres(pg_
         b.close()
 
 
+@pytest.mark.parametrize("returning", ["", " RETURNING id"])
+def test_on_conflict_do_nothing_against_a_concurrently_committed_row_inserts_nothing_on_postgres(
+        pg_schema, returning):
+    """Release pass: under REPEATABLE READ PostgreSQL refuses ON CONFLICT DO NOTHING
+    when the conflicting row was committed after this transaction's snapshot;
+    SQLite (the adapter's semantics) inserts nothing. Seen with the shared
+    outbox-kick dedupe key: a second sign-up in the same 10 s slot got a 503."""
+    a = dbapi.connect(pg_schema)
+    b = dbapi.connect(pg_schema)
+    try:
+        _setup(a)
+        a.commit()
+        b.execute("INSERT INTO t (id, n) VALUES (?, ?)", ("b-first", 0))  # b's transaction (and snapshot) is open
+        a.execute("INSERT INTO t (id, n) VALUES (?, ?)", ("shared", 1))
+        a.commit()
+        cursor = b.execute(f"INSERT INTO t (id, n) VALUES (?, ?) ON CONFLICT (id) DO NOTHING{returning}", ("shared", 2))
+        assert cursor.rowcount == 0
+        assert cursor.fetchone() is None
+        b.execute("INSERT INTO t (id, n) VALUES (?, ?)", ("b-after", 3))  # the transaction is still usable
+        b.commit()
+        rows = {r["id"]: r["n"] for r in a.execute("SELECT id, n FROM t").fetchall()}
+        assert rows == {"b-first": 0, "shared": 1, "b-after": 3}
+    finally:
+        a.close()
+        b.close()
+
+
 def test_pragmas_on_postgres(pg_schema):
     conn = dbapi.connect(pg_schema)
     try:

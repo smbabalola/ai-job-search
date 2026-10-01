@@ -123,11 +123,18 @@ class Worker:
             f"SELECT id FROM jobs WHERE {_DUE} ORDER BY run_at, id LIMIT 5", (now, now))]
         conn.commit()
         for job_id in candidates:
-            cursor = conn.execute(
-                f"UPDATE jobs SET status = 'RUNNING', lease_holder = ?, lease_expires_at = ?, "
-                f"attempts = attempts + 1, updated_at = ? WHERE id = ? AND {_DUE}",
-                (self.worker_id, ts(self.clock() + LEASE), now, job_id, now, now))
-            conn.commit()
+            try:
+                cursor = conn.execute(
+                    f"UPDATE jobs SET status = 'RUNNING', lease_holder = ?, lease_expires_at = ?, "
+                    f"attempts = attempts + 1, updated_at = ? WHERE id = ? AND {_DUE}",
+                    (self.worker_id, ts(self.clock() + LEASE), now, job_id, now, now))
+                conn.commit()
+            except dbapi.DatabaseBusy:
+                # PostgreSQL REPEATABLE READ refuses the losing concurrent claim
+                # (serialization failure) where SQLite reports rowcount 0: either
+                # way another worker has it. A job still due is claimed next tick.
+                conn.rollback()
+                continue
             if cursor.rowcount == 1:
                 return dict(conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
         return None

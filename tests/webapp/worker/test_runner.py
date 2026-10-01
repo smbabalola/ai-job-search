@@ -119,6 +119,42 @@ def test_two_workers_racing_for_one_job_run_it_once(settings):
     assert len(runs) == 1
 
 
+@pytest.mark.postgres_only
+def test_a_worker_that_loses_the_claim_race_on_postgres_moves_on_instead_of_raising(settings):
+    """Release pass: under REPEATABLE READ the loser of a concurrent claim gets a
+    serialization failure, not rowcount 0. It must treat that as "taken" (no
+    exception out of run_once, which crashed --once and logged worker_loop_error)."""
+    import time
+
+    job_id = _enqueue(settings, kind="usage.sweep", payload={})
+    winner = connect(settings)
+    winner.execute("UPDATE jobs SET status = 'RUNNING', lease_holder = 'winner', lease_expires_at = ?, "
+                   "attempts = attempts + 1 WHERE id = ?", ((NOW + timedelta(minutes=5)).isoformat(), job_id))
+    outcome = {}
+
+    def lose():
+        conn = connect(settings)
+        try:
+            outcome["claimed"] = Worker(settings, {}, clock=Clock(), worker_id="loser")._claim(conn)
+        except Exception as exc:  # noqa: BLE001 - the assertion below names it
+            outcome["error"] = exc
+        finally:
+            conn.close()
+
+    loser = threading.Thread(target=lose)
+    loser.start()
+    deadline = time.monotonic() + 10
+    while not winner.execute("SELECT count(*) FROM pg_locks WHERE NOT granted").fetchone()[0]:
+        assert time.monotonic() < deadline, "the losing claim never waited on the winner's row lock"
+        time.sleep(0.02)
+    winner.commit()
+    winner.close()
+    loser.join(10)
+    assert "error" not in outcome, outcome
+    assert outcome["claimed"] is None
+    assert _job(settings, job_id)["lease_holder"] == "winner"
+
+
 def test_the_backoff_schedule():
     assert [backoff_seconds(n) for n in range(1, 11)] == [
         60, 120, 240, 480, 960, 1920, 3840, 7680, 15360, 21600]

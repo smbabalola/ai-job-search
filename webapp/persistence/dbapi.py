@@ -340,6 +340,17 @@ class _Cursor:
         return iter(self.fetchall())
 
 
+class _NothingInserted(_Cursor):
+    """An INSERT ... ON CONFLICT DO NOTHING that inserted nothing (no rows, rowcount 0)."""
+
+    @property
+    def rowcount(self) -> int:
+        return 0
+
+
+_ON_CONFLICT_DO_NOTHING = re.compile(r"^\s*INSERT\b.*\bON\s+CONFLICT\b[^;]*?\bDO\s+NOTHING\b", re.IGNORECASE | re.DOTALL)
+
+
 def _map_pg_error(exc: Exception, site: str) -> Exception:
     import psycopg
     from psycopg import errors
@@ -527,7 +538,7 @@ class PgConnection:
             self.commit()
         return _Cursor()
 
-    def _run(self, runner, sql: str, params, *, savepoint: bool):
+    def _run(self, runner, sql: str, params, *, savepoint: bool, single_statement: bool = False):
         import psycopg
 
         if savepoint:
@@ -542,6 +553,16 @@ class PgConnection:
                     self._conn.execute("RELEASE SAVEPOINT dbapi_statement")
                 except psycopg.Error:
                     pass
+                # SQLite semantics: DO NOTHING against a duplicate inserts nothing.
+                # Under REPEATABLE READ PostgreSQL instead refuses a duplicate that
+                # a concurrent transaction committed after this snapshot (the
+                # visibility check is the only serialization failure an
+                # ON CONFLICT DO NOTHING insert can raise). The statement is rolled
+                # back to its savepoint, so the transaction continues.
+                # (One statement only: a failed executemany batch rolled back every row.)
+                if (single_statement and isinstance(exc, psycopg.errors.SerializationFailure)
+                        and _ON_CONFLICT_DO_NOTHING.match(sql)):
+                    return None
             raise _map_pg_error(exc, site) from exc
         if savepoint:
             self._conn.execute("RELEASE SAVEPOINT dbapi_statement")
@@ -565,8 +586,8 @@ class PgConnection:
             self._begin(writer=False)
         text, values = self._prepare(sql, params)
         cursor = self._run(lambda s, p: self._conn.execute(s, p), text, values,
-                           savepoint=self._in_tx and keyword in _STATEMENT_SAVEPOINT_KEYWORDS)
-        return _Cursor(cursor)
+                           savepoint=self._in_tx and keyword in _STATEMENT_SAVEPOINT_KEYWORDS, single_statement=True)
+        return _NothingInserted() if cursor is None else _Cursor(cursor)
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> _Cursor:
         rows = [list(r) for r in seq]
