@@ -10,9 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Mapping, Protocol
 
-SUBSCRIPTION_STATES = ("INCOMPLETE", "TRIALING", "ACTIVE", "PAST_DUE", "CANCEL_SCHEDULED", "ENDED",
-                       "INCOMPLETE_EXPIRED", "UNKNOWN")
-TERMINAL_STATES = frozenset({"ENDED", "INCOMPLETE_EXPIRED"})
+from product.subscription_state import SUBSCRIPTION_STATES, TERMINAL_STATES, SubscriptionSnapshot  # noqa: F401 (re-exported)
+
 INTERVALS = ("month", "year")
 
 
@@ -20,19 +19,6 @@ INTERVALS = ("month", "year")
 class CheckoutRef:
     provider_session_id: str
     url: str
-
-
-@dataclass(frozen=True)
-class SubscriptionSnapshot:
-    provider_subscription_id: str
-    provider_customer_id: str
-    status: str  # an internal state, one of SUBSCRIPTION_STATES
-    plan_id: str
-    interval: str
-    current_period_start: datetime
-    current_period_end: datetime
-    cancel_at_period_end: bool
-    raw_hash: str
 
 
 @dataclass(frozen=True)

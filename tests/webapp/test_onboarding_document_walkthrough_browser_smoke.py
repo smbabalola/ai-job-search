@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 
+from playwright.sync_api import expect
+
 from tests.webapp.test_browser_smoke import (
     _confirm_pack,
     _refresh_profile,
@@ -61,9 +63,7 @@ def _start_and_walk_tour(page, expected_titles: list[str]) -> None:
         assert page.locator(".onboarding-fail-notice").count() == 0
         if index < len(expected_titles) - 1:
             page.get_by_role("button", name="Next").click()
-            page.wait_for_function(
-                f"document.querySelector('.onboarding-popover-title').innerText === {json.dumps(expected_titles[index + 1])}"
-            )
+            expect(page.locator(".onboarding-popover-title")).to_have_text(expected_titles[index + 1])
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
 
@@ -145,9 +145,7 @@ def test_choose_step_targets_the_cv_panels_button(live_server, page):
     for _ in range(3):
         page.get_by_role("button", name="Next").click()
         page.wait_for_timeout(150)
-    page.wait_for_function(
-        "document.querySelector('.onboarding-popover-title').innerText === 'Choose the documents to use.'"
-    )
+    expect(page.locator(".onboarding-popover-title")).to_have_text("Choose the documents to use.")
     inside_cv_panel = page.evaluate(
         "document.querySelector('.document-select')"
         ".closest('[data-document-kind]').dataset.documentKind === 'cv'"

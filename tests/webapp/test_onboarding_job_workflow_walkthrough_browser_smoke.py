@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from playwright.sync_api import expect
 import uvicorn
 
 from webapp.app import create_app
@@ -132,9 +133,7 @@ def test_job_workflow_tour_walks_all_five_real_targets_in_journey_order(live_ser
         assert page.locator(".onboarding-fail-notice").count() == 0
         if index < len(expected_titles) - 1:
             page.get_by_role("button", name="Next").click()
-            page.wait_for_function(
-                f"document.querySelector('.onboarding-popover-title').innerText === {json.dumps(expected_titles[index + 1])}"
-            )
+            expect(page.locator(".onboarding-popover-title")).to_have_text(expected_titles[index + 1])
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
 

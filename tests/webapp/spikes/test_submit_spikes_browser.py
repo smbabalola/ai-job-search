@@ -69,6 +69,7 @@ def recorder():
     with RunningServer(rec):
         yield rec
     third.shutdown()
+    third.server_close()
 
 
 @pytest.fixture

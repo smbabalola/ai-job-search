@@ -128,18 +128,26 @@ class Harness:
     def view(self, tab: int):
         return self.worker.evaluate("(t) => globalThis.__fillTest.fillView(t)", tab)
 
-    def wait(self, tab: int, timeout: float = 90.0):
+    def run_id(self, tab: int) -> str | None:
+        view = self.view(tab)
+        return view.get("runId") if view else None
+
+    def wait(self, tab: int, timeout: float = 90.0, *, after: str | None = None):
+        """The tab's next terminal view. startFill returns before the new run
+        replaces the tab's view, so a view still showing run ``after`` (the run
+        before start()) is the previous run's ending, not this one's."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             view = self.view(tab)
-            if view and view["phase"] in TERMINAL:
+            if view and view["phase"] in TERMINAL and (after is None or view.get("runId") != after):
                 return view
             time.sleep(0.2)
         raise AssertionError(f"run did not end: {self.view(tab)}")
 
     def run(self, tab: int, timeout: float = 90.0):
+        previous = self.run_id(tab)
         self.start(tab)
-        return self.wait(tab, timeout)
+        return self.wait(tab, timeout, after=previous)
 
     def confirm_plan(self):
         from webapp.services import fill_plans as fp
@@ -413,9 +421,10 @@ def test_two_concurrent_runs_never_both_fill(harness):
     tabs = [t["id"] for t in h.worker.evaluate("async (u) => (await chrome.tabs.query({url: u + '*'}))",
                                                 f"{EMPLOYER}/adversarial/page.html")]
     assert len(tabs) == 2 and second
+    previous = {tab: h.run_id(tab) for tab in tabs}
     for tab in tabs:
         h.start(tab)
-    views = [h.wait(tab) for tab in tabs]
+    views = [h.wait(tab, after=previous[tab]) for tab in tabs]
     assert not [v for v in views if v["phase"] == "FILLED"], views
     assert {v["reason"] for v in views} <= {"SIBLING_EMPLOYER_CONTEXT_OPEN", "run_active"}, views
 

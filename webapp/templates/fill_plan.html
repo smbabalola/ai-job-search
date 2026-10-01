@@ -69,7 +69,7 @@
       body: JSON.stringify(body)});
     if (!r.ok) {
       const b = await r.json().catch(function () { return {}; });
-      if (refusal) { refusal.textContent = "Refused: " + (b.detail || r.status) + ". Reload to see the current plan."; refusal.hidden = false; }
+      if (refusal) { refusal.textContent = "Refused: " + ((typeof b.detail === "string" && b.detail) || b.message || r.status) + ". Reload to see the current plan."; refusal.hidden = false; }
       return;
     }
     window.location.reload();

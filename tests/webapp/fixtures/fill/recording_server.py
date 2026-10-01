@@ -145,7 +145,14 @@ class WebSocketRecorder:
         asyncio.set_event_loop(self.loop)
         self.server = self.loop.run_until_complete(asyncio.start_server(self._handle, "127.0.0.1", WS_PORT))
         self.ready.set()
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            # __exit__ closed the server and stopped the loop; finish the
+            # close and release the loop (an unclosed loop is the
+            # ResourceWarning seen at interpreter shutdown since 6E-A).
+            self.loop.run_until_complete(self.server.wait_closed())
+            self.loop.close()
 
     def __enter__(self) -> "WebSocketRecorder":
         self.thread.start()

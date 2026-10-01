@@ -120,8 +120,9 @@ def test_dossier_has_pack_detail_system_items_and_labelled_sections(ready_chain)
     assert dossier["current_state_derived"]["next"] == "PREPARED"
     assert "attempt_history_observational" in dossier and dossier["enrolments"][0]["action"] == "ENROL"
     assert isinstance(dossier["system_review"], list)
-    from jinja2 import Environment, FileSystemLoader
-    env = Environment(loader=FileSystemLoader("webapp/templates"), autoescape=True)
+    # The app's own template environment, so base.html's globals (the account
+    # header, Bundle 7 §13.3) are present as they are in production.
+    env = create_app(s).state.templates.env
     from types import SimpleNamespace
 
     # Pages always render with a request (CSP nonce, CSRF token, signed-in user).

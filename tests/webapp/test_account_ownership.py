@@ -52,19 +52,32 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
     # design, and these USER routes act on the signed-in *user* taken from the
     # session (their account is resolved from the same session), not on
     # account-owned rows.
-    user_session_routes = {"/auth/me", "/settings/password", "/settings/email", "/settings/sessions/revoke-all"}
+    user_session_routes = {"/auth/me", "/settings", "/settings/password", "/settings/email",
+                           "/settings/sessions/revoke-all"}
+    # ADMIN routes act across accounts under a STAFF scope instead: each must
+    # resolve get_admin_scope(permission) (the role check; the permission
+    # matrix is test_admin_permissions). Only logout acts on the staff
+    # session itself, which the ADMIN class already requires.
+    staff_session_routes = {"/admin/logout"}
 
     unscoped = []
     for route in app.routes:
         if not isinstance(route, APIRoute) or route.path in system_routes or route.path in user_session_routes:
             continue
         # WEBHOOK routes are authenticated by the provider's signature and
-        # attribute events through provider ids, never a caller's account.
-        if route_class_of(route) in (["PUBLIC"], ["WEBHOOK"]):
+        # attribute events through provider ids, never a caller's account;
+        # METRICS by the operator's bearer token (test_ops_routes).
+        route_class = route_class_of(route)
+        if route_class in (["PUBLIC"], ["WEBHOOK"], ["METRICS"]):
             continue
         dependency_calls = {
             dependency.call for dependency in route.dependant.dependencies
         }
+        if route_class == ["ADMIN"]:
+            if route.path not in staff_session_routes and not any(
+                    hasattr(call, "admin_permission") for call in dependency_calls):
+                unscoped.append(f"{','.join(sorted(route.methods or []))} {route.path}")
+            continue
         if not (scoping_dependencies & dependency_calls):
             unscoped.append(f"{','.join(sorted(route.methods or []))} {route.path}")
 

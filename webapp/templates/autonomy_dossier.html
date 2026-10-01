@@ -79,7 +79,7 @@
   const base = "/api/workspaces/{{ dossier.application_workspace_id }}/autonomy/";
   async function post(path) {
     const r = await fetch(base + path, {method: "POST"});
-    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); }
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert((typeof b.detail === "string" && b.detail) || b.message || "Failed"); }
     window.location.reload();
   }
   [["data-autonomy-enrol", "enrol"], ["data-autonomy-unenrol", "unenrol"], ["data-autonomy-review-pack", "review-pack"]]

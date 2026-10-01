@@ -5,10 +5,16 @@ function showMessage(message, isError = false) {
   toast.hidden = false;
 }
 
+// Legacy refusals carry a string `detail`; the §21.3 contract carries `message`
+// and an object `detail` (which must never be shown as "[object Object]").
+function errorMessage(body, fallback) {
+  return (typeof body.detail === "string" && body.detail) || body.message || fallback;
+}
+
 async function api(url, options) {
   const response = await fetch(url, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || "Request failed");
+  if (!response.ok) throw new Error(errorMessage(body, "Request failed"));
   return body;
 }
 
@@ -501,7 +507,7 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
   async function send(url, form) {
     const response = await fetch(url, {method: "POST", body: form ? new FormData(form) : undefined});
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.message || body.detail || "Request failed");
+    if (!response.ok) throw new Error(errorMessage(body, "Request failed"));
     return body;
   }
   document.addEventListener("submit", async (event) => {

@@ -9,10 +9,29 @@ PAST_DUE, kept while it lasts, and cleared on leaving.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from webapp.billing.port import SUBSCRIPTION_STATES, TERMINAL_STATES, SubscriptionSnapshot
+# The internal state vocabulary and the normalized snapshot live here (pure) and
+# are re-exported by webapp.billing.port: product never imports webapp.
+SUBSCRIPTION_STATES = ("INCOMPLETE", "TRIALING", "ACTIVE", "PAST_DUE", "CANCEL_SCHEDULED", "ENDED",
+                       "INCOMPLETE_EXPIRED", "UNKNOWN")
+TERMINAL_STATES = frozenset({"ENDED", "INCOMPLETE_EXPIRED"})
+
+
+@dataclass(frozen=True)
+class SubscriptionSnapshot:
+    provider_subscription_id: str
+    provider_customer_id: str
+    status: str  # an internal state, one of SUBSCRIPTION_STATES
+    plan_id: str
+    interval: str
+    current_period_start: datetime
+    current_period_end: datetime
+    cancel_at_period_end: bool
+    raw_hash: str
+
 
 STATES: tuple[str, ...] = SUBSCRIPTION_STATES
 TERMINAL = TERMINAL_STATES

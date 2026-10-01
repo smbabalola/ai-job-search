@@ -43,7 +43,7 @@
 (function () {
   async function post(url, body) {
     const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
-    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); }
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert((typeof b.detail === "string" && b.detail) || b.message || "Failed"); }
     window.location.reload();
   }
   document.querySelectorAll("[data-candidate-resolve]").forEach(function (button) {

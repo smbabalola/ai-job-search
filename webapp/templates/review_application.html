@@ -117,7 +117,7 @@
   const base = "/api/workspaces/{{ ws }}/review";
   async function send(path, init) {
     const r = await fetch(base + path, Object.assign({method: "POST"}, init || {}));
-    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); return; }
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert((typeof b.detail === "string" && b.detail) || b.message || "Failed"); return; }
     window.location.reload();
   }
   function json(body) { return {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}; }

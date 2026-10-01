@@ -239,10 +239,11 @@ def test_entry_identity_and_source_settings_survive_database_restart(tmp_path):
         conn, root=root, expected_revision=manager["revision"],
         source_path="cv/main_example.tex", included=False,
      account_id=DEFAULT_ACCOUNT_ID)
-    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    from webapp.services.autonomy_fence import database_file
+    db_path = database_file(conn)  # the SQLite file or the PostgreSQL URL
     conn.close()
 
-    reopened = connect(Path(db_path))
+    reopened = connect(db_path)
     restarted = get_profile_manager(reopened, root=root, account_id=DEFAULT_ACCOUNT_ID)
     ids_after = {
         (item["kind"], tuple(sorted(

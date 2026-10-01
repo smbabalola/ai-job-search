@@ -29,6 +29,8 @@ something else.
 
 from __future__ import annotations
 
+import json
+
 from webapp.persistence.db import connect
 from webapp.persistence.workflow import record_status_change
 from webapp.services.staleness import check_staleness
@@ -69,15 +71,25 @@ def test_confirming_pack_then_changing_job_fit_basis_and_marking_applied(tmp_pat
         # workspace. This produces a new job_fit_result with a different
         # content_id, without ever going through a Gate-4 reconfirmation --
         # the pack still binds the OLD job_fit_result's content_id.
-        conn.execute(
-            "UPDATE artifacts SET payload_json = json_set("
-            "payload_json, '$.eligibility_requirements', "
-            "json('[{\"id\": \"jobev_new_elig\", "
-            "\"text\": \"Must have the right to work in the UK.\", "
-            "\"kind\": \"required\"}]')) "
+        # Read-modify-write in Python (not SQLite's json_set) so the same
+        # mutation runs on both dialects.
+        snapshots = conn.execute(
+            "SELECT id, payload_json FROM artifacts "
             "WHERE workspace_id = ? AND artifact_type = 'job_posting_snapshot'",
             (workspace_id,),
-        )
+        ).fetchall()
+        assert snapshots
+        for artifact_id, payload_json in snapshots:
+            payload = json.loads(payload_json)
+            payload["eligibility_requirements"] = [{
+                "id": "jobev_new_elig",
+                "text": "Must have the right to work in the UK.",
+                "kind": "required",
+            }]
+            conn.execute(
+                "UPDATE artifacts SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload), artifact_id),
+            )
         conn.commit()
         conn.close()
 

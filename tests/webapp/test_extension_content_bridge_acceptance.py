@@ -171,9 +171,14 @@ def test_apply_click_stores_pending_context_and_navigates_to_target_url(
     assert isinstance(context["packArtifactId"], str) and context["packArtifactId"]
     assert isinstance(context["requestedAt"], (int, float))
 
-    # No candidate data, credential, or session token anywhere in the
-    # persisted pending context.
-    assert set(context.keys()) == {"workspaceId", "packArtifactId", "targetUrl", "requestedAt"}
+    # Bundle 7 spec X4/§9.2: the page embeds a server-signed handoff ticket
+    # (single use, 5 minutes, bound to user/account/workspace) that the
+    # extension presents on session start.
+    assert isinstance(context["handoffTicket"], str) and context["handoffTicket"]
+
+    # No candidate data, device credential, or session token anywhere in the
+    # persisted pending context — only the bounded handoff ticket.
+    assert set(context.keys()) == {"workspaceId", "packArtifactId", "targetUrl", "requestedAt", "handoffTicket"}
     page.close()
 
 

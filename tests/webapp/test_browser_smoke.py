@@ -825,9 +825,11 @@ def test_user_managed_documents_upload_select_confirm_replace_and_apply_exact_by
         "name": "Not Word.docx", "mimeType": DOCX_MEDIA_TYPE,
         "buffer": b"not a ZIP package",
     })
-    cv_panel.get_by_role("button", name="Upload").click()
+    cv_panel.get_by_role("button", name="Upload", exact=True).click()
+    # Bundle 7 Task 21: every upload goes through one validator; bytes that
+    # are neither a DOCX nor a PDF are refused as DOCUMENT_REJECTED/UNSUPPORTED_TYPE.
     error_toast = page.locator("#toast.error").get_by_text(
-        "file is not a DOCX ZIP package"
+        "Upload a Word document (.docx) or a PDF."
     )
     error_toast.wait_for(state="visible")
     assert error_toast.is_visible()
@@ -849,7 +851,7 @@ def test_user_managed_documents_upload_select_confirm_replace_and_apply_exact_by
             "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "buffer": content,
         })
-        _click_reload(page, panel.get_by_role("button", name="Upload"))
+        _click_reload(page, panel.get_by_role("button", name="Upload", exact=True))
         panel = page.locator(f'[data-document-kind="{kind}"]')
         assert panel.get_by_text("No file selected").is_visible()
         version = panel.locator(".document-version").filter(has_text=filename)
@@ -991,7 +993,7 @@ def test_confirmed_pack_survives_upload_only_with_no_hidden_mutation_and_long_fi
             "Uploaded replacement must remain unselected",
         ),
     })
-    _click_reload(page, cv_panel.get_by_role("button", name="Upload"))
+    _click_reload(page, cv_panel.get_by_role("button", name="Upload", exact=True))
     page.remove_listener("response", capture_mutation)
 
     upload_path = f"/api/workspaces/{workspace_id}/application-documents/upload/cv"

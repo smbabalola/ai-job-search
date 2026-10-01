@@ -6,7 +6,7 @@ window.Onboarding = (function () {
   async function apiCall(url, options) {
     const response = await fetch(url, options);
     const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || "Onboarding request failed");
+    if (!response.ok) throw new Error((typeof body.detail === "string" && body.detail) || body.message || "Onboarding request failed");
     return body;
   }
 

@@ -50,6 +50,7 @@ def third_party():
     thread.start()
     yield _ThirdParty.hits
     server.shutdown()
+    server.server_close()  # shutdown() stops serving; this closes the listening socket
 
 
 class SubmitHarness(Harness):
