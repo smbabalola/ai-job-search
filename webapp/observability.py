@@ -114,6 +114,9 @@ class RequestContextMiddleware:
             if state.get("account_id"):
                 extra["account_id"] = state["account_id"]
             request_logger.info("request", extra=extra)
+            template = getattr(route, "path", None) or "unmatched"  # route templates only: bounded labels
+            METRICS.inc("http_requests_total", method=scope.get("method"), route=template, status=status["code"])
+            METRICS.observe("http_request_duration_seconds", time.monotonic() - started, route=template)
 
 
 def _request_id(request: Request) -> str:
@@ -136,3 +139,72 @@ async def unhandled_error_handler(request: Request, exc: Exception):
         "<!doctype html><title>Something went wrong</title><h1>Something went wrong</h1>"
         f"<p>Please try again. If it keeps happening, quote reference <code>{request_id}</code>.</p>",
         status_code=500, headers=headers)
+
+
+# ---- metrics (Bundle 7 spec §20.6): an in-process registry rendered as Prometheus text ----------
+
+LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+
+
+class MetricsRegistry:
+    """Counters and histograms keyed by (name, sorted labels). Thread-safe."""
+
+    def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
+        self.counters: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        self.histograms: dict[tuple[str, tuple[tuple[str, str], ...]], list[float]] = {}  # buckets..., sum, count
+
+    @staticmethod
+    def _key(name: str, labels: dict[str, Any]) -> tuple[str, tuple[tuple[str, str], ...]]:
+        return name, tuple(sorted((k, str(v)) for k, v in labels.items()))
+
+    def inc(self, name: str, amount: float = 1.0, **labels: Any) -> None:
+        key = self._key(name, labels)
+        with self._lock:
+            self.counters[key] = self.counters.get(key, 0.0) + amount
+
+    def observe(self, name: str, value: float, **labels: Any) -> None:
+        key = self._key(name, labels)
+        with self._lock:
+            series = self.histograms.setdefault(key, [0.0] * (len(LATENCY_BUCKETS) + 2))
+            for i, bound in enumerate(LATENCY_BUCKETS):
+                if value <= bound:
+                    series[i] += 1
+            series[-2] += value
+            series[-1] += 1
+
+    def reset(self) -> None:
+        with self._lock:
+            self.counters.clear()
+            self.histograms.clear()
+
+    def render(self) -> list[str]:
+        lines: list[str] = []
+        with self._lock:
+            counters = sorted(self.counters.items())
+            histograms = sorted(self.histograms.items())
+        for (name, labels), value in counters:
+            lines.append(f"{name}{_labels(labels)} {_number(value)}")
+        for (name, labels), series in histograms:
+            for i, bound in enumerate(LATENCY_BUCKETS):
+                lines.append(f"{name}_bucket{_labels(labels + (('le', str(bound)),))} {_number(series[i])}")
+            lines.append(f"{name}_bucket{_labels(labels + (('le', '+Inf'),))} {_number(series[-1])}")
+            lines.append(f"{name}_sum{_labels(labels)} {_number(series[-2])}")
+            lines.append(f"{name}_count{_labels(labels)} {_number(series[-1])}")
+        return lines
+
+
+def _labels(pairs: tuple[tuple[str, str], ...]) -> str:
+    if not pairs:
+        return ""
+    escaped = (f'{k}="{v.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34)).replace(chr(10), " ")}"'
+               for k, v in pairs)
+    return "{" + ",".join(escaped) + "}"
+
+
+def _number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+METRICS = MetricsRegistry()

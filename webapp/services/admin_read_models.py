@@ -83,8 +83,14 @@ def dashboard(conn: dbapi.Connection, *, settings: Any, now: datetime) -> dict[s
                                  (week,)) / 1_000_000,
         "ai_cost_usd_30d": _count(conn, "SELECT SUM(cost_micro_usd) FROM ai_cost_events WHERE created_at >= ?",
                                   (month,)) / 1_000_000,
-        "unresolved_decisions": None,  # the readiness tool (Task 29/32) fills this in
+        "unresolved_decisions": None,  # the release-readiness tool (Task 32) fills this in
+        "writer_lock": _writer_lock(),
     }
+
+
+def _writer_lock() -> dict[str, Any]:
+    from webapp.api.ops import writer_lock_summary
+    return writer_lock_summary()
 
 
 def search_accounts(conn: dbapi.Connection, *, settings: Any, now: datetime, query: str = "",

@@ -124,6 +124,8 @@ async def allowance_exhausted_handler(request: Request, exc: Exception):
 
 
 async def database_busy_handler(request: Request, exc: Exception):
+    from webapp.observability import METRICS
+    METRICS.inc("database_busy_total", reason=getattr(exc, "reason", "unknown"))
     return error_response_for(request, "DATABASE_BUSY", "The service is busy. Please try again in a moment.", 503,
                               headers={"Retry-After": "2"})
 

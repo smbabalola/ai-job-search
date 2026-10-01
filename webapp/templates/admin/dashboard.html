@@ -18,6 +18,7 @@
   <p>Outbox: {{ data.outbox.QUEUED }} queued · {{ data.outbox.FAILED }} failed</p>
   <p>Jobs: {{ data.jobs.QUEUED }} queued · {{ data.jobs.DEAD }} dead</p>
   <p>Billing webhooks: {{ data.webhooks.unprocessed }} unprocessed · {{ data.webhooks.failed }} failed</p>
+  <p data-writer-lock>Database writer lock: {{ data.writer_lock.timeouts }} timeouts in 24 h · busiest sites by wait: {% for s in data.writer_lock.top_sites %}{{ s.site }} ({{ s.wait_seconds }} s){% if not loop.last %}, {% endif %}{% else %}none{% endfor %}</p>
   <p>Unresolved commercial decisions: {{ data.unresolved_decisions if data.unresolved_decisions is not none else "—" }}</p>
 </section>
 {% endblock %}

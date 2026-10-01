@@ -76,6 +76,7 @@ class _LockStats:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._sites: dict[str, dict[str, float]] = {}
+        self._timeout_times: dict[str, list[float]] = {}  # epoch seconds, for the admin dashboard's 24 h view
 
     def _site(self, site: str) -> dict[str, float]:
         return self._sites.setdefault(site, {
@@ -97,8 +98,16 @@ class _LockStats:
             s["hold_seconds_max"] = max(s["hold_seconds_max"], hold)
 
     def timed_out(self, site: str) -> None:
+        import time
         with self._lock:
             self._site(site)["timeouts"] += 1
+            times = self._timeout_times.setdefault(site, [])
+            times.append(time.time())
+            del times[:-1000]  # bounded
+
+    def timeouts_since(self, cutoff: float) -> dict[str, int]:
+        with self._lock:
+            return {site: sum(1 for t in times if t >= cutoff) for site, times in self._timeout_times.items()}
 
     def snapshot(self) -> dict[str, dict[str, float]]:
         with self._lock:
@@ -107,6 +116,7 @@ class _LockStats:
     def reset(self) -> None:
         with self._lock:
             self._sites.clear()
+            self._timeout_times.clear()
 
 
 LOCK_STATS = _LockStats()

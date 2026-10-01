@@ -31,6 +31,7 @@ from webapp.api.settings import header_status, router as settings_router
 from webapp.api.search_schedules import router as search_schedules_router
 from webapp.api.admin import router as admin_router
 from webapp.api.admin_api import router as admin_api_router
+from webapp.api.ops import router as ops_router
 from webapp.api.review_pages import router as review_pages_router
 from webapp.api.review_approval import router as review_approval_router
 from webapp.api.profile import router as profile_router
@@ -220,6 +221,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search_schedules_router)
     app.include_router(admin_router)  # the staff console (Task 27)
     app.include_router(admin_api_router)
+    app.include_router(ops_router)  # /ready, /metrics (Task 29)
     app.include_router(usage_router)
     if not settings.is_hosted:
         app.include_router(dev_billing_router)  # the fake provider's pages: local mode only (§12.2)
