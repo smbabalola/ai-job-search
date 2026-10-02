@@ -124,6 +124,7 @@ export async function associateHandoffSession(
   }
 
   const { id, sessionToken } = await serverClient.startSession({
+    handoffTicket: pendingContext.handoffTicket,
     workspaceId: pendingContext.workspaceId, packArtifactId: pendingContext.packArtifactId,
     targetUrl: pendingContext.targetUrl, targetDomain,
     atsAdapterId: adapter.atsAdapterId, atsAdapterVersion: adapter.atsAdapterVersion,

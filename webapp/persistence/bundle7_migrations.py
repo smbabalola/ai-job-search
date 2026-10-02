@@ -1,0 +1,1294 @@
+"""Bundle 7 migrations (spec §23.1): one per introducing task, each with a
+SQLite and a PostgreSQL body. A migration is never edited once committed."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class Migration:
+    id: str
+    sqlite: Callable[[Any], None]
+    postgres: Callable[[Any], None]
+    disable_foreign_keys: bool = False
+
+
+def _statements(conn, script: str) -> None:
+    for statement in script.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def _purge_guard_ready(conn) -> bool:
+    """After 037_purge, new append-only DELETE triggers carry the purge guard at once."""
+    return _table_exists(conn, "purge_in_progress")
+
+
+def sqlite_append_only(conn, table: str) -> None:
+    message = f"{table} is append-only audit history"
+    for event in ("UPDATE", "DELETE"):
+        guard = " WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)" if event == "DELETE" and _purge_guard_ready(conn)             else ""
+        conn.execute(
+            f"CREATE TRIGGER {table}_append_only_{event.lower()} BEFORE {event} ON {table}{guard} "
+            f"BEGIN SELECT RAISE(ABORT, '{message}'); END"
+        )
+
+
+def postgres_append_only(conn, table: str) -> None:
+    message = f"{table} is append-only audit history"
+    for event in ("UPDATE", "DELETE"):
+        function = "jobsearch_raise_unless_purging" if event == "DELETE" and _purge_guard_ready(conn)             else "jobsearch_raise"
+        conn.execute(
+            f'CREATE TRIGGER "{table}_append_only_{event.lower()}" BEFORE {event} ON "{table}" '
+            f"FOR EACH ROW EXECUTE FUNCTION {function}('{message}')"
+        )
+
+
+# ---- 022_storage (Task 4): profile sources in the database; per-account
+# user-profile versions (no cross-tenant content dedupe, spec H6) ----------
+
+_PROFILE_SOURCE_REVISIONS_COLUMNS = """
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    source_path TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    content TEXT,
+    sha256 TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (account_id, source_path, revision),
+    CHECK ((content IS NULL) = (sha256 IS NULL))
+"""
+
+
+def _version_accounts(conn) -> dict[str, str]:
+    """version id -> owning account, from every table that references a version."""
+    owners: dict[str, set[str]] = {}
+    queries = (
+        "SELECT h.version_id AS v, s.account_id AS a FROM search_workspace_user_profile_history h "
+        "JOIN search_workspaces s ON s.id = h.search_workspace_id",
+        "SELECT h.previous_version_id AS v, s.account_id AS a FROM search_workspace_user_profile_history h "
+        "JOIN search_workspaces s ON s.id = h.search_workspace_id WHERE h.previous_version_id IS NOT NULL",
+        "SELECT p.current_version_id AS v, s.account_id AS a FROM search_workspace_user_profiles p "
+        "JOIN search_workspaces s ON s.id = p.search_workspace_id",
+        "SELECT r.user_profile_version_id AS v, s.account_id AS a FROM discovery_runs r "
+        "JOIN search_workspaces s ON s.id = r.search_workspace_id",
+        "SELECT version_id AS v, 'account_local' AS a FROM current_user_profile",
+    )
+    for query in queries:
+        for row in conn.execute(query).fetchall():
+            owners.setdefault(row["v"], set()).add(row["a"])
+    result: dict[str, str] = {}
+    for version_id, accounts in owners.items():
+        if len(accounts) > 1:
+            raise RuntimeError(
+                f"user profile version {version_id} is shared by accounts {sorted(accounts)}; "
+                "022_storage cannot assign it to one owner")
+        result[version_id] = next(iter(accounts))
+    return result
+
+
+def _backfill_version_accounts(conn) -> None:
+    owners = _version_accounts(conn)
+    for row in conn.execute("SELECT id FROM user_profile_versions").fetchall():
+        conn.execute("UPDATE user_profile_versions SET account_id = ? WHERE id = ?",
+                     (owners.get(row["id"], "account_local"), row["id"]))
+
+
+def _storage_sqlite(conn) -> None:
+    conn.execute(f"CREATE TABLE profile_source_revisions (seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                 f"{_PROFILE_SOURCE_REVISIONS_COLUMNS})")
+    sqlite_append_only(conn, "profile_source_revisions")
+    owners = _version_accounts(conn)
+    conn.execute("""
+        CREATE TABLE user_profile_versions_022 (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            UNIQUE (account_id, content_id)
+        )""")
+    for row in conn.execute("SELECT id, content_id, payload_json, created_at FROM user_profile_versions").fetchall():
+        conn.execute(
+            "INSERT INTO user_profile_versions_022 (id, content_id, payload_json, created_at, account_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row["id"], row["content_id"], row["payload_json"], row["created_at"],
+             owners.get(row["id"], "account_local")))
+    conn.execute("DROP TABLE user_profile_versions")
+    conn.execute("ALTER TABLE user_profile_versions_022 RENAME TO user_profile_versions")
+
+
+def _storage_postgres(conn) -> None:
+    conn.execute(f"CREATE TABLE profile_source_revisions (seq BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,"
+                 f"{_PROFILE_SOURCE_REVISIONS_COLUMNS.replace('revision INTEGER', 'revision BIGINT')})")
+    postgres_append_only(conn, "profile_source_revisions")
+    conn.execute("ALTER TABLE user_profile_versions ADD COLUMN account_id TEXT")
+    _backfill_version_accounts(conn)
+    _statements(conn, """
+        ALTER TABLE user_profile_versions ALTER COLUMN account_id SET NOT NULL;
+        ALTER TABLE user_profile_versions DROP CONSTRAINT user_profile_versions_content_id_key;
+        ALTER TABLE user_profile_versions ADD CONSTRAINT user_profile_versions_account_content_key
+            UNIQUE (account_id, content_id);
+        ALTER TABLE user_profile_versions ADD CONSTRAINT fk_user_profile_versions_account
+            FOREIGN KEY (account_id) REFERENCES accounts (id)
+    """)
+
+
+BUNDLE7_MIGRATIONS: list[Migration] = [
+    Migration("022_storage", sqlite=_storage_sqlite, postgres=_storage_postgres, disable_foreign_keys=True),
+]
+
+
+# ---- shared DDL helpers for Bundle 7 tables --------------------------------
+# New Bundle 7 tables carry no synthetic PostgreSQL "rowid": nothing orders
+# them by insertion rowid (append-only tables use their seq column).
+
+SEQ = {"sqlite": "seq INTEGER PRIMARY KEY AUTOINCREMENT",
+       "postgres": "seq BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY"}
+
+
+def _ddl(conn, dialect: str, script: str) -> None:
+    _statements(conn, script.replace("{SEQ}", SEQ[dialect]))
+
+
+def _append_only(conn, dialect: str, *tables: str) -> None:
+    for table in tables:
+        (sqlite_append_only if dialect == "sqlite" else postgres_append_only)(conn, table)
+
+
+# ---- 023_identity (Task 7): users, sessions, email tokens, staff roles,
+# legal acceptances, rate limits (spec §6.1) --------------------------------
+
+_IDENTITY_DDL = """
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    email_normalized TEXT NOT NULL UNIQUE,
+    email_display TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING_VERIFICATION', 'ACTIVE', 'SUSPENDED', 'DELETION_REQUESTED', 'PURGED')),
+    email_verified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_login_at TEXT,
+    password_changed_at TEXT
+);
+CREATE TABLE user_identities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    provider TEXT NOT NULL CHECK (provider IN ('password')),
+    secret_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE UNIQUE INDEX idx_user_identities_live ON user_identities(user_id, provider) WHERE revoked_at IS NULL;
+CREATE TABLE account_memberships (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL CHECK (role IN ('OWNER')),
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY (account_id, user_id)
+);
+CREATE INDEX idx_account_memberships_user ON account_memberships(user_id);
+CREATE TABLE web_sessions (
+    id_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL CHECK (kind IN ('CUSTOMER', 'STAFF')),
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    idle_expires_at TEXT NOT NULL,
+    absolute_expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoke_reason TEXT,
+    ip_hash TEXT,
+    user_agent_summary TEXT
+);
+CREATE INDEX idx_web_sessions_user ON web_sessions(user_id);
+CREATE TABLE email_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    purpose TEXT NOT NULL CHECK (purpose IN ('VERIFY_EMAIL', 'PASSWORD_RESET', 'EMAIL_CHANGE')),
+    token_hash TEXT NOT NULL UNIQUE,
+    new_email_normalized TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE TABLE platform_role_assignments (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL CHECK (role IN ('SUPPORT', 'OPERATIONS', 'BILLING', 'ADMIN')),
+    action TEXT NOT NULL CHECK (action IN ('GRANT', 'REVOKE')),
+    actor_user_id TEXT REFERENCES users(id),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE staff_totp (
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    secret_encrypted TEXT NOT NULL,
+    confirmed_at TEXT
+);
+CREATE TABLE legal_documents (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('TERMS', 'PRIVACY')),
+    version TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    UNIQUE (kind, version)
+);
+CREATE TABLE legal_acceptances (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    legal_document_id TEXT NOT NULL REFERENCES legal_documents(id),
+    accepted_at TEXT NOT NULL,
+    ip_hash TEXT
+);
+CREATE TABLE rate_limit_buckets (
+    key TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    count INTEGER NOT NULL CHECK (count >= 0),
+    PRIMARY KEY (key, window_start)
+);
+ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'candidate' CHECK (kind IN ('candidate', 'local'));
+ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED', 'DELETION_REQUESTED', 'PURGED'));
+ALTER TABLE accounts ADD COLUMN updated_at TEXT;
+UPDATE accounts SET kind = 'local' WHERE id = 'account_local'
+"""
+
+
+def _identity(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _IDENTITY_DDL)
+        _append_only(conn, dialect, "platform_role_assignments", "legal_acceptances")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("023_identity", sqlite=_identity("sqlite"), postgres=_identity("postgres")))
+
+
+# ---- 024_audit (Task 9): append-only audit log (spec §20.1) -----------------
+
+_AUDIT_DDL = """
+CREATE TABLE audit_log (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    occurred_at TEXT NOT NULL,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('USER', 'STAFF', 'EXTENSION_DEVICE', 'SYSTEM', 'PROVIDER')),
+    actor_id TEXT,
+    account_id TEXT,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    request_id TEXT,
+    ip_hash TEXT,
+    detail_json TEXT NOT NULL
+);
+CREATE INDEX idx_audit_log_account ON audit_log(account_id, seq);
+CREATE INDEX idx_audit_log_action ON audit_log(action, seq)
+"""
+
+
+def _audit(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _AUDIT_DDL)
+        _append_only(conn, dialect, "audit_log")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("024_audit", sqlite=_audit("sqlite"), postgres=_audit("postgres")))
+
+
+# ---- 025_extension_devices (Task 11): device credentials, pairing codes,
+# handoff tickets (spec §9.1). user_id is NULL only in local single-user mode.
+
+_EXTENSION_DDL = """
+CREATE TABLE extension_devices (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    label TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoke_reason TEXT
+);
+CREATE INDEX idx_extension_devices_user ON extension_devices(user_id);
+CREATE INDEX idx_extension_devices_account ON extension_devices(account_id);
+CREATE TABLE extension_refresh_tokens (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES extension_devices(id),
+    family_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    rotated_at TEXT,
+    revoked_at TEXT
+);
+CREATE INDEX idx_extension_refresh_tokens_device ON extension_refresh_tokens(device_id);
+CREATE TABLE extension_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES extension_devices(id),
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_extension_access_tokens_device ON extension_access_tokens(device_id);
+CREATE TABLE pairing_codes (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE TABLE handoff_tickets (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    workspace_id TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('HANDOFF')),
+    nonce_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+)
+"""
+
+
+def _extension_devices(dialect: str):
+    def migrate(conn) -> None:
+        from datetime import datetime, timezone
+
+        _ddl(conn, dialect, _EXTENSION_DDL)
+        now = datetime.now(timezone.utc).isoformat()
+        # X2: the durable X-Handoff-Credential is retired; every extension pairs again once.
+        conn.execute("UPDATE extension_credentials SET revoked_at = ? WHERE revoked_at IS NULL", (now,))
+        conn.execute("UPDATE pairing_secrets SET consumed_at = ? WHERE consumed_at IS NULL", (now,))
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("025_extension_devices", sqlite=_extension_devices("sqlite"),
+                                    postgres=_extension_devices("postgres")))
+
+
+# ---- 026_entitlements (Task 13): recorded plan catalog versions, entitlement
+# grants and platform controls (spec §11, §12.1, §19.3) -----------------------
+
+_ENTITLEMENTS_DDL = """
+CREATE TABLE plan_catalog_versions (
+    catalog_version TEXT PRIMARY KEY,
+    catalog_hash TEXT NOT NULL,
+    catalog_json TEXT NOT NULL,
+    loaded_at TEXT NOT NULL
+);
+CREATE TABLE entitlement_grants (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    kind TEXT NOT NULL CHECK (kind IN ('PLAN_OVERRIDE', 'ALLOWANCE_BONUS')),
+    plan_id TEXT,
+    allowance TEXT,
+    amount INTEGER,
+    reason TEXT NOT NULL,
+    actor_user_id TEXT REFERENCES users(id),
+    starts_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((kind = 'PLAN_OVERRIDE' AND plan_id IS NOT NULL AND allowance IS NULL AND amount IS NULL
+            AND expires_at IS NOT NULL)
+        OR (kind = 'ALLOWANCE_BONUS' AND plan_id IS NULL AND allowance IS NOT NULL AND amount > 0))
+);
+CREATE INDEX idx_entitlement_grants_account ON entitlement_grants(account_id, seq);
+CREATE TABLE platform_controls (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    key TEXT NOT NULL CHECK (key IN ('SIGNUPS_ENABLED', 'AI_ENABLED', 'AUTOMATION_ENABLED', 'DISCOVERY_ENABLED',
+                                     'SUBMIT_ENABLED', 'HOSTED_THREAT_MODEL_SIGNED_OFF')),
+    value INTEGER NOT NULL CHECK (value IN (0, 1)),
+    actor_user_id TEXT REFERENCES users(id),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_platform_controls_key ON platform_controls(key, seq)
+"""
+
+_GRANT_COLUMNS = ("seq", "id", "account_id", "kind", "plan_id", "allowance", "amount", "reason",
+                  "actor_user_id", "starts_at", "expires_at", "created_at")
+
+
+def _grants_revoke_once(conn, dialect: str) -> None:
+    """entitlement_grants is append-only except revoked_at, which is set once."""
+    message = "entitlement_grants is append-only; only revoked_at may be set, once"
+    changed = " OR ".join(
+        f"NEW.{c} IS NOT OLD.{c}" if dialect == "sqlite" else f"NEW.{c} IS DISTINCT FROM OLD.{c}"
+        for c in _GRANT_COLUMNS)
+    when = f"OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER entitlement_grants_revoke_once BEFORE UPDATE ON entitlement_grants "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+        conn.execute("CREATE TRIGGER entitlement_grants_append_only_delete BEFORE DELETE ON entitlement_grants "
+                     f"BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "entitlement_grants_revoke_once" BEFORE UPDATE ON "entitlement_grants" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+        conn.execute('CREATE TRIGGER "entitlement_grants_append_only_delete" BEFORE DELETE ON "entitlement_grants" '
+                     f"FOR EACH ROW EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _entitlements(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _ENTITLEMENTS_DDL)
+        _append_only(conn, dialect, "plan_catalog_versions", "platform_controls")
+        _grants_revoke_once(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("026_entitlements", sqlite=_entitlements("sqlite"),
+                                    postgres=_entitlements("postgres")))
+
+
+# ---- 027_billing (Task 14): customers, subscriptions (derived from provider
+# snapshots), subscription history, webhook inbox, checkout sessions (§12.1) --
+
+_BILLING_DDL = """
+CREATE TABLE billing_customers (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_customer_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE subscriptions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_subscription_id TEXT NOT NULL UNIQUE,
+    plan_id TEXT NOT NULL,
+    interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+    catalog_version TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('INCOMPLETE', 'TRIALING', 'ACTIVE', 'PAST_DUE', 'CANCEL_SCHEDULED',
+                                         'ENDED', 'INCOMPLETE_EXPIRED', 'UNKNOWN')),
+    current_period_start TEXT NOT NULL,
+    current_period_end TEXT NOT NULL,
+    cancel_at_period_end INTEGER NOT NULL CHECK (cancel_at_period_end IN (0, 1)),
+    past_due_since TEXT,
+    snapshot_json TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_subscriptions_live_account ON subscriptions(account_id)
+    WHERE state IN ('INCOMPLETE', 'TRIALING', 'ACTIVE', 'PAST_DUE', 'CANCEL_SCHEDULED', 'UNKNOWN');
+CREATE TABLE subscription_events (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    provider_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_subscription_events_account ON subscription_events(account_id, seq);
+CREATE TABLE billing_webhook_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT UNIQUE,
+    received_at TEXT NOT NULL,
+    signature_verified INTEGER NOT NULL CHECK (signature_verified IN (0, 1)),
+    payload_json TEXT NOT NULL,
+    processed_at TEXT,
+    process_error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)
+);
+CREATE INDEX idx_billing_webhook_events_pending ON billing_webhook_events(processed_at, received_at);
+CREATE TABLE checkout_sessions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    provider TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    interval TEXT NOT NULL CHECK (interval IN ('month', 'year')),
+    status TEXT NOT NULL CHECK (status IN ('OPEN', 'COMPLETED', 'EXPIRED', 'CANCELED')),
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE UNIQUE INDEX idx_checkout_sessions_open ON checkout_sessions(account_id, plan_id, interval)
+    WHERE status = 'OPEN';
+CREATE UNIQUE INDEX idx_checkout_sessions_provider ON checkout_sessions(provider, provider_session_id)
+"""
+
+
+def _billing(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _BILLING_DDL)
+        _append_only(conn, dialect, "subscription_events")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("027_billing", sqlite=_billing("sqlite"), postgres=_billing("postgres")))
+
+
+# ---- 028_usage (Task 16): the usage reservation ledger and AI cost events
+# (spec §13.1) ----------------------------------------------------------------
+
+_USAGE_DDL = """
+CREATE TABLE usage_reservations (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    allowance TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    window_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RESERVED', 'CONSUMED', 'RELEASED')),
+    reserved_at TEXT NOT NULL,
+    settled_at TEXT,
+    expires_at TEXT NOT NULL,
+    settlement_ref TEXT,
+    CHECK ((status = 'RESERVED') = (settled_at IS NULL))
+);
+CREATE UNIQUE INDEX idx_usage_reservations_live_key ON usage_reservations(idempotency_key)
+    WHERE status IN ('RESERVED', 'CONSUMED');
+CREATE INDEX idx_usage_reservations_window ON usage_reservations(account_id, allowance, window_key, status);
+CREATE INDEX idx_usage_reservations_expiry ON usage_reservations(status, expires_at);
+CREATE TABLE ai_cost_events (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+    output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+    cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+    request_ref TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_ai_cost_events_account ON ai_cost_events(account_id, created_at)
+"""
+
+_RESERVATION_FIXED = ("id", "account_id", "allowance", "amount", "subject_type", "subject_id", "idempotency_key",
+                      "window_key", "reserved_at", "expires_at")
+
+
+def _reservation_transitions(conn, dialect: str) -> None:
+    """Only RESERVED→CONSUMED and RESERVED→RELEASED; nothing else changes."""
+    message = "usage_reservations may only move RESERVED to CONSUMED or RELEASED"
+    distinct = "IS NOT" if dialect == "sqlite" else "IS DISTINCT FROM"
+    changed = " OR ".join(f"NEW.{c} {distinct} OLD.{c}" for c in _RESERVATION_FIXED)
+    when = f"OLD.status <> 'RESERVED' OR NEW.status NOT IN ('CONSUMED', 'RELEASED') OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER usage_reservations_transition BEFORE UPDATE ON usage_reservations "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "usage_reservations_transition" BEFORE UPDATE ON "usage_reservations" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _usage(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _USAGE_DDL)
+        _reservation_transitions(conn, dialect)
+        _append_only(conn, dialect, "ai_cost_events")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("028_usage", sqlite=_usage("sqlite"), postgres=_usage("postgres")))
+
+
+# ---- 028b_metered_actions (Task 17): single flight for metered actions -------
+# One logical metered action (a prepare stage of one workspace, one discovery
+# run of one search workspace) executes its provider work at most once at a
+# time: a RUNNING row is the execution claim, taken under the account lock.
+
+_METERED_ACTIONS_DDL = """
+CREATE TABLE metered_actions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    action_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'ABANDONED')),
+    started_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    finished_at TEXT,
+    CHECK ((status = 'RUNNING') = (finished_at IS NULL))
+);
+CREATE UNIQUE INDEX idx_metered_actions_running ON metered_actions(account_id, action_key)
+    WHERE status = 'RUNNING';
+CREATE INDEX idx_metered_actions_account ON metered_actions(account_id, started_at)
+"""
+
+_ACTION_FIXED = ("id", "account_id", "action_key", "started_at", "lease_expires_at")
+
+
+def _action_transitions(conn, dialect: str) -> None:
+    """Only RUNNING→SUCCEEDED|FAILED|ABANDONED; nothing else changes."""
+    message = "metered_actions may only move RUNNING to SUCCEEDED, FAILED or ABANDONED"
+    distinct = "IS NOT" if dialect == "sqlite" else "IS DISTINCT FROM"
+    changed = " OR ".join(f"NEW.{c} {distinct} OLD.{c}" for c in _ACTION_FIXED)
+    when = f"OLD.status <> 'RUNNING' OR NEW.status NOT IN ('SUCCEEDED', 'FAILED', 'ABANDONED') OR {changed}"
+    if dialect == "sqlite":
+        conn.execute(f"CREATE TRIGGER metered_actions_transition BEFORE UPDATE ON metered_actions "
+                     f"WHEN {when} BEGIN SELECT RAISE(ABORT, '{message}'); END")
+    else:
+        conn.execute(f'CREATE TRIGGER "metered_actions_transition" BEFORE UPDATE ON "metered_actions" '
+                     f"FOR EACH ROW WHEN ({when}) EXECUTE FUNCTION jobsearch_raise('{message}')")
+
+
+def _metered_actions(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _METERED_ACTIONS_DDL)
+        _action_transitions(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("028b_metered_actions", sqlite=_metered_actions("sqlite"),
+                                    postgres=_metered_actions("postgres")))
+
+
+# ---- 029_jobs (Task 18): durable jobs for the worker (spec §20.2) -----------
+
+JOB_KINDS = (
+    "outbox.dispatch", "billing.webhook.process", "email.webhook.process", "usage.sweep", "tokens.sweep",
+    "notify.digest", "notify.approval_expiry_scan", "discovery.scheduled_run", "account.purge", "account.export",
+    "autonomy.tick",
+)
+
+_JOBS_DDL = """
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ({kinds})),
+    account_id TEXT REFERENCES accounts(id),
+    payload_json TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE,
+    run_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
+    lease_holder TEXT,
+    lease_expires_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'DEAD')),
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX idx_jobs_due ON jobs(status, run_at);
+CREATE INDEX idx_jobs_account ON jobs(account_id)
+""".replace("{kinds}", ", ".join(f"'{kind}'" for kind in JOB_KINDS))
+
+
+def _jobs(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _JOBS_DDL)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("029_jobs", sqlite=_jobs("sqlite"), postgres=_jobs("postgres")))
+
+
+# ---- 030_comms (Task 19): outbox, suppressions, provider events, consents,
+# announcements (spec §18.1) -------------------------------------------------
+
+_COMMS_DDL = """
+CREATE TABLE outbound_messages (
+    id TEXT PRIMARY KEY,
+    account_id TEXT REFERENCES accounts(id),
+    user_id TEXT REFERENCES users(id),
+    channel TEXT NOT NULL CHECK (channel IN ('EMAIL', 'SMS', 'WHATSAPP')),
+    category TEXT NOT NULL CHECK (category IN ('SERVICE', 'PRODUCT', 'MARKETING')),
+    template_id TEXT NOT NULL,
+    template_version TEXT NOT NULL,
+    locale TEXT NOT NULL,
+    to_address TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED', 'SUPPRESSED', 'CANCELED')),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    next_attempt_at TEXT NOT NULL,
+    provider TEXT,
+    provider_message_id TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT
+);
+CREATE INDEX idx_outbound_messages_due ON outbound_messages(status, next_attempt_at);
+CREATE INDEX idx_outbound_messages_account ON outbound_messages(account_id, created_at);
+CREATE TABLE email_suppressions (
+    address_hash TEXT PRIMARY KEY,
+    reason TEXT NOT NULL CHECK (reason IN ('HARD_BOUNCE', 'COMPLAINT')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE email_provider_events (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    address_hash TEXT,
+    payload_json TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    processed_at TEXT
+);
+CREATE TABLE communication_consents (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    channel TEXT NOT NULL CHECK (channel IN ('EMAIL', 'SMS', 'WHATSAPP')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('MARKETING')),
+    state TEXT NOT NULL CHECK (state IN ('GRANTED', 'WITHDRAWN')),
+    wording_version TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_communication_consents_user ON communication_consents(user_id, channel, purpose, seq);
+CREATE TABLE announcements (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body_markdown TEXT NOT NULL,
+    audience TEXT NOT NULL CHECK (audience IN ('ALL', 'PLAN:free', 'PLAN:pro', 'PLAN:power')),
+    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL')),
+    published_at TEXT,
+    expires_at TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    withdrawn_at TEXT
+)
+"""
+
+
+def _comms(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _COMMS_DDL)
+        _append_only(conn, dialect, "communication_consents")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("030_comms", sqlite=_comms("sqlite"), postgres=_comms("postgres")))
+
+
+# ---- 031_notifications (Task 20): the notification log and email preferences
+# (spec §17.1); the 6C notifications are back-projected (dedupe by key) ------
+
+NOTIFICATION_CATEGORIES = ("ACTION_REQUIRED", "OUTCOME", "ACCOUNT", "SECURITY", "BILLING", "USAGE", "ANNOUNCEMENT",
+                           "DISCOVERY")
+SIXC_KIND_MAP = {"NEEDS_USER": "application.blocker_needs_answer",
+                 "CANDIDATE_QUESTION": "application.blocker_needs_answer",
+                 "PREPARED": "application.prepared", "BLOCKED": "application.automation_blocked",
+                 "OPERATIONAL_ERROR": "application.automation_blocked"}
+SIXC_CATEGORY = {"application.blocker_needs_answer": "ACTION_REQUIRED", "application.prepared": "OUTCOME",
+                 "application.automation_blocked": "OUTCOME"}
+
+_NOTIFICATIONS_DDL = """
+CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL CHECK (category IN ({categories})),
+    severity TEXT NOT NULL CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL')),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT,
+    archived_at TEXT,
+    UNIQUE (account_id, dedupe_key)
+);
+CREATE INDEX idx_notifications_account ON notifications(account_id, created_at);
+CREATE TABLE notification_preferences (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    category TEXT NOT NULL CHECK (category IN ('ACTION_REQUIRED', 'OUTCOME', 'USAGE', 'DISCOVERY')),
+    email_mode TEXT NOT NULL CHECK (email_mode IN ('IMMEDIATE', 'DAILY_DIGEST', 'OFF')),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, category)
+)
+""".replace("{categories}", ", ".join(f"'{c}'" for c in NOTIFICATION_CATEGORIES))
+
+
+def _back_project_6c(conn, dialect: str) -> None:
+    import json
+    import uuid
+    exists_sql = ("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_notification_events'"
+                  if dialect == "sqlite" else "SELECT to_regclass('autonomy_notification_events') IS NOT NULL")
+    found = conn.execute(exists_sql).fetchone()
+    if not found or not found[0]:  # a partial legacy chain (tests); nothing to project
+        return
+    rows = conn.execute("SELECT account_id, notification_key, kind, subject_type, subject_id, detail_json, created_at "
+                        "FROM autonomy_notification_events WHERE event = 'CREATED' ORDER BY seq").fetchall()
+    for row in rows:
+        kind = SIXC_KIND_MAP.get(row[2])
+        if kind is None:
+            continue
+        conn.execute(
+            "INSERT INTO notifications (id, account_id, kind, category, severity, subject_type, subject_id, "
+            "dedupe_key, detail_json, created_at) VALUES (?, ?, ?, ?, 'INFO', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            (f"ntf_{uuid.uuid4().hex[:20]}", row[0], kind, SIXC_CATEGORY[kind], row[3], row[4], f"6c:{row[1]}",
+             json.dumps({"source": "6c", "6c_kind": row[2], **json.loads(row[5] or "{}")}, sort_keys=True), row[6]))
+
+
+def _notifications(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _NOTIFICATIONS_DDL)
+        _back_project_6c(conn, dialect)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("031_notifications", sqlite=_notifications("sqlite"),
+                                    postgres=_notifications("postgres")))
+
+
+# ---- 032_cv_library (Task 21): named CVs with immutable versions, document
+# references protecting history, DOCX/PDF media types (spec §14.1, L3) ------
+
+DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PDF_MEDIA = "application/pdf"
+REFERRER_TYPES = ("APPROVAL", "FILL_RUN", "SUBMISSION_RESULT")
+
+_CV_LIBRARY_DDL = """
+CREATE TABLE cv_library_items (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'ARCHIVED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (id, account_id)
+);
+CREATE INDEX idx_cv_library_items_account ON cv_library_items(account_id, status);
+CREATE TABLE cv_library_versions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    item_id TEXT NOT NULL,
+    version_no INTEGER NOT NULL CHECK (version_no >= 1),
+    document_version_id TEXT NOT NULL,
+    document_kind TEXT NOT NULL DEFAULT 'cv' CHECK (document_kind = 'cv'),
+    origin TEXT NOT NULL CHECK (origin IN ('USER_UPLOAD', 'AI_GENERATED', 'AI_TAILORED', 'IMPORTED_LEGACY')),
+    parent_version_id TEXT REFERENCES cv_library_versions(id),
+    template_id TEXT,
+    library_visible INTEGER NOT NULL CHECK (library_visible IN (0, 1)),
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (item_id, version_no),
+    FOREIGN KEY (item_id, account_id) REFERENCES cv_library_items(id, account_id),
+    FOREIGN KEY (document_version_id, account_id, document_kind)
+        REFERENCES application_document_versions(id, account_id, document_kind)
+);
+CREATE INDEX idx_cv_library_versions_document ON cv_library_versions(document_version_id);
+CREATE TABLE document_version_references (
+    {SEQ},
+    document_version_id TEXT NOT NULL REFERENCES application_document_versions(id),
+    referrer_type TEXT NOT NULL CHECK (referrer_type IN ('APPROVAL', 'FILL_RUN', 'SUBMISSION_RESULT')),
+    referrer_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (document_version_id, referrer_type, referrer_id)
+)
+"""
+
+_REFERENCED = "EXISTS (SELECT 1 FROM document_version_references WHERE document_version_id = OLD.id)"
+_BAD_MEDIA = f"NEW.media_type NOT IN ('{DOCX_MEDIA}', '{PDF_MEDIA}')"
+
+
+def _document_triggers(conn, dialect: str) -> None:
+    """The unconditional 'immutable delete' trigger becomes the L3 rule: a
+    version cannot be deleted while anything references it (updates stay
+    refused). Inserts must be one of the two media types."""
+    if dialect == "sqlite":
+        conn.execute("DROP TRIGGER application_document_versions_immutable_delete")
+        conn.execute("CREATE TRIGGER application_document_versions_referenced_delete BEFORE DELETE ON "
+                     f"application_document_versions WHEN {_REFERENCED} "
+                     "BEGIN SELECT RAISE(ABORT, 'application document version is referenced'); END")
+        conn.execute("CREATE TRIGGER application_document_versions_media_type BEFORE INSERT ON "
+                     f"application_document_versions WHEN {_BAD_MEDIA} "
+                     "BEGIN SELECT RAISE(ABORT, 'application document media type is not allowed'); END")
+        return
+    conn.execute('DROP TRIGGER "application_document_versions_immutable_delete" ON "application_document_versions"')
+    conn.execute(
+        "CREATE OR REPLACE FUNCTION jobsearch_document_version_delete() RETURNS trigger LANGUAGE plpgsql AS $$ "
+        f"BEGIN IF {_REFERENCED} THEN RAISE EXCEPTION 'application document version is referenced' "
+        "USING ERRCODE = '23000'; END IF; RETURN OLD; END $$")
+    conn.execute('CREATE TRIGGER "application_document_versions_referenced_delete" BEFORE DELETE ON '
+                 '"application_document_versions" FOR EACH ROW EXECUTE FUNCTION jobsearch_document_version_delete()')
+    conn.execute('CREATE TRIGGER "application_document_versions_media_type" BEFORE INSERT ON '
+                 f'"application_document_versions" FOR EACH ROW WHEN ({_BAD_MEDIA}) '
+                 "EXECUTE FUNCTION jobsearch_raise('application document media type is not allowed')")
+
+
+def binding_documents(binding: dict) -> list[str]:
+    """The document version ids an approval binding carries (6D-A format)."""
+    return sorted({d["document_version_id"] for d in (binding or {}).get("documents", [])
+                   if d.get("document_version_id")})
+
+
+def _table_exists(conn, name: str) -> bool:
+    """Tests build partial legacy chains; a migration never assumes an older table."""
+    if conn.dialect == "sqlite":
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() \
+            is not None
+    return bool(conn.execute(f"SELECT to_regclass('{name}') IS NOT NULL").fetchone()[0])
+
+
+def _backfill_references(conn) -> None:
+    import datetime as _dt
+    import json
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    if not all(_table_exists(conn, t) for t in ("application_approvals", "fill_run_grant_bindings",
+                                                 "submission_results")):
+        return
+
+    def add(document_ids: list[str], referrer_type: str, referrer_id: str) -> None:
+        for document_id in document_ids:
+            conn.execute("INSERT INTO document_version_references (document_version_id, referrer_type, referrer_id, "
+                         "created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                         (document_id, referrer_type, referrer_id, now))
+
+    approvals = {r[0]: binding_documents(json.loads(r[1] or "{}")) for r in conn.execute(
+        "SELECT id, binding_json FROM application_approvals").fetchall()}
+    for approval_id, documents in approvals.items():
+        add(documents, "APPROVAL", approval_id)
+    runs = {r[0]: r[1] for r in conn.execute("SELECT fill_run_id, approval_id FROM fill_run_grant_bindings").fetchall()}
+    for run_id, approval_id in runs.items():
+        add(approvals.get(approval_id, []), "FILL_RUN", run_id)
+    for result_id, result_json in conn.execute("SELECT id, result_json FROM submission_results").fetchall():
+        run_id = json.loads(result_json or "{}").get("fill_run_id")
+        add(approvals.get(runs.get(run_id), []), "SUBMISSION_RESULT", result_id)
+
+
+def _convert_legacy_reusable_cvs(conn) -> None:
+    """Each reusable CV becomes a library item with v1 IMPORTED_LEGACY
+    (idempotent: a document already in the library is skipped). The legacy
+    table stays readable and is no longer written."""
+    import datetime as _dt
+    import uuid
+    rows = conn.execute(
+        "SELECT r.account_id, r.document_version_id, r.label, r.saved_at, d.original_filename "
+        "FROM reusable_application_documents r JOIN application_document_versions d "
+        "ON d.id = r.document_version_id AND d.account_id = r.account_id WHERE d.document_kind = 'cv' "
+        "AND NOT EXISTS (SELECT 1 FROM cv_library_versions v WHERE v.document_version_id = r.document_version_id) "
+        "ORDER BY r.saved_at, r.document_version_id").fetchall()
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    for account_id, document_id, label, _saved_at, filename in rows:
+        item_id = f"cvi_{uuid.uuid4().hex[:20]}"
+        title = (label or filename.rsplit(".", 1)[0] or "My CV")[:120]
+        conn.execute("INSERT INTO cv_library_items (id, account_id, title, description, status, created_at, "
+                     "updated_at) VALUES (?, ?, ?, '', 'ACTIVE', ?, ?)", (item_id, account_id, title, now, now))
+        conn.execute("INSERT INTO cv_library_versions (id, account_id, item_id, version_no, document_version_id, "
+                     "origin, library_visible, note, created_by, created_at) VALUES (?, ?, ?, 1, ?, "
+                     "'IMPORTED_LEGACY', 1, 'Imported from your saved CVs', 'migration', ?)",
+                     (f"cvv_{uuid.uuid4().hex[:20]}", account_id, item_id, document_id, now))
+
+
+def _cv_library(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _CV_LIBRARY_DDL)
+        _append_only(conn, dialect, "cv_library_versions", "document_version_references")
+        _document_triggers(conn, dialect)
+        _backfill_references(conn)
+        _convert_legacy_reusable_cvs(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("032_cv_library", sqlite=_cv_library("sqlite"), postgres=_cv_library("postgres")))
+
+
+# ---- 033_cv_strategy (Task 22): account policy documents and the recorded
+# per-application CV resolution (spec §14.1) ----------------------------------
+
+_CV_STRATEGY_DDL = """
+CREATE TABLE account_policy_documents (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    doc_type TEXT NOT NULL CHECK (doc_type IN ('job-families', 'cv-strategy')),
+    schema_version TEXT NOT NULL,
+    doc_json TEXT NOT NULL,
+    doc_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_account_policy_documents_current ON account_policy_documents(account_id, doc_type, seq);
+CREATE TABLE application_cv_resolutions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    job_families_hash TEXT,
+    cv_strategy_hash TEXT,
+    family_id TEXT NOT NULL,
+    family_match_json TEXT NOT NULL,
+    rule_json TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('RESOLVED_VERSION', 'TAILOR_REQUESTED', 'NEEDS_USER_CHOICE')),
+    item_id TEXT,
+    version_id TEXT REFERENCES cv_library_versions(id),
+    overridden_by_user INTEGER NOT NULL DEFAULT 0 CHECK (overridden_by_user IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_application_cv_resolutions_ws ON application_cv_resolutions(application_workspace_id, seq)
+"""
+
+
+def _cv_strategy(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _CV_STRATEGY_DDL)
+        _append_only(conn, dialect, "account_policy_documents", "application_cv_resolutions")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("033_cv_strategy", sqlite=_cv_strategy("sqlite"),
+                                    postgres=_cv_strategy("postgres")))
+
+
+# ---- 034_rules_v2 (Task 23): data only; each account's current standing
+# policy re-saved as standing-policy.v2 with an identical rule list (16.2) ----
+
+def _resave_policies_as_v2(conn) -> None:
+    import datetime as _dt
+    import json
+    from webapp.persistence.autonomy_authority import save_policy_version
+    from product.standing_policy import STANDING_POLICY_V1, upgrade_policy
+    now = _dt.datetime.now(_dt.timezone.utc)
+    if not _table_exists(conn, "standing_policy_versions"):  # a partial legacy chain (tests)
+        return
+    accounts = [r[0] for r in conn.execute("SELECT DISTINCT account_id FROM standing_policy_versions").fetchall()]
+    for account_id in accounts:
+        row = conn.execute("SELECT policy_json FROM standing_policy_versions WHERE account_id = ? "
+                           "ORDER BY seq DESC LIMIT 1", (account_id,)).fetchone()
+        doc = json.loads(row[0])
+        if doc.get("schema_version") != STANDING_POLICY_V1:
+            continue
+        save_policy_version(conn, account_id=account_id, doc=upgrade_policy(doc), created_by="migration:034_rules_v2",
+                            now=now, commit=False)
+
+
+def _rules_v2(dialect: str):
+    def migrate(conn) -> None:
+        _resave_policies_as_v2(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("034_rules_v2", sqlite=_rules_v2("sqlite"), postgres=_rules_v2("postgres")))
+
+
+# ---- 035_onboarding (Task 24): onboarding progress, CV import runs and the
+# proposals that need the user's confirmation (spec 15.1) --------------------
+
+ONBOARDING_STEP_IDS = ("about", "cv", "import", "eligibility", "preferences", "families", "rules", "extension")
+
+_ONBOARDING_DDL = """
+CREATE TABLE account_onboarding (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE profile_import_runs (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    document_version_id TEXT NOT NULL REFERENCES application_document_versions(id),
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'PROPOSED', 'FAILED')),
+    provider_audit_id TEXT,
+    reservation_id TEXT,
+    error_code TEXT,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX idx_profile_import_runs_account ON profile_import_runs(account_id, created_at);
+CREATE TABLE profile_proposals (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    import_run_id TEXT NOT NULL REFERENCES profile_import_runs(id),
+    target TEXT NOT NULL CHECK (target IN ('PROFILE_ENTRY', 'ANSWER')),
+    kind TEXT NOT NULL,
+    fields_json TEXT NOT NULL,
+    source_excerpt TEXT NOT NULL,
+    confidence REAL NOT NULL,  -- 0..1, validated by product.cv_extraction (a REAL CHECK breaks dialect parity)
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_profile_proposals_run ON profile_proposals(import_run_id, seq);
+CREATE TABLE profile_proposal_resolutions (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    proposal_id TEXT NOT NULL UNIQUE REFERENCES profile_proposals(id),
+    resolution TEXT NOT NULL CHECK (resolution IN ('ACCEPTED', 'EDITED_ACCEPTED', 'REJECTED')),
+    final_fields_json TEXT,
+    resulting_ref TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+
+
+def _seed_local_onboarding(conn) -> None:
+    """In local mode the operator account that already has a profile is
+    onboarded: every step DONE (idempotent)."""
+    import datetime as _dt
+    import json
+    if conn.execute("SELECT 1 FROM accounts WHERE id = 'account_local'").fetchone() is None:
+        return
+    configured = conn.execute(
+        "SELECT 1 FROM artifacts a JOIN account_profiles p ON p.workspace_id = a.workspace_id "
+        "WHERE p.account_id = 'account_local' AND a.artifact_type = 'profile_snapshot' LIMIT 1").fetchone()
+    if configured is None:
+        return
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
+    state = {"version": "onboarding.v1", "steps": {step: "DONE" for step in ONBOARDING_STEP_IDS}}
+    conn.execute("INSERT INTO account_onboarding (account_id, state_json, updated_at) VALUES ('account_local', ?, ?) "
+                 "ON CONFLICT DO NOTHING", (json.dumps(state, sort_keys=True), now))
+
+
+def _onboarding(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _ONBOARDING_DDL)
+        _append_only(conn, dialect, "profile_proposals", "profile_proposal_resolutions")
+        if _table_exists(conn, "account_profiles") and _table_exists(conn, "artifacts"):
+            _seed_local_onboarding(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("035_onboarding", sqlite=_onboarding("sqlite"), postgres=_onboarding("postgres")))
+
+
+# ---- 036_search_schedules (Task 26): Power saved searches that run on a
+# schedule (spec 20.3), and the DP-9 operator marker on discovery sources ----
+
+_SEARCH_SCHEDULES_DDL = """
+CREATE TABLE search_schedules (
+    search_workspace_id TEXT PRIMARY KEY REFERENCES search_workspaces(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    cadence TEXT NOT NULL CHECK (cadence IN ('DAILY', 'WEEKLY')),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    next_run_at TEXT NOT NULL,
+    last_run_id TEXT,
+    disabled_reason TEXT CHECK (disabled_reason IN ('USER', 'ENTITLEMENT', 'SUSPENDED')),
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_search_schedules_due ON search_schedules(enabled, next_run_at);
+CREATE INDEX idx_search_schedules_account ON search_schedules(account_id)
+"""
+
+
+def _search_schedules(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _SEARCH_SCHEDULES_DDL)
+        # DP-9: a source runs in hosted mode only once an operator enabled it
+        # (the seeded registry rows are not an operator decision).
+        if _table_exists(conn, "discovery_source_settings"):
+            conn.execute("ALTER TABLE discovery_source_settings ADD COLUMN operator_enabled INTEGER NOT NULL "
+                         "DEFAULT 0 CHECK (operator_enabled IN (0, 1))")
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("036_search_schedules", sqlite=_search_schedules("sqlite"),
+                                    postgres=_search_schedules("postgres")))
+
+
+# ---- 037_purge (Task 28): the purge guard, retention tags, deletion requests
+# and data exports (spec 20.4, 20.5) ---------------------------------------------
+
+_PURGE_DDL = """
+CREATE TABLE purge_in_progress (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    started_at TEXT NOT NULL
+);
+CREATE TABLE purge_retention_tags (
+    {SEQ},
+    id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    table_name TEXT NOT NULL,
+    retain_class TEXT NOT NULL,
+    row_count INTEGER NOT NULL CHECK (row_count >= 0),
+    owner_user_ids_json TEXT NOT NULL,
+    tagged_at TEXT NOT NULL,
+    expired_at TEXT,
+    UNIQUE (account_id, table_name)
+);
+CREATE TABLE account_deletions (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    purge_after TEXT NOT NULL,
+    canceled_at TEXT,
+    completed_at TEXT
+);
+CREATE TABLE account_exports (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    requested_by TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('QUEUED', 'READY', 'FAILED')),
+    object_key TEXT,
+    byte_length INTEGER,
+    created_at TEXT NOT NULL,
+    ready_at TEXT,
+    expires_at TEXT,
+    downloaded_at TEXT
+);
+CREATE INDEX idx_account_exports_account ON account_exports(account_id, created_at)
+"""
+
+PURGE_GUARD_SQLITE = "WHEN NOT EXISTS (SELECT 1 FROM purge_in_progress)"
+
+_PG_RAISE_UNLESS_PURGING = """
+CREATE FUNCTION jobsearch_raise_unless_purging() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF EXISTS (SELECT 1 FROM purge_in_progress) THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION USING MESSAGE = TG_ARGV[0], ERRCODE = '23000';
+END
+$fn$
+"""
+
+
+def _guard_sqlite_delete_triggers(conn) -> int:
+    """Every unconditional BEFORE DELETE ... RAISE trigger gets the purge guard."""
+    import re
+    rewritten = 0
+    rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall()
+    for name, sql in rows:
+        flat = " ".join(sql.split())
+        match = re.fullmatch(r"CREATE TRIGGER (\S+) BEFORE DELETE ON (\S+) BEGIN (SELECT RAISE\(ABORT, .*\);) END", flat)
+        if not match:
+            continue
+        conn.execute(f"DROP TRIGGER {name}")
+        conn.execute(f"CREATE TRIGGER {match.group(1)} BEFORE DELETE ON {match.group(2)} {PURGE_GUARD_SQLITE} "
+                     f"BEGIN {match.group(3)} END")
+        rewritten += 1
+    return rewritten
+
+
+def _guard_postgres_delete_triggers(conn) -> int:
+    import re
+    conn.execute(_PG_RAISE_UNLESS_PURGING)
+    rewritten = 0
+    rows = conn.execute(
+        "SELECT t.tgname, c.relname, pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+        "JOIN pg_proc p ON p.oid = t.tgfoid WHERE NOT t.tgisinternal AND p.proname = 'jobsearch_raise'").fetchall()
+    for name, table, definition in rows:
+        if " BEFORE DELETE " not in definition or " WHEN " in definition:
+            continue
+        message = re.search(r"jobsearch_raise\('((?:[^']|'')*)'\)", definition).group(1)
+        conn.execute(f'DROP TRIGGER "{name}" ON "{table}"')
+        conn.execute(f'CREATE TRIGGER "{name}" BEFORE DELETE ON "{table}" FOR EACH ROW '
+                     f"EXECUTE FUNCTION jobsearch_raise_unless_purging('{message}')")
+        rewritten += 1
+    return rewritten
+
+
+def _purge(dialect: str):
+    def migrate(conn) -> None:
+        _ddl(conn, dialect, _PURGE_DDL)
+        if dialect == "sqlite":
+            _guard_sqlite_delete_triggers(conn)
+        else:
+            _guard_postgres_delete_triggers(conn)
+    return migrate
+
+
+BUNDLE7_MIGRATIONS.append(Migration("037_purge", sqlite=_purge("sqlite"), postgres=_purge("postgres")))

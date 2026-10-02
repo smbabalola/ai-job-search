@@ -16,6 +16,9 @@
     "legal.attestation": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "legal_attestation", "requires_current_profile_basis": false},
     "demographic.eeo": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "demographic", "requires_current_profile_basis": false},
     "background.criminal_record": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "criminal_record", "requires_current_profile_basis": false},
-    "health.disability": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "health", "requires_current_profile_basis": false}
+    "health.disability": {"answer_kind": "STRUCTURED", "max_reach": "EMPLOYER", "default_reach": "EMPLOYER", "context_keys": [], "freshness_days": null, "submit_eligible": false, "sensitive": "health", "requires_current_profile_basis": false},
+    "contact.email": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "contact.phone": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false},
+    "location.current": {"answer_kind": "STRUCTURED", "max_reach": "ACCOUNT", "default_reach": "ACCOUNT", "context_keys": [], "freshness_days": null, "submit_eligible": true, "sensitive": null, "requires_current_profile_basis": false}
   }
 }

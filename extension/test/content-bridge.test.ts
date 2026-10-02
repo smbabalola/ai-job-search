@@ -9,6 +9,9 @@ import type {
   PendingContextLaunchMessage,
 } from "../src/content-bridge/pending-context-bridge";
 
+const TICKET = "v1.ticket_1.nonce.mac";
+const fetchTicket = async () => TICKET;
+
 function button(dataset: Record<string, string | undefined>) {
   return { dataset };
 }
@@ -16,7 +19,7 @@ function button(dataset: Record<string, string | undefined>) {
 describe("buildPendingContextMessage", () => {
   it("builds a message from a button's data attributes", () => {
     const message = buildPendingContextMessage(
-      button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply" }),
+        button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply" }), TICKET,
     );
     expect(message).toMatchObject({
       type: "set_pending_handoff_context", workspaceId: "ws_1",
@@ -27,26 +30,29 @@ describe("buildPendingContextMessage", () => {
 
   it("returns null when workspaceId is missing", () => {
     expect(
-      buildPendingContextMessage(button({ packArtifactId: "art_1", targetUrl: "https://x.test/apply" })),
+      buildPendingContextMessage(
+button({ packArtifactId: "art_1", targetUrl: "https://x.test/apply" }), TICKET),
     ).toBeNull();
   });
 
   it("returns null when packArtifactId is missing", () => {
     expect(
-      buildPendingContextMessage(button({ workspaceId: "ws_1", targetUrl: "https://x.test/apply" })),
+      buildPendingContextMessage(
+button({ workspaceId: "ws_1", targetUrl: "https://x.test/apply" }), TICKET),
     ).toBeNull();
   });
 
   it("returns null when targetUrl is missing", () => {
     expect(
-      buildPendingContextMessage(button({ workspaceId: "ws_1", packArtifactId: "art_1" })),
+      buildPendingContextMessage(
+button({ workspaceId: "ws_1", packArtifactId: "art_1" }), TICKET),
     ).toBeNull();
   });
 
   it("returns null when any attribute is an empty string", () => {
     expect(
       buildPendingContextMessage(
-        button({ workspaceId: "", packArtifactId: "art_1", targetUrl: "https://x.test/apply" }),
+        button({ workspaceId: "", packArtifactId: "art_1", targetUrl: "https://x.test/apply" }), TICKET,
       ),
     ).toBeNull();
   });
@@ -54,12 +60,12 @@ describe("buildPendingContextMessage", () => {
   it("returns null when targetUrl is not http/https", () => {
     expect(
       buildPendingContextMessage(
-        button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "javascript:alert(1)" }),
+        button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "javascript:alert(1)" }), TICKET,
       ),
     ).toBeNull();
     expect(
       buildPendingContextMessage(
-        button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "not-a-url" }),
+        button({ workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "not-a-url" }), TICKET,
       ),
     ).toBeNull();
   });
@@ -89,12 +95,13 @@ describe("handleApplyClick", () => {
       (message: PendingContextLaunchMessage) => Promise<PendingContextLaunchAck>
     >().mockResolvedValue({ ok: true });
 
-    const result = await handleApplyClick(validButton, sendLaunchMessage);
+    const result = await handleApplyClick(validButton, sendLaunchMessage, fetchTicket);
 
     expect(sendLaunchMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "set_pending_handoff_context",
         workspaceId: "ws_1", packArtifactId: "art_1", targetUrl: "https://x.test/apply",
+        handoffTicket: TICKET,
       }),
     );
     expect(result).toEqual({ shouldNavigate: true, targetUrl: "https://x.test/apply" });
@@ -105,7 +112,7 @@ describe("handleApplyClick", () => {
       (message: PendingContextLaunchMessage) => Promise<PendingContextLaunchAck>
     >().mockResolvedValue({ ok: false, error: "invalid pending handoff context" });
 
-    const result = await handleApplyClick(validButton, sendLaunchMessage);
+    const result = await handleApplyClick(validButton, sendLaunchMessage, fetchTicket);
 
     expect(result.shouldNavigate).toBe(false);
   });
@@ -115,7 +122,7 @@ describe("handleApplyClick", () => {
       (message: PendingContextLaunchMessage) => Promise<PendingContextLaunchAck>
     >().mockRejectedValue(new Error("extension context invalidated"));
 
-    const result = await handleApplyClick(validButton, sendLaunchMessage);
+    const result = await handleApplyClick(validButton, sendLaunchMessage, fetchTicket);
 
     expect(result.shouldNavigate).toBe(false);
   });
@@ -125,9 +132,19 @@ describe("handleApplyClick", () => {
       (message: PendingContextLaunchMessage) => Promise<PendingContextLaunchAck>
     >().mockResolvedValue({ ok: true });
 
-    const result = await handleApplyClick(button({ workspaceId: "ws_1" }), sendLaunchMessage);
+    const result = await handleApplyClick(button({ workspaceId: "ws_1" }), sendLaunchMessage, fetchTicket);
 
     expect(sendLaunchMessage).not.toHaveBeenCalled();
     expect(result.shouldNavigate).toBe(false);
+  });
+
+  it("never launches without a server ticket", async () => {
+    const sendLaunchMessage = vi.fn<
+      (message: PendingContextLaunchMessage) => Promise<PendingContextLaunchAck>
+    >().mockResolvedValue({ ok: true });
+    expect((await handleApplyClick(validButton, sendLaunchMessage, async () => null)).shouldNavigate).toBe(false);
+    expect((await handleApplyClick(validButton, sendLaunchMessage, async () => { throw new Error("401"); }))
+      .shouldNavigate).toBe(false);
+    expect(sendLaunchMessage).not.toHaveBeenCalled();
   });
 });

@@ -1,153 +1,71 @@
+// Bundle 7 spec §9.2: every handoff call carries the device's bearer token;
+// session-scoped calls carry the session token as well.
 import { describe, expect, it, vi } from "vitest";
-import { ServerClient } from "../src/background/server-client";
+
+import { ServerClient, type DeviceAuth } from "../src/background/server-client";
 import type { QueuedEvent } from "../src/background/event-queue";
 
-describe("ServerClient.exchangePairing", () => {
-  it("posts the one-time secret and returns the durable credential", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ credential_id: "extcred_1", durable_secret: "durable-abc" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+function auth(overrides: Partial<DeviceAuth> = {}): DeviceAuth & { handleUnauthorized: ReturnType<typeof vi.fn> } {
+  return {
+    authHeaders: vi.fn().mockResolvedValue({ Authorization: "Bearer access-1" }),
+    handleUnauthorized: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as DeviceAuth & { handleUnauthorized: ReturnType<typeof vi.fn> };
+}
 
-    const client = new ServerClient(async () => null);
-    const result = await client.exchangePairing("one-time-code");
+function stubFetch(response: Partial<Response> & { json?: () => Promise<unknown> }) {
+  const fetchMock = vi.fn().mockResolvedValue({ clone() { return this; }, ...response });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8420/api/handoff/pairing/exchange",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ one_time_secret: "one-time-code" }),
-      }),
-    );
-    expect(result).toEqual({ credentialId: "extcred_1", durableSecret: "durable-abc" });
-    vi.unstubAllGlobals();
-  });
+const START = {
+  handoffTicket: "v1.t1.nonce.mac", workspaceId: "ws_1", packArtifactId: "art_1",
+  targetUrl: "https://boards.greenhouse.io/acme/jobs/1", targetDomain: "boards.greenhouse.io",
+  atsAdapterId: "generic", atsAdapterVersion: "generic@1",
+};
 
-  it("throws with the server's detail message on a failed exchange", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: async () => ({ detail: "pairing code expired" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => null);
-    await expect(client.exchangePairing("stale-code")).rejects.toThrow("pairing code expired");
-    vi.unstubAllGlobals();
-  });
-
-  it("never sends an X-Handoff-Credential header for this call", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ credential_id: "extcred_1", durable_secret: "durable-abc" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => { throw new Error("should never be called"); });
-    await client.exchangePairing("one-time-code");
-
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("ServerClient.startSession", () => {
-  it("returns the sessionToken alongside the id", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "hs_1", session_token: "tok-abc" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => "durable-cred");
-    const result = await client.startSession({
-      workspaceId: "ws_1", packArtifactId: "art_1",
-      targetUrl: "https://boards.greenhouse.io/acme/jobs/1",
-      targetDomain: "boards.greenhouse.io",
-      atsAdapterId: "generic", atsAdapterVersion: "generic@1",
-    });
-
+describe("ServerClient device-authorized calls", () => {
+  it("startSession sends the bearer token and the handoff ticket", async () => {
+    const fetchMock = stubFetch({ ok: true, json: async () => ({ id: "hs_1", session_token: "tok-abc" }) });
+    const result = await new ServerClient(auth(), "https://app.example.test").startSession(START);
     expect(result).toEqual({ id: "hs_1", sessionToken: "tok-abc" });
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).toMatchObject({ "X-Handoff-Credential": "durable-cred" });
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://app.example.test/api/handoff/sessions");
+    expect(options.headers).toMatchObject({ Authorization: "Bearer access-1" });
+    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
+    expect(JSON.parse(String(options.body))).toMatchObject({ handoff_ticket: "v1.t1.nonce.mac", workspace_id: "ws_1" });
     vi.unstubAllGlobals();
   });
-});
 
-describe("ServerClient.discoverSessions", () => {
-  it("GETs the discover endpoint with the durable credential and returns raw session rows", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: "hs_1", workspace_id: "ws_1", pack_artifact_id: "art_1",
-            target_domain: "boards.greenhouse.io", status: "in_progress",
-            started_at: "2026-09-13T00:00:00+00:00",
-            last_activity_at: "2026-09-13T00:00:00+00:00",
-          },
-        ],
-      }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => "durable-cred");
-    const result = await client.discoverSessions("ws_1", "boards.greenhouse.io");
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8420/api/handoff/sessions/discover?workspace_id=ws_1&target_domain=boards.greenhouse.io",
-      expect.objectContaining({ method: "GET" }),
-    );
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).toMatchObject({ "X-Handoff-Credential": "durable-cred" });
-    expect(result).toEqual([
-      expect.objectContaining({
-        id: "hs_1", pack_artifact_id: "art_1", target_domain: "boards.greenhouse.io",
-        status: "in_progress",
-      }),
+  it("discoverSessions and resumeSession use the bearer token", async () => {
+    const fetchMock = stubFetch({ ok: true, json: async () => ({ sessions: [], session_token: "tok-rotated" }) });
+    const client = new ServerClient(auth(), "https://app.example.test");
+    await client.discoverSessions("ws_1", "boards.greenhouse.io");
+    await client.resumeSession("hs_1");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://app.example.test/api/handoff/sessions/discover?workspace_id=ws_1&target_domain=boards.greenhouse.io",
+      "https://app.example.test/api/handoff/sessions/hs_1/resume",
     ]);
+    for (const [, options] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(options.headers).toMatchObject({ Authorization: "Bearer access-1" });
+    }
     vi.unstubAllGlobals();
   });
 
-  it("throws when the discover request fails", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => "durable-cred");
-    await expect(client.discoverSessions("ws_1", "boards.greenhouse.io")).rejects.toThrow();
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("ServerClient.resumeSession", () => {
-  it("POSTs to the resume endpoint with the durable credential and returns a rotated sessionToken", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ session_token: "tok-rotated" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => "durable-cred");
-    const result = await client.resumeSession("hs_1");
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8420/api/handoff/sessions/hs_1/resume",
-      expect.objectContaining({ method: "POST" }),
-    );
-    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).toMatchObject({ "X-Handoff-Credential": "durable-cred" });
-    expect(result).toEqual({ sessionToken: "tok-rotated" });
+  it("a 401 is reported to the device credential with its error code", async () => {
+    stubFetch({ ok: false, status: 401, json: async () => ({ error: "DEVICE_REVOKED" }) });
+    const deviceAuth = auth();
+    await expect(new ServerClient(deviceAuth).resumeSession("hs_1")).rejects.toThrow();
+    expect(deviceAuth.handleUnauthorized).toHaveBeenCalledWith("DEVICE_REVOKED");
     vi.unstubAllGlobals();
   });
 
-  it("throws when resume fails (e.g. session expired or pack mismatch enforced server-side)", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401 });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => "durable-cred");
-    await expect(client.resumeSession("hs_1")).rejects.toThrow();
+  it("an unpaired extension cannot call the server at all", async () => {
+    const fetchMock = stubFetch({ ok: true, json: async () => ({}) });
+    const deviceAuth = auth({ authHeaders: vi.fn().mockRejectedValue(new Error("not paired")) });
+    await expect(new ServerClient(deviceAuth).startSession(START)).rejects.toThrow("not paired");
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });
@@ -158,38 +76,19 @@ describe("ServerClient session-token-scoped calls", () => {
     eventType: "field_observed", eventPayload: {}, observedAt: "2026-09-13T00:00:00+00:00",
   };
 
-  it("sendEvent authorizes with X-Handoff-Session-Token, not the durable credential", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => {
-      throw new Error("sendEvent must not read the durable credential");
-    });
-    await client.sendEvent(event, "session-tok-1");
-
+  it("sendEvent carries the session token and the bearer token", async () => {
+    const fetchMock = stubFetch({ ok: true, json: async () => ({}) });
+    await new ServerClient(auth()).sendEvent(event, "session-tok-1");
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).toMatchObject({ "X-Handoff-Session-Token": "session-tok-1" });
-    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
+    expect(options.headers).toMatchObject({ "X-Handoff-Session-Token": "session-tok-1", Authorization: "Bearer access-1" });
     vi.unstubAllGlobals();
   });
 
-  it("confirmSubmission authorizes with X-Handoff-Session-Token, not the durable credential", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const client = new ServerClient(async () => {
-      throw new Error("confirmSubmission must not read the durable credential");
-    });
-    await client.confirmSubmission("hs_1", false, "session-tok-1");
-
+  it("confirmSubmission carries the session token and the bearer token", async () => {
+    const fetchMock = stubFetch({ ok: true, json: async () => ({}) });
+    await new ServerClient(auth()).confirmSubmission("hs_1", false, "session-tok-1");
     const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(options.headers).toMatchObject({ "X-Handoff-Session-Token": "session-tok-1" });
-    expect(options.headers).not.toHaveProperty("X-Handoff-Credential");
+    expect(options.headers).toMatchObject({ "X-Handoff-Session-Token": "session-tok-1", Authorization: "Bearer access-1" });
     vi.unstubAllGlobals();
-  });
-
-  it("no longer exposes the retired candidate snapshot projection (6D-B Task 14)", () => {
-    const client = new ServerClient(async () => "durable-cred");
-    expect("fetchSessionSnapshot" in client).toBe(false);
   });
 });

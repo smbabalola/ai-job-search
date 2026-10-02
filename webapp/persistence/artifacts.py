@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 ARTIFACT_TYPES = (
     "profile_snapshot",
@@ -29,14 +29,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_artifact(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_artifact(row: dbapi.Row) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json"))
     return data
 
 
 def save_artifact(
-    conn: sqlite3.Connection, *, workspace_id: str, artifact_type: str,
+    conn: dbapi.Connection, *, workspace_id: str, artifact_type: str,
     payload: dict[str, Any], content_id: str | None = None, commit: bool = True,
     artifact_id: str | None = None,
 ) -> dict[str, Any]:
@@ -59,12 +59,12 @@ def save_artifact(
     return get_artifact(conn, artifact_id)
 
 
-def get_artifact(conn: sqlite3.Connection, artifact_id: str) -> dict[str, Any] | None:
+def get_artifact(conn: dbapi.Connection, artifact_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
     return _row_to_artifact(row) if row else None
 
 
-def get_current_artifact(conn: sqlite3.Connection, workspace_id: str, artifact_type: str) -> dict[str, Any] | None:
+def get_current_artifact(conn: dbapi.Connection, workspace_id: str, artifact_type: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT a.* FROM current_artifacts c JOIN artifacts a ON a.id = c.artifact_id "
         "WHERE c.workspace_id = ? AND c.artifact_type = ?",
@@ -73,7 +73,7 @@ def get_current_artifact(conn: sqlite3.Connection, workspace_id: str, artifact_t
     return _row_to_artifact(row) if row else None
 
 
-def list_artifact_history(conn: sqlite3.Connection, workspace_id: str, artifact_type: str) -> list[dict[str, Any]]:
+def list_artifact_history(conn: dbapi.Connection, workspace_id: str, artifact_type: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM artifacts WHERE workspace_id = ? AND artifact_type = ? ORDER BY created_at DESC",
         (workspace_id, artifact_type),

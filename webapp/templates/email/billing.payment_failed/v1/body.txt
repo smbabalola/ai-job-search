@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}We couldn't take the payment for your {{ plan_name }} plan. Update your payment method from the billing page to keep your plan.{% endblock %}

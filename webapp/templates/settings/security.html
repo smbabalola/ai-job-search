@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Security · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Security activity</h1></div></section>
+{% include "settings/_nav.html" %}
+<section class="panel"><ul>{% for e in entries %}<li data-security-entry="{{ e.action }}"><time datetime="{{ e.occurred_at }}">{{ e.occurred_at[:16] | replace("T", " ") }}</time> · {{ e.action | replace("_", " ") | lower }}</li>{% else %}<li>No security activity yet.</li>{% endfor %}</ul></section>
+{% endblock %}

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence import dbapi
 
 PROFILE_WORKSPACE_ID = "profile"
 
@@ -16,9 +16,9 @@ def _now() -> str:
 
 
 def ensure_profile_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     mapped = conn.execute(
@@ -57,7 +57,7 @@ def ensure_profile_workspace(
         )
         if commit:
             conn.commit()
-    except sqlite3.IntegrityError:
+    except dbapi.IntegrityError:
         # A concurrent caller won the race and already inserted the single
         # profile-workspace row (primary-key conflict on PROFILE_WORKSPACE_ID).
         # ensure_profile_workspace() is documented as idempotent, so resolve
@@ -77,7 +77,7 @@ def ensure_profile_workspace(
 
 
 def get_profile_workspace_id(
-    conn: sqlite3.Connection, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, account_id: str
 ) -> str | None:
     row = conn.execute(
         "SELECT workspace_id FROM account_profiles WHERE account_id = ?",
@@ -86,8 +86,8 @@ def get_profile_workspace_id(
     return row["workspace_id"] if row else None
 
 def create_workspace(
-    conn: sqlite3.Connection, *, company: str, title: str,
-    workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, company: str, title: str,
+    workspace_id: str | None = None, account_id: str,
     commit: bool = True,
 ) -> dict[str, Any]:
     workspace_id = workspace_id or f"ws_{uuid.uuid4().hex[:20]}"
@@ -104,10 +104,10 @@ def create_workspace(
 
 
 def get_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM workspaces WHERE id = ? AND account_id = ?",
@@ -117,7 +117,7 @@ def get_workspace(
 
 
 def list_workspaces(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM workspaces WHERE kind = 'job' AND account_id = ? "

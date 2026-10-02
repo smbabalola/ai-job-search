@@ -1,0 +1,230 @@
+[
+  {
+    "name": "fixture",
+    "origin": "http://127.0.0.1:8430",
+    "tenant_key": "acme",
+    "ats_job_id": "123",
+    "expected": [
+      {
+        "id": "E1_SUBMIT",
+        "methods": [
+          "post"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^http://127\\.0\\.0\\.1:8430/acme/jobs/123$"
+      },
+      {
+        "id": "E2_CONFIRM",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^http://127\\.0\\.0\\.1:8430/acme/jobs/123/confirmation(\\?.*)?$"
+      },
+      {
+        "id": "E3_RENDER",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "stylesheet",
+          "script",
+          "image",
+          "font"
+        ],
+        "regex": "^http://127\\.0\\.0\\.1:8430/.*$"
+      },
+      {
+        "id": "C1_RECAPTCHA",
+        "methods": [
+          "get",
+          "post"
+        ],
+        "types": [
+          "script",
+          "sub_frame",
+          "xmlhttprequest",
+          "image"
+        ],
+        "regex": "^https://www\\.(google|gstatic|recaptcha)\\.(com|net)/recaptcha/.*$"
+      }
+    ]
+  },
+  {
+    "name": "real_board",
+    "origin": "https://boards.greenhouse.io",
+    "tenant_key": "acme",
+    "ats_job_id": "4012345",
+    "expected": [
+      {
+        "id": "E1_SUBMIT",
+        "methods": [
+          "post"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/acme/jobs/4012345$"
+      },
+      {
+        "id": "E2_CONFIRM",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/acme/jobs/4012345/confirmation(\\?.*)?$"
+      },
+      {
+        "id": "E3_RENDER",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "stylesheet",
+          "script",
+          "image",
+          "font"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/.*$"
+      },
+      {
+        "id": "C1_RECAPTCHA",
+        "methods": [
+          "get",
+          "post"
+        ],
+        "types": [
+          "script",
+          "sub_frame",
+          "xmlhttprequest",
+          "image"
+        ],
+        "regex": "^https://www\\.(google|gstatic|recaptcha)\\.(com|net)/recaptcha/.*$"
+      }
+    ]
+  },
+  {
+    "name": "metachar_tenant",
+    "origin": "https://job-boards.greenhouse.io",
+    "tenant_key": "acme.co+x",
+    "ats_job_id": "9",
+    "expected": [
+      {
+        "id": "E1_SUBMIT",
+        "methods": [
+          "post"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://job\\-boards\\.greenhouse\\.io/acme\\.co\\+x/jobs/9$"
+      },
+      {
+        "id": "E2_CONFIRM",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://job\\-boards\\.greenhouse\\.io/acme\\.co\\+x/jobs/9/confirmation(\\?.*)?$"
+      },
+      {
+        "id": "E3_RENDER",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "stylesheet",
+          "script",
+          "image",
+          "font"
+        ],
+        "regex": "^https://job\\-boards\\.greenhouse\\.io/.*$"
+      },
+      {
+        "id": "C1_RECAPTCHA",
+        "methods": [
+          "get",
+          "post"
+        ],
+        "types": [
+          "script",
+          "sub_frame",
+          "xmlhttprequest",
+          "image"
+        ],
+        "regex": "^https://www\\.(google|gstatic|recaptcha)\\.(com|net)/recaptcha/.*$"
+      }
+    ]
+  },
+  {
+    "name": "brackets",
+    "origin": "https://boards.greenhouse.io",
+    "tenant_key": "a(b)[c]{d}|e^f$g",
+    "ats_job_id": "1",
+    "expected": [
+      {
+        "id": "E1_SUBMIT",
+        "methods": [
+          "post"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/a\\(b\\)\\[c\\]\\{d\\}\\|e\\^f\\$g/jobs/1$"
+      },
+      {
+        "id": "E2_CONFIRM",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "main_frame",
+          "xmlhttprequest"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/a\\(b\\)\\[c\\]\\{d\\}\\|e\\^f\\$g/jobs/1/confirmation(\\?.*)?$"
+      },
+      {
+        "id": "E3_RENDER",
+        "methods": [
+          "get"
+        ],
+        "types": [
+          "stylesheet",
+          "script",
+          "image",
+          "font"
+        ],
+        "regex": "^https://boards\\.greenhouse\\.io/.*$"
+      },
+      {
+        "id": "C1_RECAPTCHA",
+        "methods": [
+          "get",
+          "post"
+        ],
+        "types": [
+          "script",
+          "sub_frame",
+          "xmlhttprequest",
+          "image"
+        ],
+        "regex": "^https://www\\.(google|gstatic|recaptcha)\\.(com|net)/recaptcha/.*$"
+      }
+    ]
+  }
+]

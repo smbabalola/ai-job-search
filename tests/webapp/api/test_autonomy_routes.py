@@ -6,6 +6,7 @@ from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def client_for(tmp_path, **settings_kwargs):
@@ -61,7 +62,7 @@ def test_capability_rejects_foreign_workspace_and_unknown_values(tmp_path):
 def test_dossier_and_pages(tmp_path):
     client, settings = client_for(tmp_path)
     conn = connect(settings.db_path)
-    ws = create_workspace(conn, company="Acme", title="Eng")["id"]
+    ws = create_workspace(conn, company="Acme", title="Eng", account_id=DEFAULT_ACCOUNT_ID)["id"]
     conn.close()
     assert client.get(f"/api/workspaces/{ws}/autonomy/dossier").json()["schema_version"] == "autonomy-dossier.v1"
     assert client.get("/api/workspaces/ws_missing/autonomy/dossier").status_code == 404
@@ -72,7 +73,7 @@ def test_dossier_and_pages(tmp_path):
 def test_apply_target_confirmation_requires_the_resolved_target(tmp_path):
     client, settings = client_for(tmp_path)
     conn = connect(settings.db_path)
-    ws = create_workspace(conn, company="Acme", title="Eng")["id"]
+    ws = create_workspace(conn, company="Acme", title="Eng", account_id=DEFAULT_ACCOUNT_ID)["id"]
     conn.close()
     r = client.post(f"/api/workspaces/{ws}/autonomy/apply-target/confirm", json={"url": "https://evil.example/jobs/1"})
     assert r.status_code == 409
@@ -84,7 +85,7 @@ def _job_ws(settings, record=None):
     from webapp.persistence.application_identity import save_application_identity
     conn = connect(settings.db_path)
     try:
-        ws = create_workspace(conn, company="Acme", title="Eng")["id"]
+        ws = create_workspace(conn, company="Acme", title="Eng", account_id=DEFAULT_ACCOUNT_ID)["id"]
         if record:
             save_application_identity(conn, application_workspace_id=ws, source_record=record)
             conn.commit()

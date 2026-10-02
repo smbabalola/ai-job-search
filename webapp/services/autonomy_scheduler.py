@@ -43,7 +43,11 @@ from webapp.services.autonomy_prepare import (
     system_gate4,
 )
 from webapp.services.autonomy_prepare_auth import authorize_prepare
+from webapp.services.autonomy_entitlements import (
+    has_feature, reserve_autonomous_prepare, settle_autonomous_prepare,
+)
 from webapp.services.autonomy_providers import NoCostEvidence, ProviderSet
+from webapp.services.usage import AllowanceExhausted
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +373,17 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
                           detail={"step": step.value}, **lease)
             report["action"] = "overage_blocked"
             return report
+    plan_units: list[str] = []
+    if paid:  # Bundle 7 §11.3: the plan's prepare units, reserved before any spend
+        try:
+            plan_units = reserve_autonomous_prepare(conn, account_id, ws, settings=settings, now=now)
+        except AllowanceExhausted as exc:
+            _finalize(conn, now=now, next_eligible_at=exc.window_end, **lease)
+            report["action"] = "allowance_wait"
+            return report
+
+    def unreserve() -> None:
+        settle_autonomous_prepare(conn, account_id, plan_units, succeeded=False, settings=settings, now=clock())
 
     def begin():
         if not ap.lease_is_held(conn, now=now, **{k: lease[k] for k in ("queue", "item_id", "worker_id",
@@ -397,11 +412,13 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
     try:
         attempt_id, reservations = run_immediate(conn, begin)
     except _BudgetWait:
+        unreserve()
         midnight = day_window(now, doc["timezone"])[1]
         _finalize(conn, now=now, next_eligible_at=midnight, **lease)
         report["action"] = "budget_wait"
         return report
     except _LostLease:
+        unreserve()
         return report
 
     refs, error = None, None
@@ -424,15 +441,21 @@ def _process_application(conn, *, item: dict[str, Any], settings: Settings, prov
                                              account_id=account_id, application_workspace_id=ws,
                                              request_id=request_id))
     except LeaseLost:
+        unreserve()
         return report  # nothing committed; the attempt is left for recovery
     except Exception as exc:  # classified truthfully at finalize
         error = exc
         generation = getattr(exc, "generation", generation)
     finish_now = clock()
-    _finish_paid(conn, queue="APPLICATION", item_id=ws, subject_type="APPLICATION", account_id=account_id,
-                 worker_id=worker_id, generation=generation, attempt_id=attempt_id, reservation_ids=reservations,
-                 step=step.value, envelope=envelope, fingerprint=step_fp, retry_request_id=cycle, refs=refs,
-                 error=error, settings=settings, rng=rng, meter=meter if paid else NoCostEvidence(), now=finish_now)
+    try:
+        _finish_paid(conn, queue="APPLICATION", item_id=ws, subject_type="APPLICATION", account_id=account_id,
+                     worker_id=worker_id, generation=generation, attempt_id=attempt_id,
+                     reservation_ids=reservations, step=step.value, envelope=envelope, fingerprint=step_fp,
+                     retry_request_id=cycle, refs=refs, error=error, settings=settings, rng=rng,
+                     meter=meter if paid else NoCostEvidence(), now=finish_now)
+    finally:
+        settle_autonomous_prepare(conn, account_id, plan_units, succeeded=error is None, settings=settings,
+                                  now=clock())
     report["action"] = f"ran:{step.value}"
     return report
 
@@ -479,6 +502,10 @@ def _process_candidate(conn, *, item: dict[str, Any], settings: Settings, provid
     if generation is None:
         return report
     lease = dict(queue="CANDIDATE", item_id=cid, worker_id=worker_id, generation=generation)
+    if not has_feature(conn, account_id, "automation.screening", settings=settings, now=now):
+        _finalize(conn, now=now, next_eligible_at=None, **lease)  # Bundle 7 §11.2: dormant until woken
+        report["action"] = "not_entitled"
+        return report
     if is_paused(conn, account_id=account_id, scope_type="SEARCH_WORKSPACE", scope_id=sw):
         _release(conn, now=now, **lease)
         report["action"] = "released"
@@ -647,6 +674,19 @@ def wake_all_on_start(conn, *, now: datetime) -> int:
     return run_immediate(conn, work)
 
 
+def tick_once(conn, settings: Settings, providers: ProviderSet, *, clock: Callable[[], datetime],
+              rng: random.Random, worker_id: str, status: dict[str, Any] | None = None) -> TickReport | None:
+    """One driver tick when the scheduler gate is on (the worker's autonomy.tick
+    and the in-app/CLI loop share it)."""
+    if not settings.autonomy_scheduler_enabled:
+        return None
+    report = run_tick(conn, settings=settings, providers=providers, now=clock(), rng=rng, worker_id=worker_id,
+                      clock=clock)
+    if status is not None:
+        status["last_tick_at"] = clock().isoformat()
+    return report
+
+
 def run_driver(settings: Settings, providers: ProviderSet, *, stop: threading.Event,
                clock: Callable[[], datetime], rng: random.Random, worker_id: str,
                status: dict[str, Any] | None = None) -> None:
@@ -659,13 +699,10 @@ def run_driver(settings: Settings, providers: ProviderSet, *, stop: threading.Ev
     try:
         wake_all_on_start(conn, now=clock())
         while not stop.is_set():
-            if settings.autonomy_scheduler_enabled:
-                try:
-                    run_tick(conn, settings=settings, providers=providers, now=clock(), rng=rng,
-                             worker_id=worker_id, clock=clock)
-                    status["last_tick_at"] = clock().isoformat()
-                except Exception:
-                    logger.exception("autonomy driver tick failed")
+            try:
+                tick_once(conn, settings, providers, clock=clock, rng=rng, worker_id=worker_id, status=status)
+            except Exception:
+                logger.exception("autonomy driver tick failed")
             stop.wait(settings.autonomy_tick_interval)
     finally:
         status["running"] = False

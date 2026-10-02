@@ -3,6 +3,7 @@
 // so the service worker never imports the page bundle itself.
 import type { ActionOutcome, Envelope, PlanAction } from "./executor";
 import type { ObservationV1 } from "./observation-types";
+import type { Signals } from "../submit/signals";
 
 export const FILL_PAGE_KEY = "__jobsearch_fill_page__";
 
@@ -18,4 +19,11 @@ export interface FillPageApi {
   installDetections(runId: string): void;
   detected(): string[];
   enablePostFill(adapterId: string): void;
+  // 6E-A (spec §10, §19): read-only submit proofs and signals, and the one
+  // SUBMIT_CLICK on exactly one certified control with the bound fingerprint.
+  findSubmitControl(certificationId: string, fingerprint: string): Promise<boolean>;
+  clickSubmit(certificationId: string, fingerprint: string): Promise<"CLICKED" | "SUBMIT_CONTROL_MISSING">;
+  signals(adapterId: string, certificationId: string, context: { boundUrl: string; confirmationUrl: string }): Signals;
+  watchSubmitContent(adapterId: string): void;
+  contentChanged(): boolean;
 }

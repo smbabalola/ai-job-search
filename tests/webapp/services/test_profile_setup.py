@@ -13,6 +13,7 @@ from webapp.services.profile_setup import (
     profile_snapshot_is_ready,
     setup_basic_profile,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "webapp_profile_root"
@@ -56,7 +57,7 @@ def test_basic_setup_writes_canonical_source_and_builds_global_snapshot(tmp_path
         "experience": ["Led delivery planning for a complex programme."],
         "skills": ["Primavera P6", "Power BI"],
         "certifications": ["PRINCE2 Practitioner"],
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID)
 
     assert artifact["workspace_id"] == PROFILE_WORKSPACE_ID
     assert profile_snapshot_is_ready(artifact)
@@ -82,7 +83,7 @@ def test_invalid_import_preserves_placeholder_source_and_creates_no_snapshot(tmp
         import_profile_markdown(
             conn, root=root,
             markdown="# Candidate Profile\n\n## Identity\n- **Name:** [YOUR_NAME]\n",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
     assert target.read_text(encoding="utf-8") == PLACEHOLDER_PROFILE
     assert get_current_artifact(conn, PROFILE_WORKSPACE_ID, "profile_snapshot") is None
@@ -100,7 +101,7 @@ def test_setup_refuses_to_overwrite_a_populated_candidate_source(tmp_path):
         import_profile_markdown(
             conn, root=root,
             markdown="# Candidate Profile\n\n## Identity\n- **Name:** Replacement Person\n",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
     assert target.read_text(encoding="utf-8") == populated
     conn.close()

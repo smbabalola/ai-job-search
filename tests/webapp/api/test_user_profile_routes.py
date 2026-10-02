@@ -33,7 +33,7 @@ def test_get_then_put_round_trip_and_idempotent_update(tmp_path):
         empty = client.get(endpoint)
         assert empty.status_code == 200
         assert empty.json()["user_profile"] is None
-        assert empty.json()["defaults"]["schema_version"] == "user-profile.v1"
+        assert empty.json()["defaults"]["schema_version"] == "user-profile.v2"
 
         created = client.put(endpoint, headers={"If-Match": "0"}, json=_payload())
         assert created.status_code == 200, created.text

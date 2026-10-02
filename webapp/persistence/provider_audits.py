@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 
 def save_provider_audit(
-    conn: sqlite3.Connection, *, workspace_id: str, stage: str,
+    conn: dbapi.Connection, *, workspace_id: str, stage: str,
     metadata: dict[str, Any], request_artifact_id: str | None = None,
 ) -> dict[str, Any]:
     audit_id = f"audit_{uuid.uuid4().hex[:20]}"
@@ -28,7 +28,7 @@ def save_provider_audit(
 
 
 def list_provider_audits(
-    conn: sqlite3.Connection, workspace_id: str, stage: str | None = None,
+    conn: dbapi.Connection, workspace_id: str, stage: str | None = None,
 ) -> list[dict[str, Any]]:
     if stage is None:
         rows = conn.execute(

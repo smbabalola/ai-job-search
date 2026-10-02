@@ -4,13 +4,13 @@ the latest answer_confirmations row by seq."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 from typing import Any, Mapping
 
 from product.autonomy_contract import REACH_ORDER, Reach, CanonicalHashError, canonical_json, to_utc_iso
 from product.semantic_subject_policy import load_subject_policy, subject_entry
+from webapp.persistence import dbapi
 
 
 class AnswerValidationError(ValueError):
@@ -23,13 +23,13 @@ def _id(prefix: str) -> str:
 
 def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols, marks = ", ".join(values), ", ".join("?" for _ in values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks}) RETURNING *",
+                         tuple(values.values())).fetchone())
 
 
 def _validate(subject: str, reach: Reach, scope_id: str | None, context: Mapping[str, Any],
               basis: Mapping[str, Any], policy: Mapping[str, Any], provenance: str = "USER",
-              supersedes_id: str | None = None, conn: sqlite3.Connection | None = None,
+              supersedes_id: str | None = None, conn: dbapi.Connection | None = None,
               account_id: str | None = None) -> dict[str, Any]:
     entry = subject_entry(policy, subject)
     if entry is None:
@@ -72,7 +72,7 @@ def _validate(subject: str, reach: Reach, scope_id: str | None, context: Mapping
     return entry
 
 
-def approve_answer(conn: sqlite3.Connection, *, account_id: str, subject: str, value: Any, reach: Reach,
+def approve_answer(conn: dbapi.Connection, *, account_id: str, subject: str, value: Any, reach: Reach,
                    scope_id: str | None, context: dict[str, Any], basis: dict[str, Any], approved_by: str,
                    now: datetime, provenance: str = "USER", basis_profile_version_id: str | None = None,
                    supersedes_id: str | None = None, source_blocker_resolution_id: str | None = None,

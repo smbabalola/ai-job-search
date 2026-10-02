@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any
 
 from webapp.persistence.application_blockers import list_application_blockers, list_blocker_resolution_history
 from webapp.persistence.autonomy_ledger import list_attempt_events, list_decisions
 from webapp.persistence.workspaces import get_workspace
+from webapp.persistence import dbapi
 
 DOSSIER_SCHEMA_VERSION = "autonomy-dossier.v1"
 _RAW_DECISION_COLUMNS = ("reasons_json", "require_user_json", "completion_blockers_json", "inputs_json")
@@ -21,7 +21,7 @@ def _rows(conn, sql: str, params: tuple) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def _build_6b_dossier(conn: sqlite3.Connection, *, account_id: str, application_workspace_id: str) -> dict[str, Any]:
+def _build_6b_dossier(conn: dbapi.Connection, *, account_id: str, application_workspace_id: str) -> dict[str, Any]:
     ws = application_workspace_id
     workspace = get_workspace(conn, ws, account_id=account_id)
     if workspace is None:
@@ -125,7 +125,7 @@ def _pack_section(conn, ws: str) -> dict[str, Any] | None:
     }
 
 
-def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_workspace_id: str,
+def build_dossier(conn: dbapi.Connection, *, account_id: str, application_workspace_id: str,
                   settings: Any = None) -> dict[str, Any]:
     ws = application_workspace_id
     dossier = _build_6b_dossier(conn, account_id=account_id, application_workspace_id=ws)
@@ -160,7 +160,29 @@ def build_dossier(conn: sqlite3.Connection, *, account_id: str, application_work
     dossier["current_state_derived"] = state
     dossier["approvals"] = _approvals_section(conn, ws)
     dossier["fill"] = _fill_section(conn, settings=settings, account_id=account_id, ws=ws)
+    dossier["submission"] = _submission_section(conn, settings=settings, account_id=account_id, ws=ws)
     return dossier
+
+
+def _submission_section(conn, *, settings, account_id: str, ws: str) -> dict[str, Any]:
+    """6E-A (spec §16.2): the submission status and every attempt with its
+    submission-result.v1 summary (hashes and states only, no cleartext)."""
+    from datetime import datetime, timezone
+    from webapp.persistence import submit as sp
+    from webapp.services.human_submit import submission_status
+    attempts = []
+    for attempt in reversed(sp.attempts_for_application(conn, ws)):
+        auth = sp.authorization_for_grant(conn, attempt["grant_id"])
+        if auth is None or auth["account_id"] != account_id:
+            continue
+        result = sp.get_submission_result(conn, attempt["id"])
+        attempts.append({"id": attempt["id"], "created_at": attempt["created_at"], "state": attempt["state"],
+                         "review_hash": auth["review_hash"],
+                         "reason": result["result"]["reason"] if result else None,
+                         "result_hash": result["result_hash"] if result else None})
+    status = submission_status(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
+                               now=datetime.now(timezone.utc)) if settings is not None else None
+    return {"status": status, "attempts": attempts}
 
 
 def _fill_section(conn, *, settings, account_id: str, ws: str) -> dict[str, Any]:

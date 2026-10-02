@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 import json
 
@@ -14,6 +13,7 @@ from webapp.persistence.accounts import (
     DEFAULT_ACCOUNT_DISPLAY_NAME,
     DEFAULT_ACCOUNT_ID,
 )
+from webapp.persistence import dbapi
 
 
 SEARCH_WORKSPACES_MIGRATION_ID = "001_search_workspaces"
@@ -54,6 +54,16 @@ FILL_APPEND_ONLY_TABLES = (
     "fill_run_grant_bindings", "fill_action_events", "fill_quarantine_events", "fill_detection_events",
     "fill_results",
 )
+HUMAN_SUBMIT_MIGRATION_ID = "021_human_submit"
+SUBMIT_OBSERVATION_PHASES = ("REVIEW", "PRE_SUBMIT", "CHALLENGE_CLEARED", "POST_SUBMIT")
+SUBMIT_EVENTS = (
+    "PRE_CLICK_REFUSED", "CHALLENGE_BEFORE_SUBMIT", "CANCELLED_BEFORE_DISPATCH", "EGRESS_INSTALLED",
+    "EGRESS_VERIFY_FAILED", "CLICK_PERFORMED", "SUBMIT_CONTROL_MISSING", "CHALLENGE_DETECTED",
+    "CHALLENGE_CLEARED", "CONTENT_CHANGED_DURING_ATTEMPT", "SIGNAL_OBSERVED", "TOTAL_RESTORED",
+    "TOTAL_RESTORE_FAILED", "EXECUTOR_RESTARTED", "RESULT_REPORTED",
+)
+SUBMIT_APPEND_ONLY_TABLES = ("human_submit_authorizations", "submit_reobservation_requests",
+                             "submit_observations", "submit_events", "submission_results")
 AUTONOMY_APPEND_ONLY_TABLES = (
     "autonomy_authorizations", "autonomy_kill_switch", "autonomy_control_events",
     "autonomy_runs", "autonomy_run_ends", "standing_policy_versions", "approved_answers",
@@ -68,7 +78,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _execute_statements(conn: sqlite3.Connection, script: str) -> None:
+def _execute_statements(conn: dbapi.Connection, script: str) -> None:
     """Execute this migration's simple DDL without executescript's implicit commit."""
 
     for statement in script.split(";"):
@@ -76,13 +86,13 @@ def _execute_statements(conn: sqlite3.Connection, script: str) -> None:
             conn.execute(statement)
 
 
-def apply_migrations(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations ("
-        "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-    )
-    conn.commit()
-    migrations = (
+# Bundle 7 migrations (Migration dataclass and the ordered list) live in
+# webapp/persistence/bundle7_migrations.py.
+from webapp.persistence.bundle7_migrations import BUNDLE7_MIGRATIONS, Migration  # noqa: E402,F401
+
+
+def _legacy_migrations():
+    return (
         (SEARCH_WORKSPACES_MIGRATION_ID, _migrate_search_workspaces, True),
         (PROFILE_MANAGER_MIGRATION_ID, _migrate_evidence_profile_manager, False),
         (ACCOUNTS_OWNERSHIP_MIGRATION_ID, _migrate_accounts_ownership, False),
@@ -103,36 +113,68 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         (AUTONOMY_PREPARE_MIGRATION_ID, _migrate_autonomy_prepare, False),
         (REVIEW_APPROVAL_MIGRATION_ID, _migrate_review_approval, True),
         (FILL_MIGRATION_ID, _migrate_fill, False),
+        (HUMAN_SUBMIT_MIGRATION_ID, _migrate_human_submit, True),
     )
-    for migration_id, operation, disable_foreign_keys in migrations:
-        if conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE id = ?", (migration_id,)
-        ).fetchone():
-            continue
-        if disable_foreign_keys:
-            conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            operation(conn)
-            conn.execute(
-                "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
-                (migration_id, _now()),
-            )
+
+
+LEGACY_MIGRATION_IDS = (
+    SEARCH_WORKSPACES_MIGRATION_ID, PROFILE_MANAGER_MIGRATION_ID, ACCOUNTS_OWNERSHIP_MIGRATION_ID,
+    APPLICATION_DOCUMENTS_MIGRATION_ID, HANDOFF_SESSIONS_MIGRATION_ID, ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
+    PAIRING_SECRETS_MIGRATION_ID, HANDOFF_SESSION_TOKENS_MIGRATION_ID, HANDOFF_SESSION_ACTIVITY_MIGRATION_ID,
+    POLICY_DECISIONS_MIGRATION_ID, APPLICATION_BLOCKERS_MIGRATION_ID, BLOCKER_RESOLUTION_HISTORY_MIGRATION_ID,
+    SEMANTIC_SUBJECT_KEY_MIGRATION_ID, DISCOVERY_SOURCE_REGISTRY_MIGRATION_ID, AIRSWIFT_DISCOVERY_SOURCE_MIGRATION_ID,
+    AUTONOMY_CONTRACT_MIGRATION_ID, AUTONOMY_HUMAN_INTENT_BACKFILL_MIGRATION_ID, AUTONOMY_PREPARE_MIGRATION_ID,
+    REVIEW_APPROVAL_MIGRATION_ID, FILL_MIGRATION_ID, HUMAN_SUBMIT_MIGRATION_ID,
+)
+
+
+def _run_migration(conn: dbapi.Connection, migration_id: str, operation, disable_foreign_keys: bool) -> None:
+    if conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE id = ?", (migration_id,)
+    ).fetchone():
+        return
+    sqlite = conn.dialect == "sqlite"
+    if disable_foreign_keys and sqlite:
+        conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        operation(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            (migration_id, _now()),
+        )
+        if sqlite:
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
-                raise sqlite3.IntegrityError(
+                raise dbapi.IntegrityError(
                     f"migration {migration_id} created foreign-key violations: {violations!r}"
                 )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            if disable_foreign_keys:
-                conn.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if disable_foreign_keys and sqlite:
+            conn.execute("PRAGMA foreign_keys = ON")
 
 
-def _migrate_accounts_ownership(conn: sqlite3.Connection) -> None:
+def apply_migrations(conn: dbapi.Connection) -> None:
+    """SQLite runs the legacy chain 001-021; PostgreSQL starts from the
+    baseline (which records those ids). Both then run the Bundle 7 chain."""
+    if conn.dialect == "sqlite":
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        conn.commit()
+        for migration_id, operation, disable_foreign_keys in _legacy_migrations():
+            _run_migration(conn, migration_id, operation, disable_foreign_keys)
+    for migration in BUNDLE7_MIGRATIONS:
+        body = migration.sqlite if conn.dialect == "sqlite" else migration.postgres
+        _run_migration(conn, migration.id, body, migration.disable_foreign_keys)
+
+
+def _migrate_accounts_ownership(conn: dbapi.Connection) -> None:
     now = _now()
     _execute_statements(
         conn,
@@ -266,7 +308,7 @@ def _migrate_accounts_ownership(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_handoff_sessions(conn: sqlite3.Connection) -> None:
+def _migrate_handoff_sessions(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -322,7 +364,7 @@ def _migrate_handoff_sessions(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_onboarding_walkthroughs(conn: sqlite3.Connection) -> None:
+def _migrate_onboarding_walkthroughs(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -353,7 +395,7 @@ def _migrate_onboarding_walkthroughs(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_pairing_secrets(conn: sqlite3.Connection) -> None:
+def _migrate_pairing_secrets(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -371,7 +413,7 @@ def _migrate_pairing_secrets(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_policy_decisions(conn: sqlite3.Connection) -> None:
+def _migrate_policy_decisions(conn: dbapi.Connection) -> None:
     # Durable, append-only ledger of every automatic (or future human)
     # classification product/application_decision_policy.py produces for a
     # review item, keyed to the exact source artifact and policy version
@@ -447,7 +489,7 @@ def _migrate_policy_decisions(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_application_blockers(conn: sqlite3.Connection) -> None:
+def _migrate_application_blockers(conn: dbapi.Connection) -> None:
     # A REQUIRE_USER policy decision pauses an application; it is not a
     # failure. Three separate, deliberately non-overlapping concepts:
     #   policy_decisions (010)  -- immutable explanation of why policy
@@ -543,7 +585,7 @@ def _migrate_application_blockers(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_blocker_resolution_history(conn: sqlite3.Connection) -> None:
+def _migrate_blocker_resolution_history(conn: dbapi.Connection) -> None:
     # Corrective pass on 011: blocker_resolutions.blocker_id was UNIQUE,
     # permitting exactly one lifetime answer per blocker. A user must be
     # able to correct an answer (e.g. "$55,000" -> "$58,000") before
@@ -620,7 +662,7 @@ def _migrate_blocker_resolution_history(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_semantic_subject_key(conn: sqlite3.Connection) -> None:
+def _migrate_semantic_subject_key(conn: dbapi.Connection) -> None:
     # Phase 4C spec §3: a nullable classification of WHICH stable,
     # cross-application-reusable candidate fact a gate blocker is about
     # (drawn from product/semantic_subject_registry.py's closed
@@ -634,7 +676,7 @@ def _migrate_semantic_subject_key(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_discovery_source_registry(conn: sqlite3.Connection) -> None:
+def _migrate_discovery_source_registry(conn: dbapi.Connection) -> None:
     # Backend-controlled enable/disable for discovery sources that are
     # already implemented in code (product/discovery_search.py's
     # SOURCE_CLI_PATHS). This table is never, by itself, sufficient to make
@@ -666,7 +708,7 @@ def _migrate_discovery_source_registry(conn: sqlite3.Connection) -> None:
         )
 
 
-def _migrate_airswift_discovery_source(conn: sqlite3.Connection) -> None:
+def _migrate_airswift_discovery_source(conn: dbapi.Connection) -> None:
     # Registers airswift-search in the discovery_source_settings table
     # created by migration 014, enabled by default. Deliberately a new,
     # sequential migration rather than an edit to 014 -- existing databases
@@ -679,7 +721,7 @@ def _migrate_airswift_discovery_source(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
+def _migrate_handoff_session_tokens(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -697,12 +739,12 @@ def _migrate_handoff_session_tokens(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_handoff_session_activity(conn: sqlite3.Connection) -> None:
+def _migrate_handoff_session_activity(conn: dbapi.Connection) -> None:
     conn.execute("ALTER TABLE handoff_sessions ADD COLUMN last_activity_at TEXT")
     conn.execute("UPDATE handoff_sessions SET last_activity_at = started_at")
 
 
-def _migrate_evidence_profile_manager(conn: sqlite3.Connection) -> None:
+def _migrate_evidence_profile_manager(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -729,7 +771,7 @@ def _migrate_evidence_profile_manager(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_application_documents(conn: sqlite3.Connection) -> None:
+def _migrate_application_documents(conn: dbapi.Connection) -> None:
     _execute_statements(
         conn,
         """
@@ -802,7 +844,7 @@ def _migrate_application_documents(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_search_workspaces(conn: sqlite3.Connection) -> None:
+def _migrate_search_workspaces(conn: dbapi.Connection) -> None:
     now = _now()
     _execute_statements(conn,
         """
@@ -920,7 +962,7 @@ def _migrate_search_workspaces(conn: sqlite3.Connection) -> None:
     _backfill_application_origins(conn, now)
 
 
-def _rebuild_discovery_tables(conn: sqlite3.Connection) -> None:
+def _rebuild_discovery_tables(conn: dbapi.Connection) -> None:
     _execute_statements(conn,
         """
         CREATE TABLE discovery_runs_new (
@@ -1073,7 +1115,7 @@ def _source_record_from_job_snapshot(snapshot: dict) -> dict:
     return record
 
 
-def _backfill_application_identities(conn: sqlite3.Connection, detected_at: str) -> None:
+def _backfill_application_identities(conn: dbapi.Connection, detected_at: str) -> None:
     rows = conn.execute(
         "SELECT w.id AS workspace_id, a.payload_json "
         "FROM workspaces w "
@@ -1122,7 +1164,7 @@ def _backfill_application_identities(conn: sqlite3.Connection, detected_at: str)
                 )
 
 
-def _backfill_application_origins(conn: sqlite3.Connection, promoted_at: str) -> None:
+def _backfill_application_origins(conn: dbapi.Connection, promoted_at: str) -> None:
     rows = conn.execute(
         "SELECT c.id AS candidate_id, c.promoted_workspace_id, "
         "c.canonical_occurrence_id, o.run_id "
@@ -1147,7 +1189,7 @@ def _backfill_application_origins(conn: sqlite3.Connection, promoted_at: str) ->
         )
 
 
-def _migrate_autonomy_contract(conn: sqlite3.Connection) -> None:
+def _migrate_autonomy_contract(conn: dbapi.Connection) -> None:
     # Bundle 6B autonomy contract (spec section 15). Every append-only table
     # carries seq INTEGER PRIMARY KEY AUTOINCREMENT and every "current"
     # projection orders by seq, never created_at (spec section 2 invariant
@@ -1454,7 +1496,7 @@ def _migrate_autonomy_contract(conn: sqlite3.Connection) -> None:
             )
 
 
-def _migrate_autonomy_human_intent_backfill(conn: sqlite3.Connection) -> None:
+def _migrate_autonomy_human_intent_backfill(conn: dbapi.Connection) -> None:
     # Applications the user marked applied (or confirmed via handoff) before
     # Bundle 6B must block autonomous re-application too (spec §10.2).
     # Idempotent: record_human_intent returns an existing live intent.
@@ -1486,7 +1528,7 @@ AUTONOMY_6C_APPEND_ONLY_TABLES = (
 )
 
 
-def _migrate_autonomy_prepare(conn: sqlite3.Connection) -> None:
+def _migrate_autonomy_prepare(conn: dbapi.Connection) -> None:
     # Bundle 6C (spec §4). History/event tables are append-only; the candidate
     # queue is mutable coordination state (no trigger).
     _execute_statements(
@@ -1677,7 +1719,7 @@ def _migrate_autonomy_prepare(conn: sqlite3.Connection) -> None:
 
 # ---- Bundle 6D-A: review & approval (019) ----
 
-def _migrate_review_approval(conn: sqlite3.Connection) -> None:
+def _migrate_review_approval(conn: dbapi.Connection) -> None:
     events = ", ".join(f"'{e}'" for e in REVIEW_EVENTS)
     kinds = ", ".join(f"'{k}'" for k in DELTA_KINDS)
     # One atomic migration: never executescript (it commits implicitly).
@@ -1747,7 +1789,7 @@ def _migrate_review_approval(conn: sqlite3.Connection) -> None:
     _rebuild_approved_answers_with_application_reach(conn)
 
 
-def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -> None:
+def _rebuild_approved_answers_with_application_reach(conn: dbapi.Connection) -> None:
     """SQLite can't alter a CHECK: the documented 12-step rebuild. Rows, seq
     values, indexes and triggers are preserved; FKs are checked afterwards."""
     table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approved_answers'"
@@ -1773,7 +1815,7 @@ def _rebuild_approved_answers_with_application_reach(conn: sqlite3.Connection) -
 
 # ---- Bundle 6D-B: FILL (020) ----
 
-def _migrate_fill(conn: sqlite3.Connection) -> None:
+def _migrate_fill(conn: dbapi.Connection) -> None:
     """Spec §19. Append-only evidence tables (UPDATE/DELETE raise), closed
     vocabularies from product.fill_vocab, and two mutable operational
     tables (leases and the active-run concurrency keys). No 6D-A table,
@@ -1967,3 +2009,102 @@ def _migrate_fill(conn: sqlite3.Connection) -> None:
         for action in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
                          f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+
+
+# ---- Bundle 6E-A: human-authorized SUBMIT (021) ----
+
+def _migrate_human_submit(conn: dbapi.Connection) -> None:
+    """Spec §17. New append-only submit evidence tables with closed
+    vocabularies, and submission_intents rebuilt ONLY to add the
+    HUMAN_AUTHORIZED source (rows, seq, the live-intent index and FKs
+    preserved). No 6D-A or 6D-B table, CHECK or trigger is touched."""
+    phases = ", ".join(f"'{p}'" for p in SUBMIT_OBSERVATION_PHASES)
+    events = ", ".join(f"'{e}'" for e in SUBMIT_EVENTS)
+    _execute_statements(conn, f"""
+        CREATE TABLE human_submit_authorizations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            fill_run_id TEXT NOT NULL UNIQUE REFERENCES fill_runs(id),
+            review_hash TEXT NOT NULL,
+            review_json TEXT NOT NULL,
+            grant_id TEXT NOT NULL UNIQUE REFERENCES autonomy_grants(id),
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_human_submit_authorizations_ws ON human_submit_authorizations(application_workspace_id, seq);
+
+        CREATE TABLE submit_reobservation_requests (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            requested_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_reobservation_requests_run ON submit_reobservation_requests(fill_run_id, seq);
+
+        CREATE TABLE submit_observations (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            application_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            fill_run_id TEXT NOT NULL REFERENCES fill_runs(id),
+            attempt_id TEXT REFERENCES submission_attempts(id),
+            phase TEXT NOT NULL CHECK (phase IN ({phases})),
+            structure_fingerprint TEXT NOT NULL,
+            observation_fingerprint TEXT NOT NULL,
+            observation_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_observations_run ON submit_observations(fill_run_id, phase, seq);
+
+        CREATE TABLE submit_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            authorization_id TEXT NOT NULL REFERENCES human_submit_authorizations(id),
+            attempt_id TEXT REFERENCES submission_attempts(id),
+            event TEXT NOT NULL CHECK (event IN ({events})),
+            detail_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_submit_events_authorization ON submit_events(authorization_id, seq);
+
+        CREATE TABLE submission_results (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            attempt_id TEXT NOT NULL UNIQUE REFERENCES submission_attempts(id),
+            result_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    """)
+    for table in SUBMIT_APPEND_ONLY_TABLES:
+        for action in ("UPDATE", "DELETE"):
+            conn.execute(f"CREATE TRIGGER {table}_append_only_{action.lower()} BEFORE {action} ON {table} "
+                         f"BEGIN SELECT RAISE(ABORT, '{table} is append-only audit history'); END")
+    _rebuild_submission_intents_with_human_authorized(conn)
+
+
+def _rebuild_submission_intents_with_human_authorized(conn: dbapi.Connection) -> None:
+    """The 019 12-step rebuild pattern: rows, seq values, indexes and
+    triggers preserved; FKs checked afterwards."""
+    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'submission_intents'"
+                             ).fetchone()[0]
+    old_check = "CHECK (source IN ('AUTONOMOUS', 'HUMAN_HANDOFF', 'HUMAN_APPLIED'))"
+    assert old_check in table_sql, "submission_intents source CHECK changed; update the 021 rebuild"
+    extras = [r[0] for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = 'submission_intents' AND type IN ('index', 'trigger') "
+        "AND sql IS NOT NULL").fetchall()]
+    new_sql = table_sql.replace(
+        old_check, "CHECK (source IN ('AUTONOMOUS', 'HUMAN_HANDOFF', 'HUMAN_APPLIED', 'HUMAN_AUTHORIZED'))")
+    new_sql = new_sql.replace("CREATE TABLE submission_intents", "CREATE TABLE submission_intents_021", 1)
+    conn.execute(new_sql)
+    conn.execute("INSERT INTO submission_intents_021 SELECT * FROM submission_intents")
+    conn.execute("DROP TABLE submission_intents")  # drops its indexes and triggers too
+    conn.execute("ALTER TABLE submission_intents_021 RENAME TO submission_intents")
+    for statement in extras:
+        conn.execute(statement)
+    problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if problems:
+        raise RuntimeError(f"021 submission_intents rebuild broke foreign keys: {problems}")

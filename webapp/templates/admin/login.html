@@ -1,0 +1,11 @@
+{% extends "admin/_base.html" %}
+{% block title %}Staff sign-in{% endblock %}
+{% block content %}
+<form class="panel" method="post" action="/admin/login" data-admin-login><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h1>Staff sign-in</h1></div>
+  {% for error in errors %}<p class="blocked-note" role="alert">{{ error }}</p>{% endfor %}
+  <label class="field"><span>Email</span><input type="email" name="email" autocomplete="username" required></label>
+  <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+  <button class="button" type="submit">Continue</button>
+</form>
+{% endblock %}

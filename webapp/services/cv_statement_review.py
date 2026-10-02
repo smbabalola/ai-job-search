@@ -17,7 +17,6 @@ This module makes no Task 3 calls and persists no generation basis. It only:
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from product.cv_review_projection import (
@@ -31,13 +30,14 @@ from webapp.persistence.artifacts import get_artifact
 from webapp.persistence.review import DISPOSITIONS, list_review_decisions, save_review_decision
 from webapp.services.cv_generation_v2 import CV_STATEMENT_PLAN_ARTIFACT_VERSION
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
 
 
 class CvStatementReviewError(PipelineError):
     pass
 
 
-def _load_statement_plan(conn: sqlite3.Connection, statement_plan_artifact_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_statement_plan(conn: dbapi.Connection, statement_plan_artifact_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load and validate the exact pinned envelope; return (artifact, inner statement_plan).
 
     The review binding identity (source_artifact_id for every decision) is
@@ -67,7 +67,7 @@ def _load_statement_plan(conn: sqlite3.Connection, statement_plan_artifact_id: s
 
 
 def _effective_decisions(
-    conn: sqlite3.Connection, workspace_id: str, statement_plan_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, statement_plan_artifact_id: str,
 ) -> dict[str, dict[str, Any]]:
     """Newest decision per exact stmt_* domain_item_id, for this exact artifact only.
 
@@ -87,7 +87,7 @@ def _effective_decisions(
 
 
 def list_cv_statement_review_items(
-    conn: sqlite3.Connection, statement_plan_artifact_id: str,
+    conn: dbapi.Connection, statement_plan_artifact_id: str,
 ) -> list[dict[str, Any]]:
     """Return the exact reviewable statements for a pinned cv_statement_plan artifact.
 
@@ -104,7 +104,7 @@ def list_cv_statement_review_items(
 
 
 def save_cv_statement_review_decision(
-    conn: sqlite3.Connection, workspace_id: str, *,
+    conn: dbapi.Connection, workspace_id: str, *,
     statement_plan_artifact_id: str, statement_id: str, disposition: str,
     note: str | None = None,
 ) -> dict[str, Any]:
@@ -136,7 +136,7 @@ def save_cv_statement_review_decision(
 
 
 def resolve_cv_statement_review_state(
-    conn: sqlite3.Connection, workspace_id: str, statement_plan_artifact_id: str,
+    conn: dbapi.Connection, workspace_id: str, statement_plan_artifact_id: str,
 ) -> dict[str, list[str]]:
     """Return {authorized, omitted, pending} exact statement_id sets for this artifact."""
 
@@ -161,8 +161,8 @@ def resolve_cv_statement_review_state(
 
 
 def get_review_authorized_cv_statement_plan(
-    conn: sqlite3.Connection, workspace_id: str, *,
-    statement_plan_artifact_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, workspace_id: str, *,
+    statement_plan_artifact_id: str, account_id: str,
 ) -> dict[str, Any]:
     """Fail-closed accessor: the exact reviewed projection of a pinned artifact.
 

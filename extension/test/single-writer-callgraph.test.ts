@@ -110,10 +110,17 @@ describe("a single employer-page writer (spec §21)", () => {
     expect(bundle).not.toMatch(/snapshot|runContentScript|approveSuggestion/);
   });
 
-  it("every DOM mutation reachable from a page lives in fill/executor.ts", () => {
-    const sites = mutationSites();
+  it("every DOM mutation reachable from a page lives in fill/executor.ts (plus 6E-A's one submit click)", () => {
+    const all = mutationSites();
+    // 6E-A (spec E13): the single SUBMIT_CLICK primitive is the one declared
+    // exception -- `.click(` inside submitClick in submit/submit-executor.ts.
+    const submitClick = all.filter((s) => s.file === "submit/submit-executor.ts");
+    expect(submitClick.map((s) => `${s.what} in ${s.within.join(">")}`)).toEqual([".click( in submitClick"]);
+    const sites = all.filter((s) => s.file !== "submit/submit-executor.ts");
     expect(sites.filter((s) => s.file !== "fill/executor.ts").map((s) => `${s.file}: ${s.what}`)).toEqual([]);
-    // ... and inside the executor only in the six primitives.
+    // ... and inside the executor only in the six primitives; the fill executor never clicks.
+    expect(sites.filter((s) => s.what === ".click(" || s.what === ".submit(" || s.what === ".requestSubmit("))
+      .toEqual([]);
     const primitives = new Set(["setText", "setSelect", "setChecked", "setFilesLocal", "dispatchInput",
       "dispatchChange"]);
     const outside = sites.filter((s) => !s.within.some((w) => primitives.has(w)));

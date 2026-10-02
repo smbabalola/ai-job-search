@@ -1,0 +1,11 @@
+{% extends "admin/_base.html" %}
+{% block title %}Staff{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Staff</h1><p>Role changes need a fresh <a href="/admin/reauth?next=/admin/staff">confirmation</a>.</p></div></section>
+{% for m in members %}<section class="panel" data-staff-member="{{ m.id }}"><div class="panel-heading"><h2>{{ m.email }}</h2><span class="badge">{{ m.roles | join(", ") or "no roles" }}</span></div>
+  <p class="muted">{{ m.status }} · authenticator {{ "enrolled" if m.totp else "not enrolled" }}</p>
+  <form data-json-form="/api/admin/staff/{{ m.id }}/roles"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <label class="field"><span>Role</span><select name="role">{% for r in roles %}<option>{{ r }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Change</span><select name="grant"><option value="true">Grant</option><option value="false">Revoke</option></select></label>
+    <label class="field"><span>Reason</span><input name="reason" required></label><button class="button" type="submit">Apply</button></form></section>{% endfor %}
+{% endblock %}

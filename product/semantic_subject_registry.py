@@ -54,6 +54,10 @@ SEMANTIC_SUBJECTS: dict[str, str] = {
     "demographic.eeo": "Demographic / equal-opportunity monitoring questions.",
     "background.criminal_record": "Criminal-record disclosure questions.",
     "health.disability": "Health or disability disclosure questions.",
+    # Bundle 7 onboarding (spec 15.2). Additive only.
+    "contact.email": "The candidate's contact email address for applications.",
+    "contact.phone": "The candidate's contact phone number.",
+    "location.current": "Where the candidate currently lives (city and country).",
 }
 
 

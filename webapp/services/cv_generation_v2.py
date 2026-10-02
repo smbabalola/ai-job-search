@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any
 
 from product.cv_content_plan import plan_cv_content
@@ -36,6 +35,7 @@ from webapp.persistence.artifacts import get_current_artifact, save_artifact
 from webapp.persistence.workspaces import get_profile_workspace_id
 from webapp.services.pipeline import PipelineError
 from webapp.services.staleness import record_dependency_fingerprint
+from webapp.persistence import dbapi
 
 CV_CONTENT_PLAN_ARTIFACT_VERSION = "cv-content-plan-artifact.v1"
 CV_STATEMENT_PLAN_ARTIFACT_VERSION = "cv-statement-plan-artifact.v1"
@@ -56,7 +56,7 @@ def _artifact_ref(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _current_or_error(
-    conn: sqlite3.Connection, workspace_id: str, artifact_type: str,
+    conn: dbapi.Connection, workspace_id: str, artifact_type: str,
     *, profile_workspace_id: str | None,
 ) -> dict[str, Any]:
     lookup_workspace = profile_workspace_id if artifact_type == "profile_snapshot" else workspace_id
@@ -69,8 +69,8 @@ def _current_or_error(
 
 
 def plan_and_persist_cv_generation_v2(
-    conn: sqlite3.Connection, workspace_id: str, *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, workspace_id: str, *,
+    account_id: str,
     budgets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run Task 1 then Task 2 over current immutable inputs and persist both.

@@ -6,6 +6,7 @@ from webapp.persistence.workspaces import (
     get_workspace,
     list_workspaces,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _conn(tmp_path):
@@ -16,8 +17,8 @@ def _conn(tmp_path):
 
 def test_ensure_profile_workspace_is_idempotent_and_has_fixed_id(tmp_path):
     conn = _conn(tmp_path)
-    first = ensure_profile_workspace(conn)
-    second = ensure_profile_workspace(conn)
+    first = ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    second = ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     assert first["id"] == second["id"] == PROFILE_WORKSPACE_ID
     assert first["kind"] == "profile"
     conn.close()
@@ -25,9 +26,9 @@ def test_ensure_profile_workspace_is_idempotent_and_has_fixed_id(tmp_path):
 
 def test_profile_workspace_never_appears_in_list_workspaces(tmp_path):
     conn = _conn(tmp_path)
-    ensure_profile_workspace(conn)
-    create_workspace(conn, company="Acme", title="Backend Engineer")
-    listed = list_workspaces(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
+    listed = list_workspaces(conn, account_id=DEFAULT_ACCOUNT_ID)
     assert all(ws["id"] != PROFILE_WORKSPACE_ID for ws in listed)
     assert len(listed) == 1
     conn.close()
@@ -35,7 +36,7 @@ def test_profile_workspace_never_appears_in_list_workspaces(tmp_path):
 
 def test_create_workspace_has_null_workflow_status_and_job_kind(tmp_path):
     conn = _conn(tmp_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     assert ws["workflow_status"] is None
     assert ws["kind"] == "job"
     assert ws["company"] == "Acme"
@@ -44,14 +45,14 @@ def test_create_workspace_has_null_workflow_status_and_job_kind(tmp_path):
 
 def test_get_workspace_roundtrip(tmp_path):
     conn = _conn(tmp_path)
-    created = create_workspace(conn, company="Acme", title="Backend Engineer")
-    assert get_workspace(conn, created["id"])["id"] == created["id"]
+    created = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
+    assert get_workspace(conn, created["id"], account_id=DEFAULT_ACCOUNT_ID)["id"] == created["id"]
     conn.close()
 
 
 def test_get_workspace_missing_returns_none(tmp_path):
     conn = _conn(tmp_path)
-    assert get_workspace(conn, "does-not-exist") is None
+    assert get_workspace(conn, "does-not-exist", account_id=DEFAULT_ACCOUNT_ID) is None
     conn.close()
 
 
@@ -76,7 +77,7 @@ def test_ensure_profile_workspace_survives_concurrent_insert_race(tmp_path):
     # `conn` still thinks the row may not exist (no prior read in this test),
     # so calling ensure_profile_workspace on it exercises the INSERT ->
     # IntegrityError -> fallback-read path directly.
-    result = ensure_profile_workspace(conn)
+    result = ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     assert result["id"] == PROFILE_WORKSPACE_ID
     assert result["kind"] == "profile"
     conn.close()

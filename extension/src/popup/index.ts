@@ -1,27 +1,41 @@
-import { CredentialStore } from "../background/credential-store";
-import { ServerClient } from "../background/server-client";
-import { attemptPairing } from "./pairing-form";
-import { renderFillView } from "./fill-view";
+import { attemptPairing, attemptSignOut, type SendToBackground } from "./pairing-form";
+import { renderFillView, renderSubmitView } from "./fill-view";
+import type { SubmitView } from "../submit/submit-controller";
 import type { ControllerView } from "../fill/run-controller";
 
-const credentialStore = new CredentialStore();
-const serverClient = new ServerClient(() => credentialStore.get());
+const send: SendToBackground = (message) => chrome.runtime.sendMessage(message);
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
 
 async function render(): Promise<void> {
   const app = document.getElementById("app");
   if (!app) return;
 
-  const credential = await credentialStore.get();
+  const status = await send({ type: "device_status" }).catch(() => null) as
+    { paired: boolean; accountLabel: string | null } | null;
 
-  if (credential) {
+  if (status?.paired) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const state = tab?.id === undefined ? null
       : await chrome.runtime.sendMessage({ type: "fill_state", tabId: tab.id })
-        .catch(() => null) as { view: ControllerView | null; permissionsGranted: boolean } | null;
+        .catch(() => null) as { view: ControllerView | null; submitView?: SubmitView | null;
+                                permissionsGranted: boolean } | null;
     app.innerHTML = `
-      <p>Paired &#x2713;</p>
+      <p>Signed in as <strong>${escapeHtml(status.accountLabel ?? "")}</strong>
+        <button id="sign-out">Sign out</button></p>
+      <div id="submit">${renderSubmitView(state?.submitView ?? null)}</div>
       <div id="fill">${renderFillView(state?.view ?? null, state?.permissionsGranted ?? false)}</div>
     `;
+    document.getElementById("sign-out")?.addEventListener("click", async () => {
+      await attemptSignOut(send);
+      await render();
+    });
+    document.getElementById("cancel-submit")?.addEventListener("click", async () => {
+      if (tab?.id !== undefined) await chrome.runtime.sendMessage({ type: "submit_cancel", tabId: tab.id });
+      await render();
+    });
     document.getElementById("enable-fill")?.addEventListener("click", async () => {
       // Requested from the popup: a user gesture is required (spec §10.1).
       await chrome.permissions.request({ permissions: ["tabs", "webNavigation"] });
@@ -46,7 +60,7 @@ async function render(): Promise<void> {
     document.getElementById("pair-button")?.addEventListener("click", async () => {
       const input = document.getElementById("pairing-code") as HTMLInputElement;
       const messageEl = document.getElementById("pairing-message");
-      const result = await attemptPairing(input.value.trim(), serverClient, credentialStore);
+      const result = await attemptPairing(input.value, send);
       if (result.ok) {
         await render();
       } else if (messageEl) {

@@ -12,11 +12,12 @@
       <p>{{ a.state | replace("_", " ") | lower }}{% if a.blocking_count %} · {{ a.blocking_count }} to resolve{% endif %}{% if a.attention_count %} · {{ a.attention_count }} to acknowledge{% endif %}
         {% if not a.presented_at_current_hash %} · open it to review{% endif %}</p>
       {% if a.fill_status and a.fill_status.label %}<p data-fill-status="{{ a.fill_status.status }}">{{ a.fill_status.label }}</p>{% endif %}
+      {% if a.submission_status and a.submission_status.label %}<p data-submission-status="{{ a.submission_status.status }}">{{ a.submission_status.label }} · <a href="/workspaces/{{ a.workspace_id }}/submit">Submit review</a></p>{% endif %}
       <p><a href="/workspaces/{{ a.workspace_id }}/review">Review</a>{% if a.state == "APPROVED_FOR_FILL" %} · <a href="/workspaces/{{ a.workspace_id }}/fill-plan">Fill plan</a>{% endif %}</p>
     </div></article>{% else %}<p>No applications are ready for review.</p>{% endfor %}
   <button class="button" type="button" data-review-action="approve-selected">Approve selected (<span data-selected-count>0</span>)</button>
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const boxes = Array.from(document.querySelectorAll("[data-select-application]"));
   const count = document.querySelector("[data-selected-count]");

@@ -179,6 +179,8 @@ def _assemble(conn, *, settings: Settings, account_id: str, application_workspac
     warnings.extend(field_warnings)
     from webapp.services.review_documents import newer_draft_warnings  # after review_application loads
     warnings.extend(newer_draft_warnings(conn, account_id=account_id, application_workspace_id=ws))
+    from webapp.services.cv_strategy import cv_choice_warnings  # Bundle 7 §14.3: a required CV choice
+    warnings.extend(cv_choice_warnings(conn, account_id=account_id, workspace_id=ws))
     fit = get_current_artifact(conn, ws, "job_fit_result")
     score = ((fit or {}).get("payload") or {}).get("overall_score")
     if score is not None:

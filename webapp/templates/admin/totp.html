@@ -1,0 +1,12 @@
+{% extends "admin/_base.html" %}
+{% block title %}Authenticator code{% endblock %}
+{% block content %}
+<form class="panel" method="post" action="/admin/totp" data-admin-totp><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h1>Authenticator code</h1></div>
+  {% for error in errors %}<p class="blocked-note" role="alert">{{ error }}</p>{% endfor %}
+  {% if enrolment %}<div data-totp-enrolment><p>Add this account to your authenticator app, then enter the 6-digit code it shows. This key is shown only until you confirm it.</p>
+    <p><code data-totp-secret>{{ enrolment.secret }}</code></p><p class="muted"><code>{{ enrolment.uri }}</code></p></div>{% endif %}
+  <label class="field"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>
+  <button class="button" type="submit">Sign in</button>
+</form>
+{% endblock %}

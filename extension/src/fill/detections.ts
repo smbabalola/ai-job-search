@@ -17,6 +17,16 @@ export interface DetectionHandle {
   // Every kind recorded so far, in order: the controller polls it before each
   // step, so a stop never depends on the async message arriving first.
   reported(): DetectionKind[];
+  // 6E-A (spec E13): the human-authorized SUBMIT_CLICK is the one submit this
+  // guard lets through -- a one-shot allowance armed by the SubmitController
+  // immediately before the click, only after the SUBMIT egress is verified.
+  allowNextSubmit(): void;
+  disarmSubmit(): void;
+  // 6E-A (spec §10 step 8, §12): a TRUSTED input/change inside the
+  // application root (a person editing) during an attempt. Page-script
+  // mutations are not edits; the mandatory re-observation catches values.
+  watchContent(root: Node): void;
+  contentChanged(): boolean;
   dispose(): void;
 }
 
@@ -31,7 +41,20 @@ export function installDetections(win: Window, report: Report): DetectionHandle 
     order.push(kind);
     report(kind, detail);
   };
+  let submitAllowance = false;
+  let edited = false;
+  let editRoot: Node | null = null;
+  const onEdit = (event: Event) => {
+    const NodeCtor = (win as unknown as { Node: typeof Node }).Node;
+    if (event.isTrusted && editRoot !== null && event.target instanceof NodeCtor && editRoot.contains(event.target)) {
+      edited = true;
+    }
+  };
   const onSubmit = (event: Event) => {
+    if (submitAllowance) {
+      submitAllowance = false;
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     const form = event.target as HTMLFormElement | null;
@@ -51,6 +74,20 @@ export function installDetections(win: Window, report: Report): DetectionHandle 
   let post: MutationObserver | null = null;
   return {
     reported: () => [...order],
+    allowNextSubmit() {
+      submitAllowance = true;
+    },
+    disarmSubmit() {
+      submitAllowance = false;
+    },
+    watchContent(root: Node) {
+      if (editRoot === null) {
+        win.addEventListener("input", onEdit, true);
+        win.addEventListener("change", onEdit, true);
+      }
+      editRoot = root;
+    },
+    contentChanged: () => edited,
     enablePostFill(root: Node) {
       if (post) return;
       const Observer = (win as unknown as { MutationObserver: typeof MutationObserver }).MutationObserver;
@@ -66,6 +103,8 @@ export function installDetections(win: Window, report: Report): DetectionHandle 
       win.removeEventListener("pagehide", onPageHide);
       win.removeEventListener("popstate", onUrl);
       win.removeEventListener("hashchange", onUrl);
+      win.removeEventListener("input", onEdit, true);
+      win.removeEventListener("change", onEdit, true);
       win.clearInterval(poll);
       post?.disconnect();
     },

@@ -13,6 +13,25 @@ per-file diff commands.
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted productization (Bundle 7)** - the web app now runs as a hosted, multi-tenant
+  service as well as the local single-user developer mode: sign-up with email
+  verification, sessions, CSRF and rate limits; authenticated tenants with an isolation
+  harness; extension device pairing with rotating tokens and a hosted extension build;
+  a versioned plan catalog, entitlements, provider-neutral billing and a usage ledger;
+  a transactional email outbox with consent and suppression; notifications and an
+  inbox; durable worker jobs; a CV library with CV strategy and job families; guided
+  onboarding with CV import; preferences and rules v2; a least-privilege staff console
+  with TOTP; staged account deletion, retention and data export; readiness and metrics
+  endpoints. Tools: `webapp.tools.import_local_account` (move the local account into a
+  hosted database) and `webapp.tools.release_readiness` (open decision points and
+  release gates). Runbooks in `docs/runbooks/`. Automated release journey (sign-up to
+  submitted, in Chrome with the extension) and Free-allowance journey.
+- **Answering an application's open questions from the review page** - the job check's
+  governing questions can now be answered per application; the fill gate needs them
+  answered.
+
 ### Changed
 
 - **CONTRIBUTING: invited PRs are reserved for the invitee** - when a maintainer comment
@@ -23,6 +42,12 @@ per-file diff commands.
 
 ### Fixed
 
+- The Submit Review page no longer fails for signed-in accounts (the header no longer
+  shadows the page's own state).
+- A CV chosen by the CV strategy from the library can be confirmed into the application
+  pack.
+- Onboarding answers are stored as plain values, and its contact details reach the
+  evidence profile (so a fill can map Email and Phone fields).
 - **`convert_salary_excel.py` no longer misreads whole-thousands cells from a Danish-locale
   export** - a cell like `60.000` (thousands separator, no decimal comma) was handed to
   `float()` and silently written as `60.0`, a 1000x-wrong salary in `salary_data.json` that

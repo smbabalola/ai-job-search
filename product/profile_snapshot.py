@@ -22,7 +22,7 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol
 
 
 SCHEMA_VERSION = "candidate-profile-evidence-snapshot.v0"
@@ -199,13 +199,44 @@ class SnapshotBuilder:
         return snapshot
 
 
-def build_snapshot(
-    root: str | Path = ".", *, included_sources: Iterable[str] | None = None
-) -> dict[str, Any]:
-    """Build and validate a snapshot without modifying any source file."""
+class SourceReader(Protocol):
+    """Reads one candidate source by its repository-relative path (None when absent)."""
 
-    root_path = Path(root).resolve()
-    builder = SnapshotBuilder(root_path)
+    def read(self, relative_path: str) -> str | None: ...
+
+
+class FilesystemSourceReader:
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).resolve()
+
+    def read(self, relative_path: str) -> str | None:
+        path = self.root / relative_path
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+class OverlaySourceReader:
+    """A reader whose listed paths are replaced by prospective text."""
+
+    def __init__(self, base: SourceReader, overrides: dict[str, str]) -> None:
+        self.base = base
+        self.overrides = dict(overrides)
+
+    def read(self, relative_path: str) -> str | None:
+        if relative_path in self.overrides:
+            return self.overrides[relative_path]
+        return self.base.read(relative_path)
+
+
+def build_snapshot(
+    root: "str | Path | SourceReader" = ".", *, included_sources: Iterable[str] | None = None
+) -> dict[str, Any]:
+    """Build and validate a snapshot without modifying any source file.
+
+    ``root`` is a directory or any SourceReader (Bundle 7: sources may live in
+    the database rather than on disk)."""
+
+    reader = FilesystemSourceReader(root) if isinstance(root, (str, Path)) else root
+    builder = SnapshotBuilder(getattr(reader, "root", Path(".")))
 
     selected_sources = (
         set(SOURCE_PATHS) if included_sources is None else set(included_sources)
@@ -222,10 +253,9 @@ def build_snapshot(
     for relative_path in SOURCE_PATHS:
         if relative_path not in selected_sources:
             continue
-        path = root_path / relative_path
-        if not path.is_file():
+        text = reader.read(relative_path)
+        if text is None:
             raise FileNotFoundError(f"required candidate source not found: {relative_path}")
-        text = path.read_text(encoding="utf-8")
         builder.add_source(relative_path, text)
         if relative_path.endswith(".tex"):
             _parse_latex_source(relative_path, text, builder)

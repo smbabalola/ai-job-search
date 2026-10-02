@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -23,6 +22,7 @@ from webapp.persistence.onboarding import (
     list_progress_for_account,
     upsert_progress,
 )
+from webapp.persistence import dbapi
 
 
 class WalkthroughNotFound(LookupError):
@@ -45,7 +45,7 @@ def _resolve_definition(walkthrough_id: str) -> WalkthroughDefinition:
 
 
 def _load_progress(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str,
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str,
     definition: WalkthroughDefinition,
 ) -> dict[str, Any]:
     stored = get_progress(conn, account_id=account_id, walkthrough_id=walkthrough_id)
@@ -66,7 +66,7 @@ def _as_status(
 
 
 def get_walkthrough_status(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     definition = _resolve_definition(walkthrough_id)
     progress = _load_progress(
@@ -77,7 +77,7 @@ def get_walkthrough_status(
 
 
 def list_walkthrough_statuses(
-    conn: sqlite3.Connection, *, account_id: str
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     persisted = {
         row["walkthrough_id"]: row
@@ -93,7 +93,7 @@ def list_walkthrough_statuses(
 
 
 def _apply_transition(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     account_id: str,
     walkthrough_id: str,
@@ -117,7 +117,7 @@ def _apply_transition(
 
 
 def begin_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -126,7 +126,7 @@ def begin_walkthrough(
 
 
 def advance_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -135,7 +135,7 @@ def advance_walkthrough(
 
 
 def go_back_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -144,7 +144,7 @@ def go_back_walkthrough(
 
 
 def interrupt_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -153,7 +153,7 @@ def interrupt_walkthrough(
 
 
 def resume_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -162,7 +162,7 @@ def resume_walkthrough(
 
 
 def complete_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -171,7 +171,7 @@ def complete_walkthrough(
 
 
 def skip_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str, reason: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str, reason: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,
@@ -182,7 +182,7 @@ def skip_walkthrough(
 
 
 def replay_walkthrough(
-    conn: sqlite3.Connection, *, account_id: str, walkthrough_id: str
+    conn: dbapi.Connection, *, account_id: str, walkthrough_id: str
 ) -> dict[str, Any]:
     return _apply_transition(
         conn, account_id=account_id, walkthrough_id=walkthrough_id,

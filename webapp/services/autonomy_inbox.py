@@ -171,6 +171,45 @@ def answer_blocker(conn, *, account_id: str, workspace_id: str, blocker_id: str,
     return run_immediate(conn, work)
 
 
+def open_questions(conn, *, account_id: str, workspace_id: str) -> list[dict[str, Any]]:
+    """The application's governing blockers (the job check's open questions),
+    as the review page shows them. LookupError when the workspace is not the
+    account's job workspace."""
+    import json
+    from webapp.services.autonomy_context import current_governing_blockers
+    workspace = get_workspace(conn, workspace_id, account_id=account_id)
+    if workspace is None or workspace.get("kind") != "job":
+        raise LookupError(workspace_id)
+    out = []
+    for b in current_governing_blockers(conn, workspace_id):
+        if b["status"] == "superseded":
+            continue
+        scopes = b["allowed_scopes"]
+        out.append({"id": b["id"], "status": b["status"], "stage": b["stage"], "question": b["question"],
+                    "subject_key": b["subject_key"],
+                    "allowed_scopes": json.loads(scopes) if isinstance(scopes, str) else list(scopes)})
+    return out
+
+
+def answer_open_question(conn, *, account_id: str, workspace_id: str, blocker_id: str, answer: str, scope: str,
+                         request_id: str, actor: str, now: datetime) -> dict[str, Any]:
+    """The review page's answer to one open question: resolves that governing
+    blocker for this application (never a reusable standing answer). LookupError
+    unless it is one of this application's current questions; ValueError for a
+    scope the question (or the application) does not allow."""
+    question = next((q for q in open_questions(conn, account_id=account_id, workspace_id=workspace_id)
+                     if q["id"] == blocker_id), None)
+    if question is None:
+        raise LookupError(blocker_id)
+    if scope not in question["allowed_scopes"]:
+        raise ValueError(f"this question cannot be answered with scope {scope}")
+    result = answer_blocker(conn, account_id=account_id, workspace_id=workspace_id, blocker_id=blocker_id,
+                            request_id=request_id, answer_value=answer, answer_scope=scope,
+                            resolved_by=actor, reusable=False, subject=None, reach=None, scope_id=None, context={},
+                            now=now)
+    return {"blocker_id": blocker_id, "resolution_id": result["resolution"]["id"]}
+
+
 # ---- retry eligibility -----------------------------------------------------------
 
 def retry_failure(conn, *, account_id: str, subject_type: str, subject_id: str, step_kind: str, actor: str,

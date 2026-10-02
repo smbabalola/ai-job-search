@@ -40,6 +40,7 @@ from tests.webapp.services.test_application_blockers import (
     _run_fit,
     _workspace,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _empty_adapter():
@@ -120,7 +121,7 @@ def test_primary_scenario_sponsorship_answer_unblocks_workspace(tmp_path, webapp
     result = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     assert result["workflow_state"] == "PROCEEDING"
 
@@ -169,7 +170,7 @@ def test_correction_scenario_flips_outcome_to_declined(tmp_path, webapp_profile_
     first_resume = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert first_resume["workflow_state"] == "PROCEEDING"
     first_resume_fit_artifact_id = first_resume["job_fit_result"]["id"]
     first_resume_bundle = get_current_artifact(conn, workspace_id, "resolved_blocker_answers")
@@ -184,7 +185,7 @@ def test_correction_scenario_flips_outcome_to_declined(tmp_path, webapp_profile_
     second_resume = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-3", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     assert second_resume["workflow_state"] == "DECLINED_BY_POLICY"
     eligibility_decision = next(
@@ -242,7 +243,7 @@ def test_still_blocked_scenario_second_unrelated_blocker_remains_open(
     result = resume_job_fit_after_resolution(
         conn, workspace_id, _sponsorship_adapter(conn, blocker["id"]),
         request_id="req-fit-2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     assert result["workflow_state"] == "BLOCKED_FOR_USER"
     eligibility_decision = next(
@@ -269,7 +270,7 @@ def test_candidate_fact_answer_never_enters_sibling_bundle_via_resume(
     conn, workspace_a_id = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT
     )
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -292,7 +293,7 @@ def test_candidate_fact_answer_never_enters_sibling_bundle_via_resume(
     result_a = resume_job_fit_after_resolution(
         conn, workspace_a_id, _sponsorship_adapter(conn, blocker_a["id"]),
         request_id="req-fit-a2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert result_a["workflow_state"] == "PROCEEDING"
 
     # ...but resuming sibling B (through this same new resume path) must
@@ -304,7 +305,7 @@ def test_candidate_fact_answer_never_enters_sibling_bundle_via_resume(
     result_b = resume_job_fit_after_resolution(
         conn, workspace_b_id, _empty_adapter(),
         request_id="req-fit-b2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     bundle_b = get_current_artifact(conn, workspace_b_id, "resolved_blocker_answers")
     assert bundle_b["payload"]["answers"] == []
     # B's own eligibility blocker is still open/REQUIRE_USER -- A's answer
@@ -324,7 +325,7 @@ def test_sibling_search_workspace_reuse_keeps_correct_source_workspace_id_via_re
     conn, workspace_a_id = _workspace(
         tmp_path, webapp_profile_root, job_snapshot=SPONSORSHIP_STATUS_JOB_SNAPSHOT
     )
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -350,7 +351,7 @@ def test_sibling_search_workspace_reuse_keeps_correct_source_workspace_id_via_re
     result_b = resume_job_fit_after_resolution(
         conn, workspace_b_id, _sponsorship_adapter(conn, blocker_a["id"]),
         request_id="req-fit-b2", extension_ids=[], extensions_dir=tmp_path / "extensions",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     bundle_b = get_current_artifact(conn, workspace_b_id, "resolved_blocker_answers")
     assert len(bundle_b["payload"]["answers"]) == 1

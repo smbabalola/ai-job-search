@@ -16,6 +16,7 @@ from webapp.persistence.workflow import record_status_change
 from webapp.persistence.workspaces import create_workspace
 from tests.webapp.persistence.autonomy_db import ACCOUNT, NOW, conn, make_workspace  # noqa: F401
 from tests.webapp.services.test_autonomy_context import seeded, settings  # noqa: F401
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 RECORD = {"source": "greenhouse", "source_record_id": "77", "company": "Acme", "title": "Eng", "location": "UK"}
 BACKFILL = "017_autonomy_human_intent_backfill"
@@ -33,9 +34,9 @@ def mark_applied(conn, ws):
     pack = save_artifact(conn, workspace_id=ws, artifact_type="application_pack",
                          payload=completion_ready_pack_payload(ws))
     record_status_change(conn, workspace_id=ws, new_status="drafted", effective_date="2026-09-23",
-                         submitted_pack_artifact_id=pack["id"], _allow_drafted=True)
+                         submitted_pack_artifact_id=pack["id"], _allow_drafted=True, account_id=DEFAULT_ACCOUNT_ID)
     return record_status_change(conn, workspace_id=ws, new_status="applied", effective_date="2026-09-24",
-                                submitted_pack_artifact_id=pack["id"])
+                                submitted_pack_artifact_id=pack["id"], account_id=DEFAULT_ACCOUNT_ID)
 
 
 def add_handoff_confirmation(conn, ws, suffix="1"):
@@ -61,7 +62,7 @@ def test_marking_applied_creates_confirmed_human_intent(conn):
 def test_applied_then_later_status_is_idempotent_and_weak_identity_is_skipped(conn):
     ws = _ws(conn)
     mark_applied(conn, ws)
-    record_status_change(conn, workspace_id=ws, new_status="interview", effective_date="2026-09-25")
+    record_status_change(conn, workspace_id=ws, new_status="interview", effective_date="2026-09-25", account_id=DEFAULT_ACCOUNT_ID)
     weak = _ws(conn, {"company": "Weak Co", "title": "Eng", "location": "UK"})
     mark_applied(conn, weak)
     assert conn.execute("SELECT COUNT(*) FROM submission_intents").fetchone()[0] == 1
@@ -86,6 +87,7 @@ def test_human_applied_while_autonomous_claim_is_live_confirms_it_and_blocks_the
     assert conn.execute("SELECT COUNT(*) FROM limit_reservations WHERE status = 'RESERVED'").fetchone()[0] == 0
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_covers_applications_applied_before_6b(conn):
     ws = _ws(conn)
     conn.execute(
@@ -103,6 +105,7 @@ def test_backfill_covers_applications_applied_before_6b(conn):
     assert conn.execute("SELECT COUNT(*) FROM submission_intents").fetchone()[0] == 1
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_covers_handoff_confirmations(conn):
     ws = _ws(conn)
     add_handoff_confirmation(conn, ws)
@@ -113,6 +116,7 @@ def test_backfill_covers_handoff_confirmations(conn):
     assert live_intent(conn, account_id=ACCOUNT, job_identity_key=key)["source"] == "HUMAN_HANDOFF"
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain (PostgreSQL starts at the 021 baseline)
 def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     """A database created and populated before Bundle 6B: no autonomy tables,
     applied workspaces recorded through the real flow, handoff confirmations,
@@ -125,6 +129,7 @@ def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_human_intent_backfill", noop)
     monkeypatch.setattr(migrations_module, "_migrate_autonomy_prepare", noop)  # 018 did not exist pre-6B either
     monkeypatch.setattr(migrations_module, "_migrate_review_approval", noop)  # nor 019
+    monkeypatch.setattr(migrations_module, "_migrate_human_submit", noop)  # nor 021 (rebuilds 016's intents)
     monkeypatch.setattr(workflow_module, "record_human_intent", lambda *a, **k: None)  # pre-6B: no hook
     init_db(db)
     c = connect(db)
@@ -133,7 +138,7 @@ def test_backfill_on_a_representative_pre_6b_database(tmp_path, monkeypatch):
                   (BACKFILL,))
         c.commit()
         assert c.execute("SELECT name FROM sqlite_master WHERE name = 'submission_intents'").fetchone() is None
-        maker = lambda cn: create_workspace(cn, company="Acme", title="Eng")["id"]  # noqa: E731
+        maker = lambda cn: create_workspace(cn, company="Acme", title="Eng", account_id=DEFAULT_ACCOUNT_ID)["id"]  # noqa: E731
         applied = _ws(c, maker=maker)
         mark_applied(c, applied)
         both = _ws(c, {**RECORD, "source_record_id": "78"}, maker=maker)

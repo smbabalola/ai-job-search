@@ -11,6 +11,7 @@ import pytest
 from webapp.persistence import fill as f
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
 ACCOUNT = "account_local"
@@ -20,7 +21,7 @@ ACCOUNT = "account_local"
 def world(tmp_path):
     init_db(tmp_path / "db.sqlite3")
     conn = connect(tmp_path / "db.sqlite3")
-    ws = create_workspace(conn, company="Acme", title="Engineer")["id"]
+    ws = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)["id"]
     conn.execute("INSERT INTO application_approvals (id, account_id, application_workspace_id, scope, binding_json, "
                  "binding_hash, actor, created_at) VALUES ('apr_1', ?, ?, 'FILL', '{}', 'sha256:b', 'u', 't')",
                  (ACCOUNT, ws))

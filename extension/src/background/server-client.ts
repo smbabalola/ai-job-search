@@ -1,6 +1,5 @@
 import type { QueuedEvent } from "./event-queue";
-
-const BASE_URL = "http://127.0.0.1:8420";
+import { BACKEND_ORIGIN } from "../shared/backend";
 
 export interface DiscoveredSession {
   id: string;
@@ -13,55 +12,51 @@ export interface DiscoveredSession {
   [key: string]: unknown;
 }
 
-// The ONLY module that makes HTTP calls to the JobSearch server (design
-// spec Section 4 / Section 17 — content scripts never call this
-// directly, only through messages relayed by the background worker).
+// The device credential (Bundle 7 spec X2): bearer headers for every call, and
+// the reaction to a 401 (drop an expired access token / wipe a revoked device).
+export interface DeviceAuth {
+  authHeaders(): Promise<Record<string, string>>;
+  handleUnauthorized(errorCode: string | undefined): Promise<void>;
+}
+
+// The ONLY module that makes handoff HTTP calls to the JobSearch server (design
+// spec Section 4 / Section 17 — content scripts never call this directly, only
+// through messages relayed by the background worker). Pairing and token refresh
+// live in TokenClient.
 export class ServerClient {
-  constructor(private readonly getCredential: () => Promise<string | null>) {}
+  constructor(private readonly auth: DeviceAuth, private readonly baseUrl: string = BACKEND_ORIGIN) {}
 
-  // Durable-credential authorization — used only for pairing exchange
-  // (implicitly, via no header at all) and the three extension-scoped
-  // routes that are the sole entry points into session identity:
-  // start, discover, resume (design spec Section 3.2 / Section 5.2).
-  // Every other session-scoped call uses sessionHeaders() below instead.
+  // Device-only authorization: the entry points into session identity
+  // (start, discover, resume).
   private async headers(): Promise<Record<string, string>> {
-    const credential = await this.getCredential();
-    if (!credential) throw new Error("extension is not paired");
-    return { "X-Handoff-Credential": credential, "Content-Type": "application/json" };
+    return { ...(await this.auth.authHeaders()), "Content-Type": "application/json" };
   }
 
-  // Session-token authorization — used for every call scoped to a
-  // specific, already-identified handoff session. Never falls back to
-  // the durable credential: a stale/rotated session token must fail
-  // outright rather than silently re-authorizing via a different
-  // credential.
-  private sessionHeaders(sessionToken: string): Record<string, string> {
-    return { "X-Handoff-Session-Token": sessionToken, "Content-Type": "application/json" };
+  // Session-scoped calls carry the session token AND the device's bearer: the
+  // server honours a session token only for the device's own account. Never
+  // falls back to device-only authorization.
+  private async sessionHeaders(sessionToken: string): Promise<Record<string, string>> {
+    return { ...(await this.auth.authHeaders()), "X-Handoff-Session-Token": sessionToken,
+             "Content-Type": "application/json" };
   }
 
-  async exchangePairing(
-    oneTimeSecret: string,
-  ): Promise<{ credentialId: string; durableSecret: string }> {
-    const response = await fetch(`${BASE_URL}/api/handoff/pairing/exchange`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ one_time_secret: oneTimeSecret }),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new Error(body.detail ?? `pairing failed: ${response.status}`);
+  private async fetchChecked(url: string, init: RequestInit): Promise<Response> {
+    const response = await fetch(url, init);
+    if (response.status === 401) {
+      const body = await response.clone().json().catch(() => ({}));
+      await this.auth.handleUnauthorized(body.error ?? body.detail?.error);
     }
-    const result = await response.json();
-    return { credentialId: result.credential_id, durableSecret: result.durable_secret };
+    return response;
   }
 
   async startSession(body: {
-    workspaceId: string; packArtifactId: string; targetUrl: string;
+    handoffTicket: string; workspaceId: string; packArtifactId: string; targetUrl: string;
     targetDomain: string; atsAdapterId: string; atsAdapterVersion: string;
   }): Promise<{ id: string; sessionToken: string }> {
-    const response = await fetch(`${BASE_URL}/api/handoff/sessions`, {
+    const response = await this.fetchChecked(`${this.baseUrl}/api/handoff/sessions`, {
       method: "POST", headers: await this.headers(),
       body: JSON.stringify({
+        handoff_ticket: body.handoffTicket,
         workspace_id: body.workspaceId, pack_artifact_id: body.packArtifactId,
         target_url: body.targetUrl, target_domain: body.targetDomain,
         ats_adapter_id: body.atsAdapterId, ats_adapter_version: body.atsAdapterVersion,
@@ -78,7 +73,7 @@ export class ServerClient {
   // does no filtering or selection of its own.
   async discoverSessions(workspaceId: string, targetDomain: string): Promise<DiscoveredSession[]> {
     const params = new URLSearchParams({ workspace_id: workspaceId, target_domain: targetDomain });
-    const response = await fetch(`${BASE_URL}/api/handoff/sessions/discover?${params}`, {
+    const response = await this.fetchChecked(`${this.baseUrl}/api/handoff/sessions/discover?${params}`, {
       method: "GET", headers: await this.headers(),
     });
     if (!response.ok) throw new Error(`failed to discover handoff sessions: ${response.status}`);
@@ -87,10 +82,9 @@ export class ServerClient {
   }
 
   // The only rotation path for an existing session's token (design spec
-  // Section 3.2) — authorized with the durable credential, exactly like
-  // startSession, never with a prior session token.
+  // Section 3.2) — authorized by the device, never by a prior session token.
   async resumeSession(sessionId: string): Promise<{ sessionToken: string }> {
-    const response = await fetch(`${BASE_URL}/api/handoff/sessions/${sessionId}/resume`, {
+    const response = await this.fetchChecked(`${this.baseUrl}/api/handoff/sessions/${sessionId}/resume`, {
       method: "POST", headers: await this.headers(),
     });
     if (!response.ok) throw new Error(`failed to resume handoff session: ${response.status}`);
@@ -99,10 +93,10 @@ export class ServerClient {
   }
 
   async sendEvent(event: QueuedEvent, sessionToken: string): Promise<boolean> {
-    const response = await fetch(
-      `${BASE_URL}/api/handoff/sessions/${event.handoffSessionId}/events`,
+    const response = await this.fetchChecked(
+      `${this.baseUrl}/api/handoff/sessions/${event.handoffSessionId}/events`,
       {
-        method: "POST", headers: this.sessionHeaders(sessionToken),
+        method: "POST", headers: await this.sessionHeaders(sessionToken),
         body: JSON.stringify({
           event_id: event.eventId, event_type: event.eventType,
           event_payload: event.eventPayload,
@@ -118,10 +112,10 @@ export class ServerClient {
   async confirmSubmission(
     handoffSessionId: string, markWorkflowApplied: boolean, sessionToken: string,
   ): Promise<unknown> {
-    const response = await fetch(
-      `${BASE_URL}/api/handoff/sessions/${handoffSessionId}/confirm-submission`,
+    const response = await this.fetchChecked(
+      `${this.baseUrl}/api/handoff/sessions/${handoffSessionId}/confirm-submission`,
       {
-        method: "POST", headers: this.sessionHeaders(sessionToken),
+        method: "POST", headers: await this.sessionHeaders(sessionToken),
         body: JSON.stringify({ mark_workflow_applied: markWorkflowApplied }),
       },
     );

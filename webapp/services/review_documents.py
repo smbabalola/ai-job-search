@@ -42,7 +42,8 @@ def replace_document(conn, *, settings: Settings, account_id: str, application_w
                      filename: str, content: bytes, expected_revision: int, actor: str,
                      now: datetime) -> dict[str, Any]:
     ws = application_workspace_id
-    blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=settings.documents_root)
+    blob = store_upload_blob(kind=kind, filename=filename, content=content, documents_root=settings.documents_root,
+                            account_id=account_id)
 
     def work() -> dict[str, Any]:
         version = record_uploaded_version(conn, ws, kind=kind, filename=filename, blob=blob, account_id=account_id)

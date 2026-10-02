@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import threading
 import uuid
 from collections import defaultdict
@@ -30,7 +29,10 @@ from webapp.persistence.profile_sources import (
     set_supplemental_source_included,
 )
 from webapp.persistence.workspaces import ensure_profile_workspace
-from webapp.services.profile_setup import _atomic_write_bytes, profile_snapshot_is_ready
+from product.profile_snapshot import OverlaySourceReader
+from webapp.services.profile_setup import profile_snapshot_is_ready
+from webapp.storage.profile_sources import FilesystemProfileSources, as_profile_sources
+from webapp.persistence import dbapi
 
 
 ENTRY_ID_RE = re.compile(r"^\s*<!--\s*profile-entry-id:\s*(profile-entry-[a-f0-9]{20})\s*-->\s*$")
@@ -83,17 +85,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _profile_path(root: str | Path) -> Path:
-    return Path(root).resolve() / CANDIDATE_SOURCE
-
-
-def _revision(root: str | Path, sources: list[dict[str, Any]]) -> str:
-    root_path = Path(root).resolve()
+def _revision(root: Any, sources: list[dict[str, Any]]) -> str:
+    """The profile-level optimistic-concurrency token: settings + content digests."""
+    handle = as_profile_sources(root)
     inputs = []
     for source in sources:
-        path = root_path / source["source_path"]
-        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-        inputs.append((source["source_path"], source["included"], digest))
+        inputs.append((source["source_path"], source["included"], handle.digest(source["source_path"])))
     encoded = json.dumps(inputs, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return "profile-revision-" + hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -248,7 +245,7 @@ def parse_candidate_entries(markdown: str) -> list[SourceEntry]:
 
 
 def _assign_entry_ids(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     entries: list[SourceEntry],
     *,
     account_id: str,
@@ -297,16 +294,16 @@ def _public_entry(entry: SourceEntry) -> dict[str, Any]:
 
 
 def get_profile_manager(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     root: str | Path,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
-        path = _profile_path(root)
-        if not path.is_file():
+        text = as_profile_sources(root).reader().read(CANDIDATE_SOURCE)
+        if text is None:
             raise ProfileManagerError("canonical candidate profile source was not found")
-        entries = parse_candidate_entries(path.read_text(encoding="utf-8"))
+        entries = parse_candidate_entries(text)
         _assign_entry_ids(conn, entries, account_id=account_id)
         conn.commit()
         sources = list_profile_source_settings(conn, account_id=account_id)
@@ -444,57 +441,42 @@ def _insert_entry(lines: list[str], kind: str, fields: dict[str, Any], rendered:
 
 
 def _build_prospective_snapshot(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     root: str | Path,
     markdown: str,
     *,
     account_id: str,
 ) -> dict[str, Any]:
-    import shutil
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="profile-manager-") as temp_dir:
-        validation_root = Path(temp_dir)
-        root_path = Path(root).resolve()
-        selected_sources = included_profile_sources(
-            conn, account_id=account_id
+    selected_sources = included_profile_sources(conn, account_id=account_id)
+    reader = OverlaySourceReader(as_profile_sources(root).reader(), {CANDIDATE_SOURCE: markdown})
+    try:
+        snapshot = build_snapshot(reader, included_sources=selected_sources)
+    except FileNotFoundError as exc:
+        raise ProfileManagerError(str(exc)) from exc
+    candidate_has_name = any(
+        claim.get("source", {}).get("file") == CANDIDATE_SOURCE
+        and claim.get("category") == "identity"
+        and claim.get("field") == "name"
+        and not claim.get("placeholder", False)
+        for claim in snapshot.get("claims", [])
+    )
+    if not candidate_has_name or not profile_snapshot_is_ready({"payload": snapshot}):
+        raise ProfileManagerError(
+            "profile mutation would leave the Evidence Profile without an explicit, "
+            "non-conflicted candidate name"
         )
-        for relative in selected_sources:
-            destination = validation_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if relative == CANDIDATE_SOURCE:
-                destination.write_text(markdown, encoding="utf-8")
-            else:
-                source = root_path / relative
-                if not source.is_file():
-                    raise ProfileManagerError(f"required candidate source not found: {relative}")
-                shutil.copyfile(source, destination)
-        snapshot = build_snapshot(
-            validation_root,
-            included_sources=selected_sources,
-        )
-        candidate_has_name = any(
-            claim.get("source", {}).get("file") == CANDIDATE_SOURCE
-            and claim.get("category") == "identity"
-            and claim.get("field") == "name"
-            and not claim.get("placeholder", False)
-            for claim in snapshot.get("claims", [])
-        )
-        if not candidate_has_name or not profile_snapshot_is_ready({"payload": snapshot}):
-            raise ProfileManagerError(
-                "profile mutation would leave the Evidence Profile without an explicit, "
-                "non-conflicted candidate name"
-            )
-        return snapshot
+    return snapshot
 
 
 def _persist_mutation(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     operation: Any, account_id: str,
 ) -> dict[str, Any]:
     with _MUTATION_LOCK:
-        path = _profile_path(root)
-        previous = path.read_bytes()
+        handle = as_profile_sources(root)
+        previous = handle.read(CANDIDATE_SOURCE)
+        if previous is None:
+            raise ProfileManagerError("canonical candidate profile source was not found")
         wrote_source = False
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -504,7 +486,7 @@ def _persist_mutation(
                     "Your Evidence Profile changed after this page was opened. "
                     "Reload it before saving this change."
                 )
-            markdown = previous.decode("utf-8")
+            markdown = previous
             entries = parse_candidate_entries(markdown)
             _assign_entry_ids(conn, entries, account_id=account_id)
             prospective, source_changed = operation(markdown, entries)
@@ -514,7 +496,7 @@ def _persist_mutation(
                 conn, root, prospective, account_id=account_id
             )
             if source_changed:
-                _atomic_write_bytes(path, prospective.encode("utf-8"))
+                handle.write(CANDIDATE_SOURCE, prospective)
                 wrote_source = True
             profile_workspace = ensure_profile_workspace(
                 conn, account_id=account_id, commit=False
@@ -528,17 +510,17 @@ def _persist_mutation(
             _assign_entry_ids(conn, new_entries, account_id=account_id)
             conn.commit()
         except Exception:
-            conn.rollback()
-            if wrote_source:
-                _atomic_write_bytes(path, previous)
+            conn.rollback()  # also discards a database-backed source revision
+            if wrote_source and isinstance(handle, FilesystemProfileSources):
+                handle.write(CANDIDATE_SOURCE, previous)
             raise
         manager = get_profile_manager(conn, root=root, account_id=account_id)
         return {"profile": artifact, "manager": manager}
 
 
 def create_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
-    kind: str, fields: dict[str, Any], account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
+    kind: str, fields: dict[str, Any], account_id: str,
 ) -> dict[str, Any]:
     normalized = _normalize_fields(kind, fields)
     entry_id = f"profile-entry-{uuid.uuid4().hex[:20]}"
@@ -556,10 +538,34 @@ def create_profile_entry(
     return result
 
 
+def create_profile_entries(
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
+    entries: list[tuple[str, dict[str, Any]]], account_id: str,
+) -> dict[str, Any]:
+    """Bundle 7 (spec 15.3): several entries in ONE mutation, so an accept
+    batch is a single profile source revision. Returns the new entry ids in
+    input order."""
+    if not entries:
+        raise ProfileManagerError("no entries to create")
+    prepared = [(kind, _normalize_fields(kind, fields), f"profile-entry-{uuid.uuid4().hex[:20]}")
+                for kind, fields in entries]
+
+    def operation(markdown: str, current: list[SourceEntry]) -> tuple[str, bool]:
+        lines = markdown.splitlines()
+        for kind, normalized, entry_id in prepared:
+            lines = _insert_entry(lines, kind, normalized, _render_entry(entry_id, kind, normalized)) or lines
+        return "\n".join(lines).rstrip() + "\n", True
+
+    result = _persist_mutation(conn, root=root, expected_revision=expected_revision, operation=operation,
+                               account_id=account_id)
+    result["entry_ids"] = [entry_id for _, _, entry_id in prepared]
+    return result
+
+
 def update_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     entry_id: str, kind: str, fields: dict[str, Any],
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     normalized = _normalize_fields(kind, fields)
 
@@ -580,8 +586,8 @@ def update_profile_entry(
 
 
 def delete_profile_entry(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
-    entry_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
+    entry_id: str, account_id: str,
 ) -> dict[str, Any]:
     def operation(markdown: str, entries: list[SourceEntry]) -> tuple[str, bool]:
         entry = next((item for item in entries if item.entry_id == entry_id), None)
@@ -605,9 +611,9 @@ def delete_profile_entry(
 
 
 def update_profile_source(
-    conn: sqlite3.Connection, *, root: str | Path, expected_revision: str,
+    conn: dbapi.Connection, *, root: str | Path, expected_revision: str,
     source_path: str, included: bool,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     def operation(markdown: str, entries: list[SourceEntry]) -> tuple[str, bool]:
         set_supplemental_source_included(

@@ -1,7 +1,6 @@
 """Read-only UI view models built from persisted product artifacts."""
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,7 @@ from webapp.services.extension_registry import list_installed_extensions
 from webapp.services.http_api import require_job_workspace
 from webapp.services.profile_setup import profile_setup_state, profile_snapshot_is_ready
 from webapp.services.staleness import check_staleness
+from webapp.persistence import dbapi
 
 STAGE_ORDER = (
     "job", "understanding", "fit", "application_intelligence", "review", "status"
@@ -276,7 +276,7 @@ def _result_state(
 
 
 def _latest_decisions(
-    conn: sqlite3.Connection, workspace_id: str, artifact_id: str | None
+    conn: dbapi.Connection, workspace_id: str, artifact_id: str | None
 ) -> dict[tuple[str, str | None], dict[str, Any]]:
     if artifact_id is None:
         return {}
@@ -394,7 +394,7 @@ def _build_evidence_items(
 
 
 def _build_review_items(
-    conn: sqlite3.Connection, workspace_id: str, profile: dict[str, Any] | None,
+    conn: dbapi.Connection, workspace_id: str, profile: dict[str, Any] | None,
     fit: dict[str, Any] | None, intelligence: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     fit_payload = _artifact_payload(fit)
@@ -510,8 +510,8 @@ def _is_outstanding_review_item(item: dict[str, Any]) -> bool:
 
 
 def build_profile_view_model(
-    conn: sqlite3.Connection, *, profile_root: str | Path = ".",
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, profile_root: str | Path = ".",
+    account_id: str,
 ) -> dict[str, Any]:
     profile_workspace_id = get_profile_workspace_id(conn, account_id)
     profile = (
@@ -557,12 +557,12 @@ class ApplyTarget:
     provenance: str  # one of SOURCE_URL_PROVENANCE_*
 
 
-def _discovery_origin_url(conn: sqlite3.Connection, *, workspace_id: str) -> str | None:
+def _discovery_origin_url(conn: dbapi.Connection, *, workspace_id: str) -> str | None:
     row = conn.execute(
-        "SELECT do.source_url FROM application_workspace_origins awo "
-        "JOIN discovery_occurrences do "
-        "ON do.id = awo.discovery_occurrence_id "
-        "AND do.search_workspace_id = awo.search_workspace_id "
+        "SELECT dco.source_url FROM application_workspace_origins awo "
+        "JOIN discovery_occurrences dco "
+        "ON dco.id = awo.discovery_occurrence_id "
+        "AND dco.search_workspace_id = awo.search_workspace_id "
         "WHERE awo.application_workspace_id = ?",
         (workspace_id,),
     ).fetchone()
@@ -570,7 +570,7 @@ def _discovery_origin_url(conn: sqlite3.Connection, *, workspace_id: str) -> str
 
 
 def _snapshot_url_and_provenance(
-    conn: sqlite3.Connection, *, workspace_id: str,
+    conn: dbapi.Connection, *, workspace_id: str,
 ) -> tuple[str | None, str | None]:
     artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
     if artifact is None:
@@ -582,7 +582,7 @@ def _snapshot_url_and_provenance(
 
 
 def resolve_apply_target(
-    conn: sqlite3.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, workspace_id: str, account_id: str,
 ) -> ApplyTarget | None:
     """The one trustworthy Apply-with-extension destination for this exact
     workspace, with the provenance it was resolved under, or None if
@@ -620,7 +620,7 @@ def resolve_apply_target(
 
 
 def resolve_apply_target_url(
-    conn: sqlite3.Connection, *, workspace_id: str, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, workspace_id: str, account_id: str,
 ) -> str | None:
     """Bare-URL convenience wrapper over resolve_apply_target, kept for the
     existing callers (e.g. the workspace_detail.html template's
@@ -630,8 +630,8 @@ def resolve_apply_target_url(
 
 
 def build_workspace_view_model(
-    conn: sqlite3.Connection, workspace_id: str, *, extensions_dir: Path | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, workspace_id: str, *, extensions_dir: Path | None = None,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = require_job_workspace(
         conn, workspace_id, account_id=account_id
@@ -959,9 +959,9 @@ def _dashboard_stage(view: dict[str, Any]) -> str:
 
 
 def build_dashboard_view_model(
-    conn: sqlite3.Connection, *, filter_name: str = "active",
+    conn: dbapi.Connection, *, filter_name: str = "active",
     extensions_dir: Path | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     rows = []
     for workspace in list_workspaces(conn, account_id=account_id):

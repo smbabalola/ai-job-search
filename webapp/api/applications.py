@@ -1,7 +1,6 @@
 """Bundle 6D-A Prepared Applications routes (spec §10, §16)."""
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -13,10 +12,13 @@ from webapp.api.review_approval import _now
 from webapp.persistence import review_approval as ra
 from webapp.services import review_approval
 from webapp.services.fill_results import fill_summary
+from webapp.services.human_submit import submission_status
 from webapp.services.ownership import AccountScope
 from webapp.services.review_application import review_snapshot
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/applications", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/applications", tags=["review"])
 LISTED = ("READY_FOR_REVIEW", "NEEDS_REVIEW", "APPROVED_FOR_FILL")
 
 
@@ -53,19 +55,22 @@ def prepared_applications(conn, *, settings, account_id: str) -> list[dict[str, 
             # 6D-B: fill status next to the unchanged 6D-A review state (spec §16.2)
             "fill_status": fill_summary(conn, settings=settings, account_id=account_id,
                                         application_workspace_id=row["id"], now=now),
+            # 6E-A: submission status next to the fill status (spec §16.2)
+            "submission_status": submission_status(conn, settings=settings, account_id=account_id,
+                                                   application_workspace_id=row["id"], now=now),
         })
     return out
 
 
 @router.get("/prepared")
-def get_prepared(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_prepared(request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return {"applications": prepared_applications(conn, settings=request.app.state.settings,
                                                   account_id=scope.account_id)}
 
 
 @router.post("/approve-selected")
-def post_approve_selected(body: ApproveSelectedBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_approve_selected(body: ApproveSelectedBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                           scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     results = review_approval.approve_selected(
         conn, settings=request.app.state.settings, account_id=scope.account_id,

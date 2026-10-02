@@ -5,8 +5,9 @@
 
 import type { ObservationV1 } from "./observation-types";
 import type { ActionKind, Envelope, Outcome, PlanDocument } from "./executor";
+import { BACKEND_ORIGIN, authHeaders } from "../shared/backend";
 
-export const FILL_SERVER_BASE_URL = "http://127.0.0.1:8420";
+export const FILL_SERVER_BASE_URL = BACKEND_ORIGIN;
 
 export class FillServerError extends Error {
   constructor(readonly status: number, readonly detail: string) {
@@ -48,6 +49,14 @@ export interface IntentResponse { envelope: Envelope | null; stop_reason: string
 
 export interface LocalDocument { bytes: Uint8Array<ArrayBuffer>; filename: string; mediaType: string; sha256: string }
 
+// 6E-A adds the submit directives (spec E12); both are absent before 6E-A.
+export interface HeartbeatResponse {
+  state: string;
+  lease_expired: boolean;
+  reobserve?: { request_id: string } | null;
+  authorization?: import("../submit/submit-controller").AuthorizationDirective | null;
+}
+
 export interface FillServer {
   startRun(identity: { executor_instance_id: string; browser_session_id: string; execution_tab_id: number })
     : Promise<{ id: string }>;
@@ -59,7 +68,7 @@ export interface FillServer {
   outcome(runId: string, index: number, body: { envelope_id: string | null; outcome: Outcome;
     readback_hash: string | null; post_observation: ObservationV1 }): Promise<StepResult>;
   unknown(runId: string, index: number): Promise<StepResult>;
-  heartbeat(runId: string): Promise<{ state: string; lease_expired: boolean }>;
+  heartbeat(runId: string): Promise<HeartbeatResponse>;
   detection(runId: string, kind: string, detail: Record<string, unknown>): Promise<StepResult>;
   final(runId: string, observation: ObservationV1): Promise<StepResult>;
   stop(runId: string, reason: string, detail: Record<string, unknown>): Promise<StepResult>;
@@ -79,7 +88,8 @@ export class HttpFillServer implements FillServer {
 
   private async call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const response = await this.fetchImpl(this.url(path), {
-      method, headers: { "X-Handoff-Session-Token": this.sessionToken, "Content-Type": "application/json" },
+      method, headers: { ...(await authHeaders()), "X-Handoff-Session-Token": this.sessionToken,
+                         "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const payload = await response.json().catch(() => ({}));
@@ -126,7 +136,7 @@ export class HttpFillServer implements FillServer {
   }
 
   heartbeat(runId: string) {
-    return this.call<{ state: string; lease_expired: boolean }>("POST", `/runs/${runId}/heartbeat`);
+    return this.call<HeartbeatResponse>("POST", `/runs/${runId}/heartbeat`);
   }
 
   detection(runId: string, kind: string, detail: Record<string, unknown>) {
@@ -146,7 +156,7 @@ export class HttpFillServer implements FillServer {
   async document(kind: string): Promise<LocalDocument> {
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/handoff/sessions/${this.sessionId}/documents/${kind}`,
-      { headers: { "X-Handoff-Session-Token": this.sessionToken } });
+      { headers: { ...(await authHeaders()), "X-Handoff-Session-Token": this.sessionToken } });
     if (!response.ok) throw new FillServerError(response.status, `document ${kind}`);
     const disposition = response.headers.get("content-disposition") ?? "";
     const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);

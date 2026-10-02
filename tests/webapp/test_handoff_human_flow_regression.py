@@ -13,31 +13,32 @@ from webapp.app import create_app
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
-from tests.webapp.api.test_handoff_routes import _RENDERABLE_PACK_PAYLOAD
+from tests.webapp.api.test_handoff_routes import _RENDERABLE_PACK_PAYLOAD, _paired_credential, _ticket
 from tests.webapp.test_handoff_browser_smoke import _live_server_settings
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_human_handoff_lifecycle_is_unchanged(tmp_path):
     settings = _live_server_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(conn, workspace_id=workspace["id"], artifact_type="application_pack",
                                  payload=_RENDERABLE_PACK_PAYLOAD)
         conn.close()
 
-        one_time = client.post("/api/handoff/pairing/generate").json()["one_time_secret"]
-        credential = client.post("/api/handoff/pairing/exchange",
-                                 json={"one_time_secret": one_time}).json()["durable_secret"]
+        bearer = _paired_credential(client)
         started = client.post(
-            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
-            json={"workspace_id": workspace["id"], "pack_artifact_id": artifact["id"],
+            "/api/handoff/sessions",
+            json={"handoff_ticket": _ticket(client, workspace["id"]),
+                  "workspace_id": workspace["id"], "pack_artifact_id": artifact["id"],
                   "target_url": "http://testserver/test-fixtures/handoff/generic_fixture.html",
                   "target_domain": "testserver", "ats_adapter_id": "generic", "ats_adapter_version": "generic@1"})
         assert started.status_code == 201
         session_id = started.json()["id"]
-        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"],
+                   "Authorization": f"Bearer {bearer}"}
         for field_name, value in [("name", "Test User"), ("email", "test@example.com")]:
             response = client.post(
                 f"/api/handoff/sessions/{session_id}/events", headers=headers,

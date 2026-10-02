@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Submit review · Job Search Workspace{% endblock %}
+{% block content %}
+{% set snap = review.snapshot %}
+<section class="hero compact"><div><p class="eyebrow">Human-authorized submission</p><h1>Review and submit</h1>
+  <p>{{ workspace.title }} — {{ workspace.company }}</p>
+  {% if status.label %}<p data-submission-status="{{ status.status }}"><strong>{{ status.label }}</strong></p>{% endif %}
+  <p data-copy>This submits exactly the version shown here. The employer tab stays quarantined; only the certified
+    submission request can leave it, and only for this one attempt.</p></div></section>
+
+<section class="panel" data-submit-state="{{ review.state }}">
+{% if status.status in ("SUBMITTING", "CHALLENGE_WAITING") %}
+  <p data-submit-progress>{% if status.status == "CHALLENGE_WAITING" %}Verification needed: complete the check on the
+    employer tab.{% else %}Submitting…{% endif %}</p>
+  {% if status.status == "SUBMITTING" and status.authorization_id %}
+  <button class="button secondary" type="button" data-submit-action="cancel"
+          data-authorization="{{ status.authorization_id }}">Cancel</button>{% endif %}
+{% elif status.status == "SUBMITTED" %}
+  <p data-submit-result>Submitted. The employer's confirmation page was seen.</p>
+{% elif status.status == "SUBMISSION_FAILED" %}
+  <p data-submit-result>Not submitted. {% if status.reason %}({{ status.reason }}){% endif %}</p>
+{% elif status.status == "SUBMISSION_UNCLEAR" %}
+  <p data-submit-result>The outcome is unclear. Check your email or the employer's site, then record what happened.</p>
+  <button class="button" type="button" data-submit-action="resolve-submitted" data-attempt="{{ status.attempt_id }}">It was submitted</button>
+  <button class="button secondary" type="button" data-submit-action="resolve-not-submitted" data-attempt="{{ status.attempt_id }}">It was not submitted</button>
+{% elif review.state == "PENDING_OBSERVATION" %}
+  <p data-submit-waiting>Checking the employer page… Keep the filled employer tab open.</p>
+{% elif review.state == "UNAVAILABLE" %}
+  <p>Submission isn't available right now:</p>
+  <ul>{% for r in reasons %}<li data-submit-reason>{{ r }}</li>{% endfor %}</ul>
+{% else %}
+  {% if review.state == "BLOCKED" %}<p>Submission is blocked:</p>
+  <ul>{% for r in reasons %}<li data-submit-reason>{{ r }}</li>{% endfor %}</ul>{% endif %}
+{% endif %}
+</section>
+
+{% if snap and status.status in ("SUBMIT_READY", "NOT_READY") %}
+<section class="panel" data-submit-section="bound">
+  <div class="panel-heading"><h2>What you are authorizing</h2></div>
+  <dl>
+    <dt>Application page</dt><dd><code data-bound="canonical_url">{{ snap.target.canonical_url }}</code></dd>
+    <dt>Site</dt><dd>{{ snap.target.adapter_id }} · {{ snap.target.adapter_version }} ·
+      <code data-bound="certification">{{ snap.certification.certification_id }}</code> ({{ snap.certification.status }})</dd>
+    <dt>Page checked</dt><dd><code data-bound="observation_fingerprint">{{ snap.observation.observation_fingerprint }}</code></dd>
+    <dt>Fill plan</dt><dd><code data-bound="plan_hash">{{ snap.fill.plan_hash }}</code>
+      (confirmation <code>{{ snap.fill.plan_confirmation_id }}</code>)</dd>
+    <dt>Fill result</dt><dd><code data-bound="fill_result_hash">{{ snap.fill.fill_result_hash }}</code></dd>
+    <dt>Approval</dt><dd><code data-bound="approval_binding_hash">{{ snap.approval.binding_hash }}</code></dd>
+    <dt>Documents</dt><dd>{% for d in snap.documents %}<span data-bound-document>{{ d[0] | replace("_", " ") }}: {{ d[1] }} ·
+      <code data-bound="sha256">{{ d[2] }}</code></span><br>{% endfor %}</dd>
+    <dt>Policy</dt><dd>{{ snap.policy.engine_version }} · {{ snap.policy.human_submit_contract }} ·
+      control epoch <code data-bound="control_epoch">{{ snap.policy.control_epoch }}</code></dd>
+    <dt>Review hash</dt><dd><code data-bound="review_hash">{{ review.review_hash }}</code></dd>
+  </dl>
+</section>
+{% if rows %}<section class="panel" data-submit-section="answers">
+  <div class="panel-heading"><h2>What the employer will receive</h2></div>
+  {% for row in rows %}<article class="evidence-row" data-submit-row="{{ row.page_field_key }}"><div>
+    <strong>{{ row.question }}</strong><br>
+    {% if row.action_kind == "WRITE" %}<span data-rendered-value>{{ row.rendered_value }}</span>
+    {% elif row.action_kind == "ATTACH_LOCAL" %}{{ row.document.filename }}
+    {% elif row.action_kind == "OMIT" %}left blank (approved)
+    {% else %}not part of the application{% endif %}
+  </div></article>{% endfor %}
+</section>{% endif %}
+<section class="panel" data-submit-section="act">
+  <p data-submit-refusal hidden></p>
+  <button class="button" type="button" data-submit-action="authorize" data-review-hash="{{ review.review_hash }}"
+    {% if review.state != "READY" %}disabled{% endif %}>Submit application</button>
+</section>
+{% endif %}
+<script nonce="{{ request.state.csp_nonce }}">
+(function () {
+  const base = "/api/workspaces/{{ ws }}/submit";
+  const stateUrl = "/api/workspaces/{{ ws }}/submit/state";
+  const refusal = document.querySelector("[data-submit-refusal]");
+  async function send(path, body) {
+    const r = await fetch(base + path, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    if (!r.ok) {
+      const b = await r.json().catch(function () { return {}; });
+      if (refusal) { refusal.textContent = "Refused: " + ((typeof b.detail === "string" && b.detail) || b.message || r.status) + ". Reload to see the current state.";
+        refusal.hidden = false; }
+      return false;
+    }
+    window.location.href = "/workspaces/{{ ws }}/submit?observed=1";
+    return true;
+  }
+  document.querySelectorAll("[data-submit-action]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      const action = el.dataset.submitAction;
+      el.disabled = true;  // one act per click; the server also refuses a second authorization
+      if (action === "authorize") { send("/authorize", {review_hash: el.dataset.reviewHash}); }
+      else if (action === "cancel") { send("/cancel", {authorization_id: el.dataset.authorization}); }
+      else if (action === "resolve-submitted") { send("/attempts/" + el.dataset.attempt + "/resolve", {submitted: true}); }
+      else if (action === "resolve-not-submitted") { send("/attempts/" + el.dataset.attempt + "/resolve", {submitted: false}); }
+    });
+  });
+  const waiting = {{ (review.state == "PENDING_OBSERVATION" or status.status in ("SUBMITTING", "CHALLENGE_WAITING")) | tojson }};
+  if (waiting) {
+    const started = Date.now();
+    const timer = setInterval(async function () {
+      const r = await fetch(stateUrl);
+      if (!r.ok) { return; }
+      const s = await r.json();
+      const pending = s.review.state === "PENDING_OBSERVATION";
+      const moving = s.status.status === "SUBMITTING" || s.status.status === "CHALLENGE_WAITING";
+      if ((!pending && !moving) || s.status.status !== {{ status.status | tojson }}) {
+        clearInterval(timer);
+        window.location.href = "/workspaces/{{ ws }}/submit?observed=1";
+      } else if (pending && Date.now() - started > 20000) {
+        clearInterval(timer);
+        const note = document.querySelector("[data-submit-waiting]");
+        if (note) { note.textContent = "Couldn't reach the employer tab. Keep it open and try again."; }
+      }
+    }, 2000);
+  }
+})();
+</script>
+{% endblock %}

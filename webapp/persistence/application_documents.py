@@ -1,12 +1,12 @@
 """Owner-scoped persistence for immutable application-document versions."""
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from product.application_document_contract import validate_document_version
+from webapp.persistence import dbapi
 
 
 def _now() -> str:
@@ -17,23 +17,27 @@ def new_document_version_id() -> str:
     return f"docv_{uuid.uuid4().hex[:20]}"
 
 
-def create_document_version(conn: sqlite3.Connection, value: dict[str, Any], *, commit: bool = True) -> dict[str, Any]:
+_DOCUMENT_VERSION_COLUMNS = (
+    "id", "account_id", "source_workspace_id", "document_kind", "origin", "original_filename",
+    "media_type", "byte_length", "sha256", "storage_key", "source_generation_artifact_id", "created_at",
+)
+
+
+def create_document_version(conn: dbapi.Connection, value: dict[str, Any], *, commit: bool = True) -> dict[str, Any]:
     validate_document_version(value)
     conn.execute(
         "INSERT INTO application_document_versions "
         "(id, account_id, source_workspace_id, document_kind, origin, original_filename, "
         "media_type, byte_length, sha256, storage_key, source_generation_artifact_id, created_at) "
-        "VALUES (:id, :account_id, :source_workspace_id, :document_kind, :origin, "
-        ":original_filename, :media_type, :byte_length, :sha256, :storage_key, "
-        ":source_generation_artifact_id, :created_at)",
-        value,
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(value[column] for column in _DOCUMENT_VERSION_COLUMNS),
     )
     if commit:
         conn.commit()
     return get_document_version(conn, value["id"], account_id=value["account_id"])
 
 
-def get_document_version(conn: sqlite3.Connection, document_version_id: str, *, account_id: str) -> dict[str, Any] | None:
+def get_document_version(conn: dbapi.Connection, document_version_id: str, *, account_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM application_document_versions WHERE id=? AND account_id=?",
         (document_version_id, account_id),
@@ -41,7 +45,7 @@ def get_document_version(conn: sqlite3.Connection, document_version_id: str, *, 
     return dict(row) if row else None
 
 
-def list_document_versions(conn: sqlite3.Connection, *, account_id: str, workspace_id: str | None = None) -> list[dict[str, Any]]:
+def list_document_versions(conn: dbapi.Connection, *, account_id: str, workspace_id: str | None = None) -> list[dict[str, Any]]:
     sql = "SELECT * FROM application_document_versions WHERE account_id=?"
     args: list[Any] = [account_id]
     if workspace_id is not None:
@@ -51,7 +55,7 @@ def list_document_versions(conn: sqlite3.Connection, *, account_id: str, workspa
     return [dict(row) for row in rows]
 
 
-def get_selection(conn: sqlite3.Connection, workspace_id: str, kind: str, *, account_id: str) -> dict[str, Any] | None:
+def get_selection(conn: dbapi.Connection, workspace_id: str, kind: str, *, account_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM application_document_selections WHERE workspace_id=? AND account_id=? AND document_kind=?",
         (workspace_id, account_id, kind),
@@ -59,7 +63,7 @@ def get_selection(conn: sqlite3.Connection, workspace_id: str, kind: str, *, acc
     return dict(row) if row else None
 
 
-def set_selection(conn: sqlite3.Connection, *, workspace_id: str, account_id: str, kind: str, document_version_id: str, expected_revision: int, commit: bool = True) -> dict[str, Any]:
+def set_selection(conn: dbapi.Connection, *, workspace_id: str, account_id: str, kind: str, document_version_id: str, expected_revision: int, commit: bool = True) -> dict[str, Any]:
     current = get_selection(conn, workspace_id, kind, account_id=account_id)
     actual = current["revision"] if current else 0
     if actual != expected_revision:
@@ -86,7 +90,7 @@ def set_selection(conn: sqlite3.Connection, *, workspace_id: str, account_id: st
     return get_selection(conn, workspace_id, kind, account_id=account_id)
 
 
-def save_reusable(conn: sqlite3.Connection, *, account_id: str, document_version_id: str, label: str | None, commit: bool = True) -> dict[str, Any]:
+def save_reusable(conn: dbapi.Connection, *, account_id: str, document_version_id: str, label: str | None, commit: bool = True) -> dict[str, Any]:
     conn.execute(
         "INSERT INTO reusable_application_documents (account_id, document_version_id, label, saved_at) "
         "VALUES (?, ?, ?, ?) ON CONFLICT(account_id, document_version_id) DO UPDATE SET label=excluded.label, saved_at=excluded.saved_at",
@@ -97,13 +101,13 @@ def save_reusable(conn: sqlite3.Connection, *, account_id: str, document_version
     return dict(conn.execute("SELECT * FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id)).fetchone())
 
 
-def remove_reusable(conn: sqlite3.Connection, *, account_id: str, document_version_id: str, commit: bool = True) -> None:
+def remove_reusable(conn: dbapi.Connection, *, account_id: str, document_version_id: str, commit: bool = True) -> None:
     conn.execute("DELETE FROM reusable_application_documents WHERE account_id=? AND document_version_id=?", (account_id, document_version_id))
     if commit:
         conn.commit()
 
 
-def list_reusable(conn: sqlite3.Connection, *, account_id: str) -> list[dict[str, Any]]:
+def list_reusable(conn: dbapi.Connection, *, account_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT r.*, d.document_kind, d.original_filename, d.byte_length, d.sha256, d.origin, d.source_workspace_id "
         "FROM reusable_application_documents r JOIN application_document_versions d ON d.id=r.document_version_id AND d.account_id=r.account_id "

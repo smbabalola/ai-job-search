@@ -18,6 +18,7 @@ SUBJECT_POLICY = load_subject_policy()
 
 def make_policy(*rules, lists=None):
     doc = default_policy_document("Europe/London")
+    doc["schema_version"] = "standing-policy.v1"  # the 6B fixture policy (v1 stays valid; pinned hashes keep)
     doc["rules"] = list(rules)
     if lists:
         doc["employer_lists"] = lists

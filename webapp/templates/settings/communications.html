@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Email preferences · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Email preferences</h1>
+  <p>Choose how we email you about your applications. Everything also appears in your <a href="/inbox">inbox</a>.</p></div></section>
+{% if saved %}<p class="notice" role="status">Your preferences were saved.</p>{% endif %}
+{% set labels = {"ACTION_REQUIRED": "Things that need you (answers, reviews, submitting)", "OUTCOME": "Results (prepared, filled, submitted)", "USAGE": "Plan allowance reminders", "DISCOVERY": "New job matches"} %}
+<form class="panel" method="post" action="/settings/communications">
+  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h2>Notification emails</h2></div>
+  {% for category in configurable %}<label class="field"><span>{{ labels[category] }}</span>
+    <select name="mode_{{ category }}" data-email-mode="{{ category }}">
+      {% for mode, label in [("IMMEDIATE", "Email me straight away"), ("DAILY_DIGEST", "Once a day, in a summary"), ("OFF", "Don't email me")] %}
+      <option value="{{ mode }}" {% if modes[category] == mode %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select></label>{% endfor %}
+  <div class="panel-heading"><h2>Product news</h2></div>
+  {% if marketing is not none %}<label class="checkbox"><input type="checkbox" name="marketing_email" {% if marketing %}checked{% endif %} data-marketing-opt-in>
+    <span>Email me product news. We'll only use this if we start sending product news.</span></label>{% endif %}
+  <button class="button" type="submit">Save preferences</button>
+</form>
+<section class="panel" data-service-messages>
+  <div class="panel-heading"><h2>Service messages</h2></div>
+  <p>These are always sent, because they are about your account's security, billing or data:</p>
+  <ul>{% for template in service_templates %}<li><code>{{ template }}</code> — always sent</li>{% endfor %}</ul>
+</section>
+{% endblock %}

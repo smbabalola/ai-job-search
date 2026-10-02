@@ -8,7 +8,6 @@ submission lock.
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from product.cv_review_projection import CvReviewProjectionError
 from product.cv_generation_basis_contract import CvGenerationBasisContractError
+from webapp.api.route_classes import USER
 from webapp.api.dependencies import get_account_scope, get_conn, require_cv_quality_v2_enabled
 from webapp.persistence.artifacts import get_artifact, list_artifact_history
 from webapp.services.application_documents import _require_writable_workspace
@@ -29,10 +29,11 @@ from webapp.services.cv_statement_review import (
 from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
 
 router = APIRouter(
     prefix="/api/workspaces/{workspace_id}/cv-v2", tags=["cv-generation-v2"],
-    dependencies=[Depends(require_cv_quality_v2_enabled)],
+    dependencies=[Depends(USER), Depends(require_cv_quality_v2_enabled)],
 )
 
 
@@ -48,7 +49,7 @@ def _not_found(label: str) -> HTTPException:
 
 
 def require_owned_artifact(
-    conn: sqlite3.Connection, workspace_id: str, artifact_id: str, *, artifact_type: str,
+    conn: dbapi.Connection, workspace_id: str, artifact_id: str, *, artifact_type: str,
 ) -> dict[str, Any]:
     """Exact artifact belonging to this (already account-scoped) workspace, or 404.
 
@@ -61,14 +62,14 @@ def require_owned_artifact(
     return artifact
 
 
-def _require_readable(conn: sqlite3.Connection, workspace_id: str, account_id: str) -> None:
+def _require_readable(conn: dbapi.Connection, workspace_id: str, account_id: str) -> None:
     try:
         require_job_workspace(conn, workspace_id, account_id=account_id)
     except JobWorkspaceNotFound as exc:
         raise _not_found("job workspace") from exc
 
 
-def _require_writable(conn: sqlite3.Connection, workspace_id: str, account_id: str) -> None:
+def _require_writable(conn: dbapi.Connection, workspace_id: str, account_id: str) -> None:
     try:
         _require_writable_workspace(conn, workspace_id, account_id)
     except PipelineError as exc:
@@ -78,7 +79,7 @@ def _require_writable(conn: sqlite3.Connection, workspace_id: str, account_id: s
 
 
 def build_cv_v2_review_view(
-    conn: sqlite3.Connection, workspace_id: str, plan_id: str,
+    conn: dbapi.Connection, workspace_id: str, plan_id: str,
 ) -> dict[str, Any]:
     """Exact review state for one pinned plan plus the bases built from it.
 
@@ -114,7 +115,7 @@ def build_cv_v2_review_view(
 @router.post("/plans", status_code=201)
 def post_plan(
     workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_writable(conn, workspace_id, scope.account_id)
@@ -133,7 +134,7 @@ def post_plan(
 @router.get("/plans/{plan_id}")
 def get_plan(
     workspace_id: str, plan_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_readable(conn, workspace_id, scope.account_id)
@@ -147,7 +148,7 @@ def get_plan(
 @router.post("/plans/{plan_id}/decisions", status_code=201)
 def post_decision(
     workspace_id: str, plan_id: str, body: DecisionBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_writable(conn, workspace_id, scope.account_id)
@@ -164,7 +165,7 @@ def post_decision(
 @router.post("/plans/{plan_id}/basis", status_code=201)
 def post_basis(
     workspace_id: str, plan_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _require_writable(conn, workspace_id, scope.account_id)

@@ -1,0 +1,12 @@
+{% extends "admin/_base.html" %}
+{% block title %}Confirm it's you{% endblock %}
+{% block content %}
+<form class="panel" method="post" action="/admin/reauth" data-admin-reauth><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><input type="hidden" name="next" value="{{ next }}">
+  <div class="panel-heading"><h1>Confirm it's you</h1></div>
+  <p>Actions that change or remove access need your password and a fresh code. They stay open for five minutes.</p>
+  {% for error in errors %}<p class="blocked-note" role="alert">{{ error }}</p>{% endfor %}
+  <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+  <label class="field"><span>6-digit code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>
+  <button class="button" type="submit">Confirm</button>
+</form>
+{% endblock %}

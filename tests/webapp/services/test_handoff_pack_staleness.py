@@ -84,7 +84,7 @@ def test_confirm_handoff_submission_rejects_applied_when_pack_is_stale(
     conn, workspace_id, pack_artifact_id = _confirm_pack_then_correct_answer_without_rerun(
         tmp_path, webapp_profile_root,
     )
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is True
 
     session, session_scope = _start_session_for_pack(
@@ -132,10 +132,10 @@ def test_confirm_handoff_submission_allows_applied_when_pack_is_current(tmp_path
     confirmed = confirm_application_pack(
         conn, workspace_id, effective_date="2026-09-15",
         documents_root=tmp_path / "documents",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     pack_artifact_id = confirmed["artifact"]["id"]
 
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is False
 
     session, session_scope = _start_session_for_pack(
@@ -162,7 +162,7 @@ def test_confirm_handoff_submission_without_workflow_update_is_unaffected_by_sta
     conn, workspace_id, pack_artifact_id = _confirm_pack_then_correct_answer_without_rerun(
         tmp_path, webapp_profile_root,
     )
-    staleness = check_staleness(conn, workspace_id, "application_pack")
+    staleness = check_staleness(conn, workspace_id, "application_pack", account_id=DEFAULT_ACCOUNT_ID)
     assert staleness["stale"] is True
 
     session, session_scope = _start_session_for_pack(

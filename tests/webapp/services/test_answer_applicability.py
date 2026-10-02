@@ -22,6 +22,7 @@ from tests.webapp.services.test_application_blockers import (
     _run_fit,
     _workspace,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _ensure_search_workspace(conn, search_workspace_id):
@@ -82,7 +83,7 @@ def _setup_two_sibling_workspaces(tmp_path, webapp_profile_root, *, search_works
     from webapp.persistence.artifacts import save_artifact
     from webapp.persistence.workspaces import create_workspace
 
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Sibling)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",
@@ -139,7 +140,7 @@ def test_no_match_across_different_search_workspaces(tmp_path, webapp_profile_ro
     from webapp.persistence.artifacts import save_artifact
     from webapp.persistence.workspaces import create_workspace
 
-    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Other Search)")
+    workspace_b = create_workspace(conn, company="Acme", title="Backend Engineer (Other Search)", account_id=DEFAULT_ACCOUNT_ID)
     workspace_b_id = workspace_b["id"]
     save_artifact(
         conn, workspace_id=workspace_b_id, artifact_type="job_posting_snapshot",

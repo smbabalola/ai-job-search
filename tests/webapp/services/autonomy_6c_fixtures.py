@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from tests.webapp.persistence.autonomy_db import ACCOUNT, NOW, conn, db_path, make_workspace  # noqa: F401
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 def make_screening_row(conn, *, candidate_id, outcome="PROMOTE", could_unlock=False, fingerprint="fp",
@@ -83,10 +85,10 @@ def discover(conn, jobs, *, deployment_ceiling=None):
     if get_current_user_profile(conn, "search_default", account_id=ACCOUNT) is None:
         save_user_profile(conn, {"target_roles": ["Drilling Fluids Engineer"], "locations": ["Aberdeen"],
                                  "search_terms": ["drilling fluids"], "source_preferences": ["freehire-search"],
-                                 "recency_days": 7})
+                                 "recency_days": 7}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     return run_discovery_search(conn, JobsRunner(jobs), limit_per_source=10,
                                 deployment_ceiling=Capability.PREPARE if deployment_ceiling is None
-                                else deployment_ceiling)
+                                else deployment_ceiling, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
 
 def enable_prepare(conn, *, llm_per_day="5.00", llm_per_application="1.00", now=NOW):
@@ -116,11 +118,11 @@ def settings_6c(tmp_path, **kw):
 def add_fit(conn, candidate_id, *, score=82, verdict="strong"):
     """A stored discovery fit for the candidate (content is what screening reads)."""
     from webapp.persistence.discovery import get_discovery_candidate, save_discovery_fit
-    candidate = get_discovery_candidate(conn, candidate_id)
+    candidate = get_discovery_candidate(conn, candidate_id, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     return save_discovery_fit(conn, candidate_id=candidate_id, occurrence_id=candidate["canonical_occurrence_id"],
                               request={"active_extensions": []},
                               result={"overall_score": score, "verdict": {"id": verdict} if verdict else None},
-                              fingerprints={})
+                              fingerprints={}, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
 
 def fresh_fits(monkeypatch):

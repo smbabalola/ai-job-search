@@ -29,7 +29,8 @@ def test_normal_approval_write_contract(v2_chain):
     before = table_counts(v2_chain.conn)
     out = v2_chain.approve()
     assert diff_counts(before, table_counts(v2_chain.conn)) == {"application_approvals": 1,
-                                                               "application_review_events": 1}
+                                                               "application_review_events": 1,
+                                                               "document_version_references": 2}  # Bundle 7 L3: cv + cover letter
     [event] = _events(v2_chain, "APPROVED")
     assert event["detail"]["approval_id"] == out["approval_id"]
     state = v2_chain.state()
@@ -93,7 +94,8 @@ def test_delta_reapproval_writes_one_delta_resolved_per_delta(v2_chain):
     before = table_counts(v2_chain.conn)
     out = v2_chain.approve()
     assert diff_counts(before, table_counts(v2_chain.conn)) == {"application_approvals": 1,
-                                                               "application_review_events": 3}
+                                                               "application_review_events": 3,
+                                                               "document_version_references": 2}  # Bundle 7 L3
     resolved = {e["detail"]["delta_id"] for e in _events(v2_chain, "DELTA_RESOLVED")}
     assert resolved == {d["id"] for d in deltas} and set(out["resolved_delta_ids"]) == resolved
     assert ra.open_deltas(v2_chain.conn, v2_chain.ws) == [] and v2_chain.state().approval_effective

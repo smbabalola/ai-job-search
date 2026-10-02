@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Fake billing · Job Search Workspace{% endblock %}
+{% block content %}
+<p class="notice">Development billing provider. No real payment is taken.</p>
+{% if portal_customer %}
+<h1>Billing portal</h1>
+<p>Customer <code>{{ portal_customer }}</code>. A real provider's portal would let you update your card, resume or cancel here.</p>
+<p><a class="button" href="{{ return_to }}">Return to JobSearch</a></p>
+{% else %}
+<h1>Checkout</h1>
+<p>Plan <strong>{{ plan_id }}</strong>, billed each {{ interval }}.{% if session.trial_days %} Includes a {{ session.trial_days }}-day trial.{% endif %}</p>
+{% if session.status == "open" %}
+{% for outcome, label in outcomes.items() %}
+<form class="inline-form" method="post" action="/dev/billing/checkout/{{ session_id }}/{{ outcome }}">
+  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <button class="button{% if outcome != 'pay' %} secondary{% endif %}" type="submit">{{ label }}</button>
+</form>
+{% endfor %}
+{% else %}
+<p>This checkout is already {{ session.status }}.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

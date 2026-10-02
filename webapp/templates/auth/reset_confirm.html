@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Choose a new password · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="panel form-panel auth-panel">
+  <h1>Choose a new password</h1>
+  {% if errors %}<ul class="form-errors" role="alert">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="/auth/password-reset/confirm"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label>New password <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+    <button class="button" type="submit">Save and sign in</button>
+  </form>
+  <p class="form-note">Saving signs you out everywhere else.</p>
+</section>
+{% endblock %}

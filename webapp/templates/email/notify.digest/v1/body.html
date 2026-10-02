@@ -1,0 +1,2 @@
+{% extends "_layout.html" %}{% block content %}<p>Here's what happened {{ period }}:</p>
+<ul>{% for item in items %}<li><a href="{{ item.action_url }}">{{ item.title }}</a></li>{% endfor %}</ul>{% endblock %}

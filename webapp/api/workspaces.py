@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, Literal
 
@@ -20,10 +19,13 @@ from webapp.services.http_api import (
     list_public_extensions,
     understand_job,
 )
+from webapp.services.autonomy_providers import request_providers
 from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api", tags=["workspaces"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api", tags=["workspaces"])
 
 
 class StrictBody(BaseModel):
@@ -50,6 +52,22 @@ class FitBody(ProcessingBody):
     extension_ids: list[str] = Field(default_factory=list)
 
 
+def _prepare_stage(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str, stage: str,
+                   work):
+    """Bundle 7 §11.4: every AI prepare stage is gated (``ai.prepare``) and
+    metered (``applications.prepare``), and runs at most once at a time per
+    workspace (a duplicate in flight is ACTION_IN_PROGRESS). Ownership is
+    checked first, so a foreign workspace is a 404 and never touches the ledger."""
+    get_job_workspace(conn, workspace_id, account_id=scope.account_id)
+    metering = request.app.state.metering
+    if metering.enforced:  # Bundle 7 15.2: ready to prepare (after the entitlement check), before any charge
+        from datetime import datetime, timezone
+        from webapp.services.onboarding_v1 import require_prepare_ready
+        metering.require_feature(conn, scope, "ai.prepare")
+        require_prepare_ready(conn, scope, now=datetime.now(timezone.utc))
+    return metering.prepare(conn, scope, workspace_id, work, stage=stage)
+
+
 def _service_error(exc: Exception) -> HTTPException:
     if isinstance(exc, JobWorkspaceNotFound):
         return HTTPException(status_code=404, detail=str(exc))
@@ -67,7 +85,7 @@ def get_extensions(extensions_dir: Path = Depends(get_extensions_dir)):
 @router.post("/workspaces", status_code=201)
 def post_workspace(
     body: CreateWorkspaceBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -82,7 +100,7 @@ def post_workspace(
 
 @router.get("/workspaces")
 def get_workspaces(
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return {
@@ -93,7 +111,7 @@ def get_workspaces(
 @router.get("/workspaces/{workspace_id}")
 def get_workspace_detail(
     workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -109,32 +127,73 @@ def get_workspace_detail(
 @router.post("/workspaces/{workspace_id}/understand")
 def post_understand(
     workspace_id: str, body: ProcessingBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
-    provider = _job_understanding_provider(request)
+    provider = _providers(request, scope, workspace_id).understanding
     try:
-        return {"artifact": understand_job(
+        artifact = _prepare_stage(request, conn, scope, workspace_id, "understand", lambda: understand_job(
             conn, workspace_id, provider, request_id=body.request_id,
             account_id=scope.account_id,
-        )}
+        ))
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    _resolve_cv(request, conn, scope, workspace_id)
+    return {"artifact": artifact}
+
+
+def _resolve_cv(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str) -> None:
+    """Bundle 7 §14.3: which CV this application uses, recorded after understanding.
+    Best effort: a resolution problem never fails the understanding stage."""
+    from datetime import datetime, timezone
+    from webapp.services import cv_strategy
+    try:
+        cv_strategy.resolve_for_workspace(conn, scope, workspace_id=workspace_id,
+                                          metering=request.app.state.metering, now=datetime.now(timezone.utc))
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        import logging
+        logging.getLogger("webapp.cv_strategy").exception("cv_resolution_failed workspace=%s", workspace_id)
+
+
+def _fulfil_tailoring(request: Request, conn: dbapi.Connection, scope: AccountScope, workspace_id: str) -> None:
+    """Bundle 7 §14.3 step 4: a pending tailoring runs after the intelligence stage (it needs the fit)."""
+    from datetime import datetime, timezone
+    from webapp.services import cv_strategy
+    settings = request.app.state.settings
+
+    def generate(conn, scope, *, workspace_id, base_version, template_id, documents_root):
+        from webapp.services.application_documents import generate_application_documents
+        generated = generate_application_documents(conn, workspace_id, documents_root=documents_root,
+                                                   extensions_dir=settings.extensions_dir,
+                                                   account_id=scope.account_id)
+        return next(d["id"] for d in generated["documents"] if d["document_kind"] == "cv")
+    try:  # best effort: the intelligence stage already succeeded; the pending tailoring stays visible
+        cv_strategy.fulfil_tailoring(conn, scope, workspace_id=workspace_id, metering=request.app.state.metering,
+                                     generator=generate, documents_root=settings.documents_root,
+                                     now=datetime.now(timezone.utc))
+    except Exception:  # noqa: BLE001
+        if conn.in_transaction:
+            conn.rollback()
+        import logging
+        logging.getLogger("webapp.cv_strategy").exception("cv_tailoring_failed workspace=%s", workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/fit")
 def post_fit(
     workspace_id: str, body: FitBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
-        artifact = fit_job(
-            conn, workspace_id, _semantic_adapter(request), request_id=body.request_id,
+        artifact = _prepare_stage(request, conn, scope, workspace_id, "fit", lambda: fit_job(
+            conn, workspace_id, _providers(request, scope, workspace_id).semantic_adapter,
+            request_id=body.request_id,
             extension_ids=body.extension_ids, extensions_dir=extensions_dir,
             account_id=scope.account_id,
-        )
+        ))
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
     record_shadow_decision(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -145,41 +204,34 @@ def post_fit(
 @router.post("/workspaces/{workspace_id}/application-intelligence")
 def post_application_intelligence(
     workspace_id: str, body: ProcessingBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
-        return {
-            "artifact": generate_application_intelligence(
-                conn, workspace_id, _application_intelligence_provider(request),
+        artifact = _prepare_stage(
+            request, conn, scope, workspace_id, "application-intelligence", lambda: generate_application_intelligence(
+                conn, workspace_id, _providers(request, scope, workspace_id).intelligence,
                 request_id=body.request_id,
                 account_id=scope.account_id,
-            )
-        }
+            ))
     except (PipelineError, JobWorkspaceNotFound) as exc:
         raise _service_error(exc) from exc
+    _fulfil_tailoring(request, conn, scope, workspace_id)
+    _notify_prepared(conn, scope, workspace_id, artifact)
+    return {"artifact": artifact}
 
 
-def _job_understanding_provider(request: Request):
-    override = getattr(request.app.state, "job_understanding_provider", None)
-    if override is not None:
-        return override
-    from product.openai_job_understanding_provider import OpenAIJobUnderstandingProvider
-    return OpenAIJobUnderstandingProvider()
+def _notify_prepared(conn: dbapi.Connection, scope: AccountScope, workspace_id: str, artifact: Any) -> None:
+    """Bundle 7 §17.2: the last prepare stage succeeded → prepared, and the pack is ready for review."""
+    from datetime import datetime, timezone
+    from webapp.services.notifications import notify
+    artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+    now = datetime.now(timezone.utc)
+    for kind in ("application.prepared", "application.review_required"):
+        notify(conn, account_id=scope.account_id, kind=kind, subject_type="workspace", subject_id=workspace_id,
+               dedupe_key=f"{kind}:{workspace_id}:{artifact_id}", detail={"artifact_id": artifact_id}, now=now)
+    conn.commit()
 
 
-def _semantic_adapter(request: Request):
-    override = getattr(request.app.state, "semantic_adapter", None)
-    if override is not None:
-        return override
-    from webapp.services.openai_semantic_proposer_client import OpenAISemanticProposerClient
-    from webapp.services.semantic_proposal_adapter import SemanticProposalAdapter
-    return SemanticProposalAdapter(OpenAISemanticProposerClient())
-
-
-def _application_intelligence_provider(request: Request):
-    override = getattr(request.app.state, "application_intelligence_provider", None)
-    if override is not None:
-        return override
-    from product.openai_application_intelligence_provider import OpenAIApplicationIntelligenceProvider
-    return OpenAIApplicationIntelligenceProvider()
+def _providers(request: Request, scope: AccountScope, workspace_id: str):
+    return request_providers(request.app.state, scope, "workspace", workspace_id)

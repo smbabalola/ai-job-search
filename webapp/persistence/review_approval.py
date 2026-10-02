@@ -17,9 +17,8 @@ def _id(prefix: str) -> str:
 
 def _insert(conn, table: str, values: dict[str, Any]) -> dict[str, Any]:
     cols = ", ".join(values)
-    cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)})",
-                       tuple(values.values()))
-    return dict(conn.execute(f"SELECT * FROM {table} WHERE seq = ?", (cur.lastrowid,)).fetchone())
+    return dict(conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({', '.join('?' for _ in values)}) RETURNING *",
+                            tuple(values.values())).fetchone())
 
 
 def _approval(row) -> dict[str, Any] | None:
@@ -40,6 +39,11 @@ def insert_approval(conn, *, account_id: str, application_workspace_id: str, bin
         "supersedes_id": supersedes_id, "batch_id": batch_id,
         "resolved_delta_ids_json": json.dumps(sorted(resolved_delta_ids)), "actor": actor,
         "created_at": to_utc_iso(now)})
+    # Bundle 7 L3: the approved documents can never be deleted while this approval exists.
+    from webapp.persistence.cv_library import add_references
+    from webapp.persistence.bundle7_migrations import binding_documents
+    add_references(conn, document_version_ids=binding_documents(binding), referrer_type="APPROVAL",
+                   referrer_id=row["id"], now=now)
     return _approval(row)
 
 

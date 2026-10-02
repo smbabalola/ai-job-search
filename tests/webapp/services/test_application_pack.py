@@ -38,6 +38,7 @@ from webapp.services.input_identity import (
     semantic_proposals_identity,
     semantic_proposer_policy_identity,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 _NAME_CLAIM_ID = "clm_0000000000000001"
@@ -134,8 +135,8 @@ def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
-    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, workspace["id"]
 
 
@@ -323,16 +324,16 @@ def _seed_completion_ready(conn, workspace_id):
 def test_requires_complete_current_chain(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     with pytest.raises(PipelineError, match="profile_snapshot"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_ready_content_requires_explicit_exact_artifact_decision(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _, _, _, intelligence = _seed(conn, workspace_id)
     with pytest.raises(PipelineError, match="content_unit:cv_1"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
-    assert build_application_pack(conn, workspace_id)["cv_content"][0]["unit_id"] == "cv_1"
+    assert build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["cv_content"][0]["unit_id"] == "cv_1"
 
 
 def test_decision_on_superseded_intelligence_does_not_authorize_current_unit(tmp_path):
@@ -358,7 +359,7 @@ def test_decision_on_superseded_intelligence_does_not_authorize_current_unit(tmp
         upstream_content_id=ai_request["content_id"],
     )
     with pytest.raises(PipelineError, match="content_unit:cv_1"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_newer_omission_is_the_only_effective_consulted_decision(tmp_path):
@@ -373,7 +374,7 @@ def test_newer_omission_is_the_only_effective_consulted_decision(tmp_path):
     conn.execute("UPDATE review_decisions SET created_at=? WHERE id=?", ("2026-08-24T10:01:00+00:00", newer["id"]))
     conn.commit()
 
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert pack["cv_content"] == []
     assert [item["id"] for item in pack["review_record"]["decisions_consulted"]] == [
@@ -393,7 +394,7 @@ def test_newer_acknowledgement_is_the_only_effective_consulted_decision(tmp_path
     conn.execute("UPDATE review_decisions SET created_at=? WHERE id=?", ("2026-08-24T10:01:00+00:00", newer["id"]))
     conn.commit()
 
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert [unit["unit_id"] for unit in pack["cv_content"]] == ["cv_1"]
     assert [item["id"] for item in pack["review_record"]["decisions_consulted"]] == [
@@ -405,8 +406,8 @@ def test_repeated_reviewed_v1_basis_is_exactly_deterministic(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_completion_ready(conn, workspace_id)
 
-    first = build_application_pack(conn, workspace_id)
-    second = build_application_pack(conn, workspace_id)
+    first = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
+    second = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert first == second
     assert first["schema_version"] == "application-pack.v1"
@@ -418,7 +419,7 @@ def test_reviewed_v1_basis_has_one_exact_current_authorization_per_selected_unit
     conn, workspace_id = _workspace(tmp_path)
     intelligence = _seed_completion_ready(conn, workspace_id)
 
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     selected_ids = {
         unit["unit_id"]
         for unit in pack["cv_content"] + pack["cover_letter_content"]
@@ -447,7 +448,7 @@ def test_newer_contradictory_decision_changes_basis_without_changing_sources(tmp
         ("2026-08-24T10:00:00+00:00", older["id"]),
     )
     conn.commit()
-    acknowledged_basis = build_application_pack(conn, workspace_id)
+    acknowledged_basis = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     newer = _decide(
         conn, workspace_id, intelligence, "content_unit", "cv_1",
@@ -458,7 +459,7 @@ def test_newer_contradictory_decision_changes_basis_without_changing_sources(tmp
         ("2026-08-24T10:01:00+00:00", newer["id"]),
     )
     conn.commit()
-    omitted_basis = build_application_pack(conn, workspace_id)
+    omitted_basis = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert acknowledged_basis["source_artifacts"] == omitted_basis["source_artifacts"]
     assert acknowledged_basis != omitted_basis
@@ -476,16 +477,16 @@ def test_every_eligible_status_needs_disposition_and_acknowledgement_includes(tm
     unit = {"unit_id": "u", "unit_type": "cv_bullet", "text": "Grounded", "status": status, "profile_evidence_ids": []}
     _, _, _, intelligence = _seed(conn, workspace_id, units=[unit])
     with pytest.raises(PipelineError, match="content_unit:u"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     _decide(conn, workspace_id, intelligence, "content_unit", "u")
-    assert build_application_pack(conn, workspace_id)["cv_content"] == [unit]
+    assert build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["cv_content"] == [unit]
 
 
 def test_explicit_omission_is_excluded_and_preserved_in_audit(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _, _, _, intelligence = _seed(conn, workspace_id)
     decision = _decide(conn, workspace_id, intelligence, "content_unit", "cv_1", "omit_from_positioning")
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert pack["cv_content"] == []
     assert pack["completion_status"] == "INCOMPLETE"
     assert pack["completion_issues"] == [
@@ -518,11 +519,11 @@ def test_gate4_does_not_persist_or_draft_an_incomplete_pack(tmp_path):
     with pytest.raises(PipelineError, match="insufficient_cv_units"):
         confirm_application_pack(
             conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
     assert get_current_artifact(conn, workspace_id, "application_pack") is None
     assert list_workflow_events(conn, workspace_id) == []
-    assert get_workspace(conn, workspace_id)["workflow_status"] is None
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] is None
 
 
 def test_unsupported_content_never_enters_pack_but_remains_auditable(tmp_path):
@@ -530,7 +531,7 @@ def test_unsupported_content_never_enters_pack_but_remains_auditable(tmp_path):
     unsupported = [{"claim_id": "uns_1", "reason": "No evidence", "rejected_atom_ids": ["a1"]}]
     _, _, _, intelligence = _seed(conn, workspace_id, unsupported=unsupported)
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert all(unit.get("claim_id") != "uns_1" for unit in pack["cv_content"])
     assert pack["review_record"]["informational_items"]["application_intelligence_unsupported_claims"] == unsupported
 
@@ -547,7 +548,7 @@ def test_empty_needs_review_shell_from_fully_rejected_unit_cannot_enter_pack(tmp
     )
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_rejected")
 
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     assert pack["cv_content"] == []
     assert pack["review_record"]["informational_items"]["application_intelligence_unsupported_claims"] == unsupported
@@ -566,17 +567,17 @@ def test_cited_placeholder_and_conflict_are_gate1_review_items(tmp_path):
     )
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
     with pytest.raises(PipelineError) as exc:
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert f"profile_conflict:{conflict_id}" in str(exc.value)
     assert f"profile_placeholder:{unsafe_id}" in str(exc.value)
     _decide(conn, workspace_id, profile_artifact, "profile_conflict", conflict_id)
     _decide(conn, workspace_id, profile_artifact, "profile_placeholder", unsafe_id)
     with pytest.raises(PipelineError, match=f"profile_conflict:{conflict_id}"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     _decide(conn, workspace_id, profile_artifact, "profile_conflict", conflict_id, "omit_from_positioning")
     _decide(conn, workspace_id, profile_artifact, "profile_placeholder", unsafe_id, "omit_from_positioning")
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert pack["fit_summary"]["direct_matches"] == []
     assert pack["cv_content"] == []
     assert {item["disposition"] for item in pack["review_record"]["exclusions"]} >= {
@@ -596,7 +597,7 @@ def test_content_only_profile_integrity_issue_is_quarantined_by_gate1(tmp_path):
     )
 
     with pytest.raises(PipelineError) as exc:
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert f"profile_conflict:{conflict_id}" in str(exc.value)
     assert f"profile_placeholder:{unsafe_id}" in str(exc.value)
 
@@ -608,7 +609,7 @@ def test_content_only_profile_integrity_issue_is_quarantined_by_gate1(tmp_path):
         conn, workspace_id, profile_artifact, "profile_placeholder", unsafe_id,
         "omit_from_positioning",
     )
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert pack["cv_content"] == []
     assert any(
         item["domain_item_id"] == "cv_unsafe"
@@ -627,12 +628,12 @@ def test_gate2_surfaces_require_exact_decisions_and_gaps_remain_informational(tm
     _, _, fit_artifact, intelligence = _seed(conn, workspace_id, fit=fit)
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
     with pytest.raises(PipelineError) as exc:
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert "gate_flag:gate:language" in str(exc.value)
     assert "human_judgment_question:q1" in str(exc.value)
     _decide(conn, workspace_id, fit_artifact, "gate_flag", "gate:language")
     _decide(conn, workspace_id, fit_artifact, "human_judgment_question", "q1")
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert pack["review_record"]["informational_items"]["gaps"] == fit["gaps"]
 
 
@@ -651,16 +652,16 @@ def test_review_bearing_matches_require_decision_and_preserve_details(tmp_path, 
     _, _, fit_artifact, intelligence = _seed(conn, workspace_id, fit={collection: [match]})
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
     with pytest.raises(PipelineError, match=f"{item_type}:m1"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     _decide(conn, workspace_id, fit_artifact, item_type, "m1")
-    assert build_application_pack(conn, workspace_id)["fit_summary"][collection] == [match]
+    assert build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["fit_summary"][collection] == [match]
 
 
 def test_pack_records_exact_source_artifacts_and_full_job_and_fit_audit(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     profile, job, fit, intelligence = _seed(conn, workspace_id)
     _decide(conn, workspace_id, intelligence, "content_unit", "cv_1")
-    pack = build_application_pack(conn, workspace_id)
+    pack = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
     assert pack["source_artifacts"] == {
         "profile_snapshot": {"artifact_id": profile["id"], "artifact_type": "profile_snapshot", "content_id": "profilesnap_A"},
         "job_posting_snapshot": {"artifact_id": job["id"], "artifact_type": "job_posting_snapshot", "content_id": "jobsnap_A"},
@@ -678,7 +679,7 @@ def test_confirmed_v1_pack_does_not_change_after_live_profile_replacement(tmp_pa
     _seed_completion_ready(conn, workspace_id)
     confirmed = confirm_application_pack(
         conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     original = copy.deepcopy(get_artifact(conn, confirmed["artifact"]["id"])["payload"])
     replacement = _profile_payload(
         claims=[
@@ -715,11 +716,11 @@ def test_pre_save_v1_validation_failure_rolls_back_gate4_atomically(tmp_path, mo
     with pytest.raises(ApplicationPackContractError, match="injected pre-save"):
         confirm_application_pack(
             conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path
-        )
+        , account_id=DEFAULT_ACCOUNT_ID)
     assert get_current_artifact(conn, workspace_id, "application_pack") is None
     assert list_artifact_history(conn, workspace_id, "application_pack") == []
     assert list_workflow_events(conn, workspace_id) == []
-    assert get_workspace(conn, workspace_id)["workflow_status"] is None
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] is None
 
 
 def test_stale_fit_or_intelligence_chain_is_rejected(tmp_path):
@@ -731,7 +732,7 @@ def test_stale_fit_or_intelligence_chain_is_rejected(tmp_path):
         payload=_profile_payload(), content_id="profilesnap_B",
     )
     with pytest.raises(PipelineError, match="stale artifacts"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_stale_chain_rejection_precedes_current_profile_payload_validation(tmp_path):
@@ -747,21 +748,21 @@ def test_stale_chain_rejection_precedes_current_profile_payload_validation(tmp_p
     )
 
     with pytest.raises(PipelineError, match="stale artifacts"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_legacy_confirmation_without_draft_id_persists_exact_v1_basis(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_completion_ready(conn, workspace_id)
-    expected = build_application_pack(conn, workspace_id)
+    expected = build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
     confirmed = confirm_application_pack(
         conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
 
     assert confirmed["artifact"]["payload"] == expected
     assert confirmed["artifact"]["payload"]["schema_version"] == "application-pack.v1"
-    assert get_workspace(conn, workspace_id)["workflow_status"] == "drafted"
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] == "drafted"
 
 
 def test_missing_dependency_identity_cannot_masquerade_as_fresh_chain(tmp_path):
@@ -774,13 +775,13 @@ def test_missing_dependency_identity_cannot_masquerade_as_fresh_chain(tmp_path):
     )
     conn.commit()
     with pytest.raises(PipelineError, match="required fingerprint 'profile_snapshot' is missing"):
-        build_application_pack(conn, workspace_id)
+        build_application_pack(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_gate4_binds_exact_immutable_pack_and_allows_redraft_before_submission(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_completion_ready(conn, workspace_id)
-    first = confirm_application_pack(conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path / "documents")
+    first = confirm_application_pack(conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path / "documents", account_id=DEFAULT_ACCOUNT_ID)
     first_payload = copy.deepcopy(get_artifact(conn, first["artifact"]["id"])["payload"])
     assert first_payload["completion_contract_version"] == "substantive-completion.v1"
     assert first_payload["completion_metrics"] == {
@@ -789,7 +790,7 @@ def test_gate4_binds_exact_immutable_pack_and_allows_redraft_before_submission(t
         "qualifying_cover_letter_paragraph_count": 1,
         "cover_letter_word_count": 40,
     }
-    second = confirm_application_pack(conn, workspace_id, effective_date="2026-08-21", documents_root=tmp_path / "documents")
+    second = confirm_application_pack(conn, workspace_id, effective_date="2026-08-21", documents_root=tmp_path / "documents", account_id=DEFAULT_ACCOUNT_ID)
     assert first["artifact"]["id"] != second["artifact"]["id"]
     events = list_workflow_events(conn, workspace_id)
     assert {event["submitted_pack_artifact_id"] for event in events[:2]} == {first["artifact"]["id"], second["artifact"]["id"]}
@@ -813,14 +814,14 @@ def test_gate4_binds_exact_immutable_pack_and_allows_redraft_before_submission(t
 def test_after_submission_applied_binds_current_pack_and_reconfirmation_fails(tmp_path):
     conn, workspace_id = _workspace(tmp_path)
     _seed_completion_ready(conn, workspace_id)
-    confirmed = confirm_application_pack(conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path)
+    confirmed = confirm_application_pack(conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path, account_id=DEFAULT_ACCOUNT_ID)
     applied = record_status_change(
         conn, workspace_id=workspace_id, new_status="applied", effective_date="2026-08-21",
         submitted_pack_artifact_id=confirmed["artifact"]["id"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert applied["submitted_pack_artifact_id"] == confirmed["artifact"]["id"]
     with pytest.raises(PipelineError, match="after submission"):
-        confirm_application_pack(conn, workspace_id, effective_date="2026-08-22", documents_root=tmp_path)
+        confirm_application_pack(conn, workspace_id, effective_date="2026-08-22", documents_root=tmp_path, account_id=DEFAULT_ACCOUNT_ID)
 
 
 def test_projection_failure_is_partial_success_and_retry_targets_exact_pack(tmp_path, monkeypatch):
@@ -837,7 +838,7 @@ def test_projection_failure_is_partial_success_and_retry_targets_exact_pack(tmp_
     monkeypatch.setattr(archive_projection, "write_application_pack_projection", fail_projection)
     result = confirm_application_pack(
         conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path / "documents"
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
 
     assert result["gate4_status"] == "SUCCEEDED"
     assert result["projection"] == {
@@ -861,7 +862,7 @@ def test_projection_failure_is_partial_success_and_retry_targets_exact_pack(tmp_
     retry = retry_application_pack_projection(
         conn, workspace_id, pack_artifact_id=result["artifact"]["id"],
         documents_root=tmp_path / "documents",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert retry["status"] == "SUCCEEDED"
     assert retry["pack_artifact_id"] == result["artifact"]["id"]
     assert retry["archive_path"]
@@ -874,10 +875,10 @@ def test_projection_retry_is_idempotent_for_exact_pack_artifact(tmp_path):
     _seed_completion_ready(conn, workspace_id)
     confirmed = confirm_application_pack(
         conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     retried = retry_application_pack_projection(
         conn, workspace_id, pack_artifact_id=confirmed["artifact"]["id"], documents_root=tmp_path
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     assert retried["archive_path"] == confirmed["archive_path"]
     assert len(list_artifact_history(conn, workspace_id, "application_pack")) == 1
     assert len(list_workflow_events(conn, workspace_id)) == 1
@@ -913,18 +914,18 @@ def test_gate4_database_steps_are_atomic_and_retry_safe(tmp_path, monkeypatch, f
     with pytest.raises(sqlite3.OperationalError, match="injected"):
         confirm_application_pack(
             conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
     assert list_artifact_history(conn, workspace_id, "application_pack") == []
     assert get_current_artifact(conn, workspace_id, "application_pack") is None
     assert list_workflow_events(conn, workspace_id) == []
-    assert get_workspace(conn, workspace_id)["workflow_status"] is None
+    assert get_workspace(conn, workspace_id, account_id=DEFAULT_ACCOUNT_ID)["workflow_status"] is None
 
     monkeypatch.setattr(module, "record_dependency_fingerprint", real_fingerprint)
     monkeypatch.setattr(module, "record_status_change", real_status)
     retry = confirm_application_pack(
         conn, workspace_id, effective_date="2026-08-20", documents_root=tmp_path,
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     assert retry["gate4_status"] == "SUCCEEDED"
     assert len(list_artifact_history(conn, workspace_id, "application_pack")) == 1
     assert len(list_workflow_events(conn, workspace_id)) == 1

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Check your email · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="panel form-panel auth-panel">
+  <h1>Check your email</h1>
+  <p>If that address can be used, we've sent a message to it. Follow the link inside to continue. The link expires in 48 hours.</p>
+  <form method="post" action="/auth/resend-verification"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <label>Didn't get it? Resend to <input name="email" type="email" autocomplete="email" required></label>
+    <button class="button secondary" type="submit">Resend</button>
+  </form>
+</section>
+{% endblock %}

@@ -13,6 +13,7 @@ from webapp.persistence.migrations import (
 from webapp.persistence.workspaces import create_workspace
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.policy_decisions import save_policy_decision
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def test_fresh_bootstrap_creates_blocker_tables(tmp_path):
@@ -64,7 +65,7 @@ def test_upgrade_preserves_existing_policy_decisions_unchanged(tmp_path):
     path = tmp_path / "upgrade.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Existing Co", title="Engineer")
+    workspace = create_workspace(conn, company="Existing Co", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -115,7 +116,7 @@ def test_blocker_resolutions_are_append_only(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -155,7 +156,7 @@ def test_application_blocker_identity_fields_are_immutable_once_created(tmp_path
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -188,7 +189,7 @@ def test_application_blockers_status_check_constraint(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -214,7 +215,7 @@ def test_one_blocker_per_policy_decision_unique_constraint(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Acme", title="Role")
+    workspace = create_workspace(conn, company="Acme", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )

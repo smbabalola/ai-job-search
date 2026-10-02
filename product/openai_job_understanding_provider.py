@@ -116,6 +116,7 @@ class OpenAIJobUnderstandingProvider:
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
         self.last_audit: ProviderCallAudit | None = None
+        self.last_usage: dict[str, int | None] | None = None
 
     def __repr__(self) -> str:
         return (
@@ -125,6 +126,7 @@ class OpenAIJobUnderstandingProvider:
 
     def extract(self, request: dict[str, Any]) -> ProviderResponse:
         self.last_audit = None
+        self.last_usage = None
         api_key = self._credential()
         source_text, instructions, categories = _hosted_inputs(request)
         if len(source_text) > MAX_SOURCE_CHARACTERS:
@@ -158,6 +160,7 @@ class OpenAIJobUnderstandingProvider:
                     ) from None
                 self._sleep(_retry_delay(exc))
 
+        self.last_usage = _response_usage(response)  # Bundle 7 §13.2: spend counts even if validation fails
         elapsed_ms = max(0, round((self._clock() - started) * 1000))
         _validate_response_model(response)
         payload = _decode_response(response)
@@ -760,3 +763,12 @@ def _retry_delay(exc: Exception) -> float:
     except (TypeError, ValueError):
         return DEFAULT_RETRY_DELAY_SECONDS
     return min(max(delay, 0.0), MAX_RETRY_AFTER_SECONDS)
+
+
+def _response_usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+
+    def count(name: str) -> int | None:
+        value = getattr(usage, name, None)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return {"input_tokens": count("input_tokens"), "output_tokens": count("output_tokens")}

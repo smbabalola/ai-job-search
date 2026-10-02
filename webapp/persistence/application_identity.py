@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +14,7 @@ from product.job_identity import (
     compare_job_identities,
     job_identity,
 )
+from webapp.persistence import dbapi
 
 
 class ApplicationIdentityAmbiguityError(RuntimeError):
@@ -36,10 +36,10 @@ def _now() -> str:
 
 
 def resolve_application_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     source_record: dict[str, Any],
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> ApplicationIdentityLookup:
     incoming = job_identity(source_record)
     clauses = ["weak_fallback_key = ?"]
@@ -87,7 +87,7 @@ def resolve_application_workspace(
 
 
 def save_application_identity(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     application_workspace_id: str,
     source_record: dict[str, Any],
@@ -107,10 +107,10 @@ def save_application_identity(
     if existing:
         return
     conn.execute(
-        "INSERT OR IGNORE INTO application_workspace_job_identities "
+        "INSERT INTO application_workspace_job_identities "
         "(id, application_workspace_id, source_record_key, canonical_url_key, "
         "weak_fallback_key, source_record_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         (
             f"appident_{uuid.uuid4().hex[:20]}",
             application_workspace_id,
@@ -124,7 +124,7 @@ def save_application_identity(
 
 
 def get_search_workspace_for_application(
-    conn: sqlite3.Connection, application_workspace_id: str,
+    conn: dbapi.Connection, application_workspace_id: str,
 ) -> str | None:
     """The search workspace this application belongs to, or None for a
     manually-created application with no discovery/search-workspace
@@ -140,7 +140,7 @@ def get_search_workspace_for_application(
 
 
 def record_application_origin(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     application_workspace_id: str,
     search_workspace_id: str,
@@ -149,10 +149,10 @@ def record_application_origin(
     discovery_run_id: str | None,
 ) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO application_workspace_origins "
+        "INSERT INTO application_workspace_origins "
         "(id, application_workspace_id, search_workspace_id, discovery_candidate_id, "
         "discovery_occurrence_id, discovery_run_id, promoted_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         (
             f"apporigin_{uuid.uuid4().hex[:20]}",
             application_workspace_id,

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 
 DEFAULT_ACCOUNT_ID = "account_local"
@@ -23,7 +23,7 @@ def validate_account_id(account_id: str) -> str:
 
 
 def get_account(
-    conn: sqlite3.Connection, account_id: str
+    conn: dbapi.Connection, account_id: str
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM accounts WHERE id = ?", (account_id,)
@@ -32,7 +32,7 @@ def get_account(
 
 
 def create_account(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     display_name: str,
     account_id: str | None = None,
@@ -69,7 +69,7 @@ def create_account(
     return get_account(conn, account_id)
 
 
-def list_accounts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_accounts(conn: dbapi.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM accounts ORDER BY created_at, id"
     ).fetchall()

@@ -30,4 +30,4 @@ def db_path(tmp_path):
 
 
 def make_workspace(conn, company="Acme", title="Drilling Fluids Engineer", workspace_id=None):
-    return create_workspace(conn, company=company, title=title, workspace_id=workspace_id)["id"]
+    return create_workspace(conn, company=company, title=title, workspace_id=workspace_id, account_id=DEFAULT_ACCOUNT_ID)["id"]

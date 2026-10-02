@@ -33,6 +33,8 @@ OPENAI_MODEL_ID = "gpt-5.4-mini"
 OPENAI_MODEL_VERSION = OPENAI_MODEL
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 MAX_OUTPUT_TOKENS = 4_096
+# Bounds one call's spend (Bundle 7 §13.2: the call that crosses the AI cost ceiling may finish).
+MAX_INPUT_CHARACTERS = 200_000
 MAX_ATTEMPTS = 2
 CONNECT_TIMEOUT_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 60.0
@@ -178,10 +180,16 @@ class OpenAISemanticProposerClient:
                 error_type=type(exc).__name__, response_id=None,
             )
             raise
+        model_input = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        if len(model_input) > MAX_INPUT_CHARACTERS:
+            self.last_audit = self._audit(started_at=started_at, attempts=0, success=False,
+                                          error_type="SemanticProposerProviderError", response_id=None)
+            raise SemanticProposerProviderError(
+                f"openai semantic proposer input exceeds {MAX_INPUT_CHARACTERS} characters")
         call = {
             "model": OPENAI_MODEL,
             "instructions": INSTRUCTIONS,
-            "input": json.dumps(context, ensure_ascii=False, separators=(",", ":")),
+            "input": model_input,
             "reasoning": {"effort": "low"},
             "text": {"format": {"type": "json_schema", "name": OPENAI_RESPONSE_SCHEMA_NAME,
                                  "strict": True, "schema": copy.deepcopy(_RESPONSE_SCHEMA)}},
@@ -221,11 +229,13 @@ class OpenAISemanticProposerClient:
                 error_type=type(exc).__name__,
                 response_id=response_id if isinstance(response_id, str) else None,
             )
+            self.last_audit.update(_usage(response))
             raise
         self.last_audit = self._audit(
             started_at=started_at, attempts=attempts, success=True, error_type=None,
             response_id=response_id if isinstance(response_id, str) else None,
         )
+        self.last_audit.update(_usage(response))  # Bundle 7 §13.2: token usage for AI cost metering
         return payload
 
     def _audit(
@@ -273,6 +283,15 @@ def _default_client_factory(api_key: str) -> Any:
         api_key=api_key, max_retries=0,
         timeout=openai.Timeout(REQUEST_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS),
     )
+
+
+def _usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+
+    def count(name: str) -> int | None:
+        value = getattr(usage, name, None)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return {"input_tokens": count("input_tokens"), "output_tokens": count("output_tokens")}
 
 
 def _decode_response(response: Any) -> dict[str, Any]:

@@ -11,6 +11,8 @@ from webapp.persistence.workflow import record_status_change
 from webapp.persistence.workspaces import PROFILE_WORKSPACE_ID, create_workspace, ensure_profile_workspace
 from webapp.services.pipeline import create_job_from_source_record
 from tests.webapp.services.test_workspace_view import _seed_evidence
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 def _client(tmp_path, *, profile_root="."):
@@ -27,7 +29,7 @@ def test_dashboard_renders_required_columns_and_all_filters(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+        ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
         response = client.get("/")
         assert response.status_code == 200
@@ -44,16 +46,16 @@ def test_dashboard_all_view_separates_stage_status_and_management_actions(tmp_pa
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        active = create_workspace(conn, company="Active Co", title="Planner")
+        active = create_workspace(conn, company="Active Co", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(
             conn, workspace_id=active["id"], artifact_type="job_posting_snapshot",
             content_id="job_active", payload={"company": "Active Co", "title": "Planner"},
         )
-        interview = create_workspace(conn, company="Interview Co", title="Coordinator")
+        interview = create_workspace(conn, company="Interview Co", title="Coordinator", account_id=DEFAULT_ACCOUNT_ID)
         record_status_change(
             conn, workspace_id=interview["id"], new_status="interview",
             effective_date="2026-08-21",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
 
         response = client.get("/?filter=all")
@@ -74,7 +76,7 @@ def test_dashboard_offers_only_valid_real_world_status_control(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        workspace = create_workspace(conn, company="Drafted Co", title="Planner")
+        workspace = create_workspace(conn, company="Drafted Co", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         pack = save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             payload=completion_ready_pack_payload("dashboard_action"),
@@ -83,7 +85,7 @@ def test_dashboard_offers_only_valid_real_world_status_control(tmp_path):
             conn, workspace_id=workspace["id"], new_status="drafted",
             effective_date="2026-08-21", submitted_pack_artifact_id=pack["id"],
             _allow_drafted=True,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
 
         text = client.get("/?filter=all").text
@@ -98,7 +100,7 @@ def test_workspace_uses_user_facing_stage_language(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        workspace = create_workspace(conn, company="Acme", title="Planner")
+        workspace = create_workspace(conn, company="Acme", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="job_posting_snapshot",
             content_id="job", payload={"company": "Acme", "title": "Planner"},
@@ -143,7 +145,7 @@ def test_profile_is_trust_inspection_and_conflict_never_verified(tmp_path):
     client, settings = _client(tmp_path, profile_root=tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot", content_id="profile", payload={
             "claims": [{"id": "clm", "concept_id": "concept", "field": "title", "value": "Engineer", "placeholder": False}],
             "conflicts": [{"id": "conf", "concept_id": "concept", "field": "title"}],
@@ -184,7 +186,7 @@ def test_dashboard_and_workspace_direct_missing_profile_to_setup(tmp_path):
         assert "Set up your Evidence Profile" in dashboard
 
         conn = connect(settings.db_path)
-        ws = create_workspace(conn, company="Acme", title="Planner")
+        ws = create_workspace(conn, company="Acme", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(
             conn, workspace_id=ws["id"], artifact_type="job_posting_snapshot",
             content_id="job", payload={"raw_text": "Plan delivery."},
@@ -205,8 +207,8 @@ def test_workspace_renders_stepper_all_evidence_and_safe_controls(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
         _seed_evidence(conn, ws["id"])
         conn.close()
         response = client.get(f"/workspaces/{ws['id']}")
@@ -244,8 +246,8 @@ def test_workspace_presents_reviewed_cv_and_cover_letter_as_usable_output(tmp_pa
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Planner")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         _seed_evidence(conn, workspace["id"])
         payload = completion_ready_pack_payload("reviewed")
         payload["cv_content"][0]["text"] = (
@@ -277,7 +279,7 @@ def test_historical_pack_is_not_presented_as_revalidated_and_empty_copy_is_absen
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        workspace = create_workspace(conn, company="Legacy Co", title="Planner")
+        workspace = create_workspace(conn, company="Legacy Co", title="Planner", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             content_id="pack_legacy", payload={
@@ -300,8 +302,8 @@ def test_provider_rationale_is_not_rendered_as_candidate_evidence(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        ws = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        ws = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(conn, workspace_id=ws["id"], artifact_type="job_fit_result", payload={
             "status": "READY", "direct_matches": [{"match_id": "m", "profile_evidence_ids": [], "job_requirement_ids": [], "status": "READY", "rationale": "MODEL_ONLY_SECRET_RATIONALE"}],
             "functionally_equivalent_matches": [], "transferable_matches": [], "gaps": [], "unsupported_claims": [], "gate_assessments": [], "human_judgment_questions": [],
@@ -315,7 +317,7 @@ def test_untrusted_posting_is_escaped_and_secrets_paths_never_render(tmp_path, m
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ws = create_workspace(conn, company="Acme", title="Engineer")
+        ws = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         save_artifact(conn, workspace_id=ws["id"], artifact_type="job_posting_snapshot", content_id="job", payload={"raw_text": "<script>alert(1)</script>"})
         conn.close()
         text = client.get(f"/workspaces/{ws['id']}").text
@@ -329,8 +331,8 @@ def test_stale_downstream_action_is_not_rendered(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        ws = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        ws = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         _seed_evidence(conn, ws["id"])
         save_artifact(conn, workspace_id=PROFILE_WORKSPACE_ID, artifact_type="profile_snapshot", content_id="profile_new", payload={"claims": [], "conflicts": []})
         conn.close()
@@ -344,7 +346,7 @@ def test_workspace_unknown_and_profile_pseudo_are_404(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
         assert client.get("/workspaces/missing").status_code == 404
         assert client.get("/workspaces/profile").status_code == 404
@@ -393,15 +395,15 @@ def _promoted_discovery_workspace(conn, **record_overrides):
 
     candidate = ingest_discovery_record(
         conn, _discovery_source_record(**record_overrides),
-    )["candidate"]
-    return promote_discovery_candidate(conn, candidate["id"])["workspace"]
+     account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    return promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["workspace"]
 
 
 def test_workspace_detail_apply_button_enabled_for_discovery_origin_confirmed_pack(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         workspace = _promoted_discovery_workspace(conn)
         _seed_evidence(conn, workspace["id"])
         artifact = save_artifact(
@@ -423,7 +425,7 @@ def test_workspace_detail_apply_button_enabled_for_manual_job_with_user_supplied
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         created = create_job_from_source_record(
             conn, company="Acme", title="Backend Engineer",
             source_record={
@@ -432,7 +434,7 @@ def test_workspace_detail_apply_button_enabled_for_manual_job_with_user_supplied
                 "title": "Backend Engineer", "source_url": "https://boards.example.com/acme/42",
             },
             source_record_origin="manual_entry",
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         workspace = created["workspace"]
         real_snapshot = created["artifact"]
         _seed_evidence(conn, workspace["id"])
@@ -469,7 +471,7 @@ def test_workspace_detail_apply_button_bound_to_exact_confirmed_pack_not_a_newer
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         workspace = _promoted_discovery_workspace(conn)
         _seed_evidence(conn, workspace["id"])
         save_artifact(
@@ -491,8 +493,8 @@ def test_workspace_detail_apply_button_disabled_when_no_target_url(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")  # not discovery-origin
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)  # not discovery-origin
         _seed_evidence(conn, workspace["id"])
         save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
@@ -513,7 +515,7 @@ def test_workspace_detail_no_apply_button_when_no_confirmed_pack(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         workspace = _promoted_discovery_workspace(conn)  # has a trustworthy URL, no pack
         conn.close()
 
@@ -530,7 +532,7 @@ def test_workspace_detail_no_apply_button_when_already_applied(tmp_path):
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         workspace = _promoted_discovery_workspace(conn)
         _seed_evidence(conn, workspace["id"])
         pack = save_artifact(
@@ -541,11 +543,11 @@ def test_workspace_detail_no_apply_button_when_already_applied(tmp_path):
             conn, workspace_id=workspace["id"], new_status="drafted",
             effective_date="2026-08-20", submitted_pack_artifact_id=pack["id"],
             _allow_drafted=True,
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         record_status_change(
             conn, workspace_id=workspace["id"], new_status="applied",
             effective_date="2026-08-21", submitted_pack_artifact_id=pack["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
 
         text = client.get(f"/workspaces/{workspace['id']}").text
@@ -557,7 +559,7 @@ def test_workspace_detail_rendered_html_contains_no_secrets_or_candidate_payload
     client, settings = _client(tmp_path)
     with client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
         workspace = _promoted_discovery_workspace(conn)
         _seed_evidence(conn, workspace["id"])
         save_artifact(

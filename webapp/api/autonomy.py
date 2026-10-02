@@ -12,7 +12,6 @@ Deviations from the task-19 brief:
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -37,8 +36,10 @@ from webapp.services.autonomy_controls import (
 from webapp.services.autonomy_dossier import build_dossier
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
 from webapp.services.workspace_view import resolve_apply_target
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(tags=["autonomy"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["autonomy"])
 
 
 class _Body(BaseModel):
@@ -90,7 +91,7 @@ def _require_workspace(conn, workspace_id: str, account_id: str) -> dict[str, An
 
 
 @router.get("/api/autonomy")
-def get_autonomy(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_autonomy(request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     settings = request.app.state.settings
     acct = scope.account_id
@@ -112,7 +113,7 @@ def get_autonomy(request: Request, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.post("/api/autonomy/enable-preparation")
-def post_enable(body: TimezoneBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_enable(body: TimezoneBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     try:
         return enable_autonomous_preparation(conn, account_id=scope.account_id, actor=scope.account_id,
@@ -123,7 +124,7 @@ def post_enable(body: TimezoneBody, request: Request, conn: sqlite3.Connection =
 
 
 @router.post("/api/autonomy/capability")
-def post_capability(body: CapabilityBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_capability(body: CapabilityBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                     scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     scope_id = body.scope_id
     if body.scope_type == "WORKSPACE_CEILING":
@@ -140,7 +141,7 @@ def post_capability(body: CapabilityBody, request: Request, conn: sqlite3.Connec
 
 
 @router.put("/api/autonomy/policy")
-def put_policy(body: PolicyBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def put_policy(body: PolicyBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)):
     try:
         row = save_standing_policy(conn, account_id=scope.account_id, doc=body.doc, actor=scope.account_id,
@@ -152,19 +153,19 @@ def put_policy(body: PolicyBody, request: Request, conn: sqlite3.Connection = De
 
 
 @router.post("/api/autonomy/kill-switch/engage")
-def post_engage(body: ReasonBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_engage(body: ReasonBody, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return engage_kill_switch(conn, account_id=scope.account_id, actor=scope.account_id, reason=body.reason, now=_now())
 
 
 @router.post("/api/autonomy/kill-switch/release")
-def post_release(body: ReasonBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_release(body: ReasonBody, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return release_kill_switch(conn, account_id=scope.account_id, actor=scope.account_id, reason=body.reason, now=_now())
 
 
 @router.post("/api/autonomy/resume-all")
-def post_resume_all(body: ReasonBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_resume_all(body: ReasonBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                     scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     try:
         return resume_all(conn, account_id=scope.account_id, actor=scope.account_id, reason=body.reason, now=_now(),
@@ -184,7 +185,7 @@ def _require_scope(conn, scope: AccountScope, body: ScopeBody) -> None:
 
 
 @router.post("/api/autonomy/pause")
-def post_pause(body: ScopeBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_pause(body: ScopeBody, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _require_scope(conn, scope, body)
     return pause(conn, account_id=scope.account_id, scope_type=body.scope_type, scope_id=body.scope_id,
@@ -192,7 +193,7 @@ def post_pause(body: ScopeBody, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.post("/api/autonomy/resume")
-def post_resume(body: ScopeBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_resume(body: ScopeBody, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _require_scope(conn, scope, body)
     return resume(conn, account_id=scope.account_id, scope_type=body.scope_type, scope_id=body.scope_id,
@@ -200,7 +201,7 @@ def post_resume(body: ScopeBody, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.post("/api/workspaces/{workspace_id}/autonomy/apply-target/confirm")
-def post_confirm_target(workspace_id: str, body: UrlBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_confirm_target(workspace_id: str, body: UrlBody, conn: dbapi.Connection = Depends(get_conn),
                         scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _require_workspace(conn, workspace_id, scope.account_id)
     target = resolve_apply_target(conn, workspace_id=workspace_id, account_id=scope.account_id)
@@ -217,7 +218,7 @@ def post_confirm_target(workspace_id: str, body: UrlBody, conn: sqlite3.Connecti
 
 
 @router.post("/api/workspaces/{workspace_id}/autonomy/rule-acknowledgements")
-def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_ack(workspace_id: str, body: AckBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     _require_workspace(conn, workspace_id, scope.account_id)
     policy = current_policy(conn, scope.account_id)
@@ -239,7 +240,7 @@ def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.C
 
 
 @router.get("/api/workspaces/{workspace_id}/autonomy/dossier")
-def get_dossier(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_dossier(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     try:
         return build_dossier(conn, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -249,14 +250,14 @@ def get_dossier(workspace_id: str, request: Request, conn: sqlite3.Connection = 
 
 
 @router.get("/autonomy")
-def autonomy_page(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def autonomy_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
                   scope: AccountScope = Depends(get_account_scope)):
     return request.app.state.templates.TemplateResponse(
         request, "autonomy.html", {"autonomy": get_autonomy(request, conn, scope)})
 
 
 @router.get("/workspaces/{workspace_id}/autonomy")
-def dossier_page(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def dossier_page(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)):
     return request.app.state.templates.TemplateResponse(
         request, "autonomy_dossier.html", {"dossier": get_dossier(workspace_id, request, conn, scope)})
@@ -283,27 +284,27 @@ def _inbox(conn, account_id: str) -> dict[str, Any]:
 
 
 @router.get("/api/autonomy/inbox")
-def get_inbox(conn: sqlite3.Connection = Depends(get_conn),
+def get_inbox(conn: dbapi.Connection = Depends(get_conn),
               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return _inbox(conn, scope.account_id)
 
 
 @router.get("/api/autonomy/inbox/summary")
-def get_inbox_summary(conn: sqlite3.Connection = Depends(get_conn),
+def get_inbox_summary(conn: dbapi.Connection = Depends(get_conn),
                       scope: AccountScope = Depends(get_account_scope)) -> dict[str, int]:
     from webapp.services.autonomy_inbox import inbox_summary
     return inbox_summary(conn, scope.account_id)
 
 
 @router.get("/autonomy/inbox")
-def inbox_page(request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def inbox_page(request: Request, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)):
     return request.app.state.templates.TemplateResponse(
         request, "autonomy_inbox.html", {"inbox": _inbox(conn, scope.account_id)})
 
 
 @router.post("/api/workspaces/{workspace_id}/autonomy/enrol")
-def post_enrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def post_enrol(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     from webapp.services.autonomy_prepare import enrol
     try:
@@ -315,7 +316,7 @@ def post_enrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
 
 
 @router.post("/api/workspaces/{workspace_id}/autonomy/unenrol")
-def post_unenrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def post_unenrol(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     from webapp.services.autonomy_prepare import unenrol
     try:
@@ -327,7 +328,7 @@ def post_unenrol(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn)
 
 
 @router.post("/api/workspaces/{workspace_id}/autonomy/review-pack")
-def post_review_pack(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def post_review_pack(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
                      scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     from webapp.services.autonomy_prepare import request_pack_review
     try:
@@ -341,7 +342,7 @@ def post_review_pack(workspace_id: str, conn: sqlite3.Connection = Depends(get_c
 
 
 @router.post("/api/autonomy/retry")
-def post_retry(body: RetryBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_retry(body: RetryBody, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     from webapp.services.autonomy_inbox import RetryNotEligible, retry_failure
     if body.subject_type == "APPLICATION":
@@ -360,7 +361,7 @@ def post_retry(body: RetryBody, conn: sqlite3.Connection = Depends(get_conn),
 
 @router.post("/api/autonomy/candidate-exceptions/{exception_id}/resolve")
 def post_resolve_candidate(exception_id: str, body: ResolveBody, request: Request,
-                           conn: sqlite3.Connection = Depends(get_conn),
+                           conn: dbapi.Connection = Depends(get_conn),
                            scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     from webapp.persistence.autonomy_prepare import get_candidate_exception
     from webapp.services.autonomy_candidates import CandidatePromotionRefused, resolve_candidate_question

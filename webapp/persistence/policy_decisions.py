@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from product.application_decision_policy import OUTCOMES
+from webapp.persistence import dbapi
 
 STAGES = ("understanding", "fit", "application_intelligence", "content")
 
@@ -15,7 +15,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_policy_decision(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_policy_decision(row: dbapi.Row) -> dict[str, Any]:
     data = dict(row)
     data["evidence_ids"] = json.loads(data["evidence_ids"])
     data["supported_facts"] = json.loads(data["supported_facts"])
@@ -25,7 +25,7 @@ def _row_to_policy_decision(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def save_policy_decision(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     workspace_id: str,
     stage: str,
@@ -52,7 +52,7 @@ def save_policy_decision(
     a second insert with the identical key is a safe no-op that returns the
     already-persisted record rather than raising or duplicating a row. The
     database's own UNIQUE constraint (see migration 010_policy_decisions)
-    is the actual guarantee here -- this function's INSERT OR IGNORE is
+    is the actual guarantee here -- this function's ON CONFLICT DO NOTHING is
     just the corresponding read-after-write convenience, not the source of
     the guarantee.
 
@@ -81,12 +81,12 @@ def save_policy_decision(
 
     decision_id = f"pdec_{uuid.uuid4().hex[:20]}"
     conn.execute(
-        "INSERT OR IGNORE INTO policy_decisions "
+        "INSERT INTO policy_decisions "
         "(id, workspace_id, stage, source_artifact_id, review_item_type, "
         "subject_key, domain_item_id, outcome, policy_version, policy_fingerprint, "
         "evidence_ids, supported_facts, recorded_gaps, reason_code, reason, "
         "confidence, blocking, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         (
             decision_id, workspace_id, stage, source_artifact_id, review_item_type,
             subject_key, domain_item_id, outcome, policy_version, policy_fingerprint,
@@ -106,7 +106,7 @@ def save_policy_decision(
     return _row_to_policy_decision(existing)
 
 
-def get_policy_decision(conn: sqlite3.Connection, decision_id: str) -> dict[str, Any] | None:
+def get_policy_decision(conn: dbapi.Connection, decision_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM policy_decisions WHERE id = ?", (decision_id,)
     ).fetchone()
@@ -114,7 +114,7 @@ def get_policy_decision(conn: sqlite3.Connection, decision_id: str) -> dict[str,
 
 
 def list_policy_decisions(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     workspace_id: str,
     *,
     source_artifact_id: str | None = None,

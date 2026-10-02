@@ -54,9 +54,10 @@ def test_the_result_carries_the_exact_non_claims_all_false(grant_world):
 def test_no_sentinel_cleartext_in_any_table_after_a_full_run(grant_world):
     filled(grant_world)
     conn = grant_world.conn
-    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND "
-                                         "(name LIKE 'fill_%' OR name LIKE 'delta_classification_%' "
-                                         "OR name = 'active_fill_runs' OR name = 'autonomy_grants')")]
+    from webapp.persistence.schema_catalog import schema_catalog
+
+    tables = sorted(t for t in schema_catalog(conn)
+                    if t.startswith(("fill_", "delta_classification_")) or t in ("active_fill_runs", "autonomy_grants"))
     assert "fill_action_events" in tables and "autonomy_grants" in tables
     for table in tables:
         for row in conn.execute(f"SELECT * FROM {table}").fetchall():

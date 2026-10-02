@@ -1,0 +1,192 @@
+{
+  "schema_version": "plan-catalog.v1",
+  "catalog_version": "2026-10.1",
+  "plans": {
+    "free": {
+      "display_name": "Free",
+      "rank": 0,
+      "trial_days": 0,
+      "features": {
+        "workspace.tracking": true,
+        "library.cv": true,
+        "profile.onboarding": true,
+        "profile.cv_import": true,
+        "ai.prepare": true,
+        "ai.cv_tailor": false,
+        "apply.assisted_fill": true,
+        "apply.human_submit": true,
+        "discovery.on_demand": true,
+        "discovery.scheduled": false,
+        "automation.screening": false,
+        "automation.prepare": false,
+        "rules.enforced_automation": false,
+        "notifications.digest": false
+      },
+      "allowances": {
+        "applications.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "cv.tailor": {
+          "limit": null,
+          "window": "period"
+        },
+        "profile.cv_import": {
+          "limit": null,
+          "window": "period"
+        },
+        "library.cv_items": {
+          "limit": null,
+          "window": "period"
+        },
+        "storage.bytes": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.on_demand_runs": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.scheduled_searches": {
+          "limit": null,
+          "window": "period"
+        },
+        "automation.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "ai.cost_micro_usd": {
+          "limit": null,
+          "window": "period"
+        }
+      },
+      "provider_prices": {}
+    },
+    "pro": {
+      "display_name": "Pro",
+      "rank": 1,
+      "trial_days": null,
+      "features": {
+        "workspace.tracking": true,
+        "library.cv": true,
+        "profile.onboarding": true,
+        "profile.cv_import": true,
+        "ai.prepare": true,
+        "ai.cv_tailor": true,
+        "apply.assisted_fill": true,
+        "apply.human_submit": true,
+        "discovery.on_demand": true,
+        "discovery.scheduled": false,
+        "automation.screening": false,
+        "automation.prepare": false,
+        "rules.enforced_automation": false,
+        "notifications.digest": false
+      },
+      "allowances": {
+        "applications.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "cv.tailor": {
+          "limit": null,
+          "window": "period"
+        },
+        "profile.cv_import": {
+          "limit": null,
+          "window": "period"
+        },
+        "library.cv_items": {
+          "limit": null,
+          "window": "period"
+        },
+        "storage.bytes": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.on_demand_runs": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.scheduled_searches": {
+          "limit": null,
+          "window": "period"
+        },
+        "automation.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "ai.cost_micro_usd": {
+          "limit": null,
+          "window": "period"
+        }
+      },
+      "provider_prices": {
+        "month": null,
+        "year": null
+      }
+    },
+    "power": {
+      "display_name": "Power",
+      "rank": 2,
+      "trial_days": null,
+      "features": {
+        "workspace.tracking": true,
+        "library.cv": true,
+        "profile.onboarding": true,
+        "profile.cv_import": true,
+        "ai.prepare": true,
+        "ai.cv_tailor": true,
+        "apply.assisted_fill": true,
+        "apply.human_submit": true,
+        "discovery.on_demand": true,
+        "discovery.scheduled": true,
+        "automation.screening": true,
+        "automation.prepare": true,
+        "rules.enforced_automation": true,
+        "notifications.digest": true
+      },
+      "allowances": {
+        "applications.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "cv.tailor": {
+          "limit": null,
+          "window": "period"
+        },
+        "profile.cv_import": {
+          "limit": null,
+          "window": "period"
+        },
+        "library.cv_items": {
+          "limit": null,
+          "window": "period"
+        },
+        "storage.bytes": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.on_demand_runs": {
+          "limit": null,
+          "window": "period"
+        },
+        "discovery.scheduled_searches": {
+          "limit": null,
+          "window": "period"
+        },
+        "automation.prepare": {
+          "limit": null,
+          "window": "period"
+        },
+        "ai.cost_micro_usd": {
+          "limit": null,
+          "window": "period"
+        }
+      },
+      "provider_prices": {
+        "month": null,
+        "year": null
+      }
+    }
+  }
+}

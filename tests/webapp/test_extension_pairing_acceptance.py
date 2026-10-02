@@ -35,9 +35,9 @@ def production_extension_build():
     subprocess.run([npm, "run", "build"], cwd=EXTENSION_ROOT, check=True)
 
 
-# The real extension bundle hardcodes BASE_URL = "http://127.0.0.1:8420"
-# in server-client.ts (design spec Section 2.3 — loopback-only, no
-# session/config system to point it elsewhere). Every other
+# The default (local) extension build compiles BACKEND_ORIGIN =
+# "http://127.0.0.1:8420" (extension/src/shared/backend.ts); a hosted build
+# bakes in its https origin instead (Bundle 7 spec §9.2). Every other
 # browser-smoke fixture in this repo binds an ephemeral port because it
 # only exercises server-side routes directly; this acceptance test
 # instead drives the *real popup UI*, whose fetch() calls are compiled
@@ -129,18 +129,17 @@ def _open_popup(context):
 
 def _fetch_pairing_code(base_url: str) -> str:
     html = urllib.request.urlopen(f"{base_url}/pairing").read().decode()
-    # The pairing page renders the one-time code as the only long
-    # URL-safe-base64 token in the page; matches the pattern
-    # secrets.token_urlsafe(32) produces (see webapp/services/handoff.py).
-    match = re.search(r"[A-Za-z0-9_-]{40,}", html)
+    # Bundle 7 spec §9.2: a 10-character Crockford base32 pairing code,
+    # rendered in the page's #pairing-code element.
+    match = re.search(r'id="pairing-code"[^>]*>\s*([0-9A-Z]{10})\s*<', html)
     assert match, "no pairing code found on /pairing page"
-    return match.group(0)
+    return match.group(1)
 
 
 def test_fresh_popup_renders_unpaired_pairing_form(extension_context):
     page = _open_popup(extension_context)
     body_text = page.inner_text("#app")
-    assert "Paired" not in body_text
+    assert "Signed in as" not in body_text
     assert page.locator("#pairing-code").count() == 1
     assert page.locator("#pair-button").count() == 1
     page.close()
@@ -152,7 +151,7 @@ def test_valid_code_pairs_and_persists_across_popup_reload(extension_context, li
 
     page.fill("#pairing-code", code)
     page.click("#pair-button")
-    expect(page.locator("#app")).to_contain_text("Paired", timeout=5_000)
+    expect(page.locator("#app")).to_contain_text("Signed in as", timeout=5_000)
 
     # 6D-B Task 14: the Phase 3 autofill button is retired; a paired popup
     # offers only safe FILL (here: its permission request, since automated
@@ -177,7 +176,7 @@ def test_valid_code_pairs_and_persists_across_popup_reload(extension_context, li
     assert body_width >= 240, f"popup body CSS width regressed ({body_width}px)"
 
     page.reload()
-    expect(page.locator("#app")).to_contain_text("Paired", timeout=5_000)
+    expect(page.locator("#app")).to_contain_text("Signed in as", timeout=5_000)
     page.close()
 
 
@@ -185,8 +184,8 @@ def test_invalid_code_shows_error_without_pairing(extension_context, live_server
     page = _open_popup(extension_context)
     page.fill("#pairing-code", "not-a-real-pairing-code")
     page.click("#pair-button")
-    expect(page.locator("#pairing-message")).to_contain_text("not recognized", timeout=5_000)
-    assert "Paired" not in page.inner_text("#app")
+    expect(page.locator("#pairing-message")).to_contain_text("pairing code is not valid", timeout=5_000)
+    assert "Signed in as" not in page.inner_text("#app")
     page.close()
 
 
@@ -203,22 +202,42 @@ def test_reused_code_rejected_and_does_not_erase_existing_credential(
     code = _fetch_pairing_code(live_server.base_url)
     page.fill("#pairing-code", code)
     page.click("#pair-button")
-    expect(page.locator("#app")).to_contain_text("Paired", timeout=5_000)
+    expect(page.locator("#app")).to_contain_text("Signed in as", timeout=5_000)
 
     req = urllib.request.Request(
-        f"{live_server.base_url}/api/handoff/pairing/exchange",
-        data=json.dumps({"one_time_secret": code}).encode(),
+        f"{live_server.base_url}/api/ext/pair",
+        data=json.dumps({"code": code, "device_label": "second device"}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req)
-    assert exc_info.value.code == 400
+    assert exc_info.value.code == 401
 
     page.reload()
     expect(page.locator("#app")).to_contain_text(
-        "Paired", timeout=5_000
+        "Signed in as", timeout=5_000
     )  # existing durable credential must survive an unrelated failed pairing attempt
+    page.close()
+
+
+def test_sign_out_revokes_device_and_returns_to_pairing_form(extension_context, live_server):
+    page = _open_popup(extension_context)
+    page.fill("#pairing-code", _fetch_pairing_code(live_server.base_url))
+    page.click("#pair-button")
+    expect(page.locator("#app")).to_contain_text("Signed in as", timeout=5_000)
+
+    page.click("#sign-out")
+    expect(page.locator("#pairing-code")).to_have_count(1, timeout=5_000)
+    stored = _service_worker(extension_context).evaluate(
+        "async () => [await chrome.storage.local.get(null), await chrome.storage.session.get(null)]"
+    )
+    assert stored == [{}, {}], "sign-out must wipe both extension storage areas"
+
+    conn = connect(live_server.db_path)
+    revoked = conn.execute("SELECT revoked_at FROM extension_devices").fetchall()
+    conn.close()
+    assert len(revoked) == 1 and revoked[0][0] is not None
     page.close()
 
 
@@ -226,12 +245,12 @@ def test_expired_code_rejected_via_direct_expiry_fast_forward(
     extension_context, live_server,
 ):
     """Covers expiry without a real 10-minute wait by rewriting
-    pairing_secrets.expires_at into the past on the live server's own
+    pairing_codes.expires_at into the past on the live server's own
     database — the same test-only technique
-    tests/webapp/services/test_handoff.py::test_exchange_rejects_expired_code
+    tests/webapp/services/test_extension_auth.py
     already uses at the service layer. This does not touch or shorten the
-    production 10-minute window (webapp/services/handoff.py's
-    generate_pairing_secret always computes now + timedelta(minutes=10));
+    production 10-minute window (webapp/services/extension_auth.py's
+    create_pairing_code always computes now + 10 minutes);
     it only fast-forwards what "now" the test observes when it later
     calls exchange, which is a test-data mutation, not a production
     behavior change."""
@@ -239,15 +258,15 @@ def test_expired_code_rejected_via_direct_expiry_fast_forward(
 
     conn = connect(live_server.db_path)
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-    conn.execute("UPDATE pairing_secrets SET expires_at = ?", (past,))
+    conn.execute("UPDATE pairing_codes SET expires_at = ?", (past,))
     conn.commit()
     conn.close()
 
     page = _open_popup(extension_context)
     page.fill("#pairing-code", code)
     page.click("#pair-button")
-    expect(page.locator("#pairing-message")).to_contain_text("expired", timeout=5_000)
-    assert "Paired" not in page.inner_text("#app")
+    expect(page.locator("#pairing-message")).to_contain_text("pairing code is not valid", timeout=5_000)
+    assert "Signed in as" not in page.inner_text("#app")
     page.close()
 
 

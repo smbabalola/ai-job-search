@@ -1,0 +1,3 @@
+{% extends "_layout.txt" %}{% block content %}Someone tried to sign up with this email address, which already has an account. Sign in: {{ login_url }}
+{% if reset_url is defined %}Forgot your password? {{ reset_url }}
+{% endif %}If this wasn't you, you can ignore this message.{% endblock %}

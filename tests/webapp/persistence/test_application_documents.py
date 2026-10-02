@@ -4,13 +4,14 @@ from product.application_document_contract import DOCX_MEDIA_TYPE
 from webapp.persistence.application_documents import create_document_version, get_document_version, set_selection
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _setup(tmp_path):
     path = tmp_path / "db.sqlite3"
     init_db(path)
     conn = connect(path)
-    workspace = create_workspace(conn, company="Example", title="Role")
+    workspace = create_workspace(conn, company="Example", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     row = {"id": "docv_1", "account_id": "account_local", "source_workspace_id": workspace["id"], "document_kind": "cv", "origin": "user_uploaded", "original_filename": "Final.docx", "media_type": DOCX_MEDIA_TYPE, "byte_length": 8, "sha256": "a" * 64, "storage_key": "sha256/aa/" + "a" * 64 + ".docx", "source_generation_artifact_id": None, "created_at": "2026-08-25T00:00:00+00:00"}
     create_document_version(conn, row)
     return conn, workspace, row

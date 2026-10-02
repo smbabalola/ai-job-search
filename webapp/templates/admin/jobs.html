@@ -1,0 +1,7 @@
+{% extends "admin/_base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Jobs</h1><p><a href="/admin/jobs">All</a> · <a href="/admin/jobs?status=DEAD">Dead</a> · <a href="/admin/jobs?status=QUEUED">Queued</a></p></div></section>
+<section class="panel"><table><thead><tr><th>Kind</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr></thead><tbody>
+{% for j in jobs %}<tr><td>{{ j.kind }}</td><td>{{ j.status }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.last_error }}</td><td>{% if j.status == "DEAD" %}<form data-json-form="/api/admin/jobs/{{ j.id }}/retry"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small" type="submit">Retry</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="5">None.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

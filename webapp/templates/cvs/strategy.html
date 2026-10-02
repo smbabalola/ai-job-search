@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Which CV for which jobs · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow"><a href="/cvs">My CVs</a></p><h1>Which CV for which jobs</h1>
+  <p>Group jobs into families by words in their title, and choose the CV each family uses. Changes apply to new preparations; existing approvals are unaffected.</p></div></section>
+{% if saved %}<p class="notice" role="status">Saved.</p>{% endif %}
+{% macro cv_select(name, current) %}
+<select name="{{ name }}">
+  <option value="" {% if not current %}selected{% endif %}>Ask me each time</option>
+  {% for item in items %}<option value="latest:{{ item.id }}" {% if current == "latest:" ~ item.id %}selected{% endif %}>{{ item.title }} (latest version)</option>
+  {% if tailoring %}<option value="tailor:{{ item.id }}" {% if current == "tailor:" ~ item.id %}selected{% endif %}>Tailor {{ item.title }} to each job</option>{% endif %}{% endfor %}
+</select>
+{% endmacro %}
+<form class="panel" method="post" action="/cvs/strategy" data-cv-strategy>
+  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <div class="panel-heading"><h2>Default</h2></div>
+  <label class="field"><span>CV for jobs outside your families</span>{{ cv_select("default_cv", default_cv) }}</label>
+  <div class="panel-heading"><h2>Job families</h2></div>
+  {% for row in rows %}<fieldset class="field-group" data-family-row="{{ loop.index0 }}">
+    <label class="field"><span>Family name</span><input name="family_name_{{ loop.index0 }}" value="{{ row.name }}" maxlength="80" placeholder="Drilling engineer"></label>
+    <label class="field"><span>Title words (comma separated)</span><input name="family_words_{{ loop.index0 }}" value="{{ row.words }}" placeholder="drilling, well engineer"></label>
+    <label class="field"><span>Not when the title has (optional)</span><input name="family_exclude_{{ loop.index0 }}" value="{{ row.exclude }}" placeholder="sales"></label>
+    <label class="field"><span>CV</span>{{ cv_select("family_cv_" ~ loop.index0, row.cv) }}</label>
+  </fieldset>{% endfor %}
+  {% if not tailoring %}<p>Tailoring a CV to each job is available on Pro and Power.</p>{% endif %}
+  <button class="button" type="submit">Save</button>
+</form>
+{% endblock %}

@@ -8,6 +8,8 @@ from webapp.persistence.discovery_sources import set_discovery_source_enabled
 from webapp.persistence.user_profile import get_current_user_profile, save_user_profile
 from webapp.persistence.search_workspaces import create_search_workspace
 from webapp.services.discovery import DiscoveryServiceError, discovery_run_is_stale, run_discovery_search
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 class FakeRunner:
@@ -94,7 +96,7 @@ def _connection(tmp_path):
 
 def test_search_requires_user_profile(tmp_path):
     with pytest.raises(DiscoveryServiceError, match="User Profile"):
-        run_discovery_search(_connection(tmp_path), FakeRunner())
+        run_discovery_search(_connection(tmp_path), FakeRunner(), account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
 
 def test_search_fingerprints_preferences_and_isolates_source_failure(tmp_path):
@@ -103,10 +105,10 @@ def test_search_fingerprints_preferences_and_isolates_source_failure(tmp_path):
         "target_roles": ["Project Planner"], "locations": ["Aberdeen"],
         "search_terms": ["project controls"], "source_preferences": ["freehire-search", "linkedin-search"],
         "recency_days": 7,
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunner()
 
-    result = run_discovery_search(conn, runner, limit_per_source=10)
+    result = run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert result["run"]["status"] == "partial"
     assert result["run"]["user_profile_content_id"] == profile["content_id"]
@@ -115,9 +117,9 @@ def test_search_fingerprints_preferences_and_isolates_source_failure(tmp_path):
     assert result["run"]["source_status"]["linkedin-search"]["status"] == "failed"
     assert len(result["candidate_ids"]) == 1
     assert conn.execute("select count(*) from workspaces").fetchone()[0] == 0
-    assert discovery_run_is_stale(conn, result["run"]) is False
-    save_user_profile(conn, {"target_roles": ["Changed role"]})
-    assert discovery_run_is_stale(conn, result["run"]) is True
+    assert discovery_run_is_stale(conn, result["run"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID) is False
+    save_user_profile(conn, {"target_roles": ["Changed role"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
+    assert discovery_run_is_stale(conn, result["run"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID) is True
 
 
 def test_energy_jobline_source_failure_is_isolated_from_other_sources(tmp_path):
@@ -127,10 +129,10 @@ def test_energy_jobline_source_failure_is_isolated_from_other_sources(tmp_path):
         "search_terms": ["drilling"],
         "source_preferences": ["freehire-search", "energy-jobline-search"],
         "recency_days": 7,
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerWithFailingEnergyJobline()
 
-    result = run_discovery_search(conn, runner, limit_per_source=10)
+    result = run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert result["run"]["status"] == "partial"
     assert result["run"]["source_status"]["freehire-search"]["accepted"] == 1
@@ -145,10 +147,10 @@ def test_airswift_source_failure_is_isolated_from_other_sources(tmp_path):
         "search_terms": ["drilling"],
         "source_preferences": ["freehire-search", "airswift-search"],
         "recency_days": 7,
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerWithFailingAirswift()
 
-    result = run_discovery_search(conn, runner, limit_per_source=10)
+    result = run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert result["run"]["status"] == "partial"
     assert result["run"]["source_status"]["freehire-search"]["accepted"] == 1
@@ -158,40 +160,38 @@ def test_airswift_source_failure_is_isolated_from_other_sources(tmp_path):
 
 def test_preference_staleness_is_derived_and_isolated_by_search_workspace(tmp_path):
     conn = _connection(tmp_path)
-    other = create_search_workspace(conn, name="Project Manager")
-    save_user_profile(conn, {"target_roles": ["Planner"]})
+    other = create_search_workspace(conn, name="Project Manager", account_id=DEFAULT_ACCOUNT_ID)
+    save_user_profile(conn, {"target_roles": ["Planner"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     save_user_profile(
         conn,
         {"target_roles": ["Project Manager"]},
         search_workspace_id=other["id"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     default_run = run_discovery_search(
         conn, FakeRunner(), sources=["freehire-search"]
-    )["run"]
+    , account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["run"]
     other_run = run_discovery_search(
         conn,
         FakeRunner(),
         sources=["freehire-search"],
         search_workspace_id=other["id"],
-    )["run"]
+     account_id=DEFAULT_ACCOUNT_ID)["run"]
 
-    other_current = get_current_user_profile(conn, other["id"])
+    other_current = get_current_user_profile(conn, other["id"], account_id=DEFAULT_ACCOUNT_ID)
     save_user_profile(
         conn,
         {"target_roles": ["Programme Manager"]},
         search_workspace_id=other["id"],
         expected_revision=other_current["profile_revision"],
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
 
     assert discovery_run_is_stale(
         conn, default_run, search_workspace_id="search_default"
-    ) is False
+    , account_id=DEFAULT_ACCOUNT_ID) is False
     assert discovery_run_is_stale(
         conn, other_run, search_workspace_id=other["id"]
-    ) is True
-    columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(discovery_runs)")
-    }
+    , account_id=DEFAULT_ACCOUNT_ID) is True
+    columns = set(conn.execute("SELECT * FROM discovery_runs LIMIT 1").fetchone().keys())  # either dialect
     assert "stale" not in columns
 
 
@@ -230,10 +230,10 @@ def test_empty_preferences_default_to_all_enabled_sources_only(tmp_path):
     save_user_profile(conn, {
         "target_roles": ["Planner"], "locations": ["Aberdeen"],
         "source_preferences": [],  # empty -> default to every available source
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerThatSucceedsForAnySource()
 
-    run_discovery_search(conn, runner, limit_per_source=10)
+    run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     called_sources = {source for source, _ in runner.calls}
     assert called_sources == {
@@ -250,10 +250,10 @@ def test_disabling_energy_jobline_removes_it_from_default_discovery(tmp_path):
     save_user_profile(conn, {
         "target_roles": ["Planner"], "locations": ["Aberdeen"],
         "source_preferences": [],  # empty -> defaults to available sources
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerThatSucceedsForAnySource()
 
-    run_discovery_search(conn, runner, limit_per_source=10)
+    run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     called_sources = {source for source, _ in runner.calls}
     assert called_sources == {"freehire-search", "linkedin-search", "airswift-search"}
@@ -263,13 +263,13 @@ def test_disabling_energy_jobline_removes_it_from_default_discovery(tmp_path):
 def test_explicitly_requesting_a_disabled_provider_is_rejected(tmp_path):
     conn = _connection(tmp_path)
     set_discovery_source_enabled(conn, "energy-jobline-search", False)
-    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]})
+    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerThatSucceedsForAnySource()
 
     with pytest.raises(DiscoveryServiceError, match="unsupported discovery sources"):
         run_discovery_search(
             conn, runner, sources=["energy-jobline-search"], limit_per_source=10,
-        )
+         account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert runner.calls == []
 
 
@@ -283,11 +283,11 @@ def test_partially_stale_saved_preference_keeps_the_remaining_valid_selection(tm
     save_user_profile(conn, {
         "target_roles": ["Planner"], "locations": ["Aberdeen"],
         "source_preferences": ["freehire-search", "energy-jobline-search"],
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     set_discovery_source_enabled(conn, "energy-jobline-search", False)
     runner = FakeRunnerThatSucceedsForAnySource()
 
-    result = run_discovery_search(conn, runner, limit_per_source=10)
+    result = run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     called_sources = {source for source, _ in runner.calls}
     assert called_sources == {"freehire-search"}
@@ -307,12 +307,12 @@ def test_fully_stale_explicit_preference_does_not_broaden_to_other_providers(tmp
     save_user_profile(conn, {
         "target_roles": ["Planner"], "locations": ["Aberdeen"],
         "source_preferences": ["energy-jobline-search"],
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     set_discovery_source_enabled(conn, "energy-jobline-search", False)
     runner = FakeRunnerThatSucceedsForAnySource()
 
     with pytest.raises(DiscoveryServiceError, match="saved discovery sources are currently unavailable"):
-        run_discovery_search(conn, runner, limit_per_source=10)
+        run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert runner.calls == []  # nothing was searched -- no implicit broadening
 
@@ -329,11 +329,11 @@ def test_unknown_db_source_cannot_become_runnable_via_explicit_request(tmp_path)
         "VALUES ('rigzone-search', 'Rigzone', 1, 'now')"
     )
     conn.commit()
-    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]})
+    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerThatSucceedsForAnySource()
 
     with pytest.raises(DiscoveryServiceError, match="unsupported discovery sources"):
-        run_discovery_search(conn, runner, sources=["rigzone-search"], limit_per_source=10)
+        run_discovery_search(conn, runner, sources=["rigzone-search"], limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     assert runner.calls == []
 
 
@@ -345,10 +345,10 @@ def test_freehire_linkedin_energy_jobline_execution_is_unchanged_when_all_enable
     save_user_profile(conn, {
         "target_roles": ["Planner"], "locations": ["Aberdeen"],
         "source_preferences": ["freehire-search", "linkedin-search", "energy-jobline-search"],
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner = FakeRunnerThatSucceedsForAnySource()
 
-    result = run_discovery_search(conn, runner, limit_per_source=10)
+    result = run_discovery_search(conn, runner, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     assert result["run"]["request"]["sources"] == [
         "freehire-search", "linkedin-search", "energy-jobline-search",
@@ -365,7 +365,7 @@ def test_account_and_workspace_scoping_is_unaffected_by_the_registry(tmp_path):
     conn = _connection(tmp_path)
     create_account(conn, account_id="account_b", display_name="B")
     other = create_search_workspace(conn, name="Other", account_id="account_b")
-    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]})
+    save_user_profile(conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]}, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     save_user_profile(
         conn, {"target_roles": ["Planner"], "locations": ["Aberdeen"]},
         search_workspace_id=other["id"], account_id="account_b",
@@ -373,7 +373,7 @@ def test_account_and_workspace_scoping_is_unaffected_by_the_registry(tmp_path):
     set_discovery_source_enabled(conn, "energy-jobline-search", False)
 
     runner_default = FakeRunnerThatSucceedsForAnySource()
-    run_discovery_search(conn, runner_default, limit_per_source=10)
+    run_discovery_search(conn, runner_default, limit_per_source=10, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     runner_other = FakeRunnerThatSucceedsForAnySource()
     run_discovery_search(
         conn, runner_other, search_workspace_id=other["id"],

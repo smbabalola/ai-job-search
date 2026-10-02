@@ -1,0 +1,2 @@
+{% extends "_layout.html" %}{% block content %}<p>Your {{ plan_name }} subscription was canceled.{% if ends_at is defined %} You keep it until {{ ends_at }}.{% endif %}</p>
+<p>Your account stays on the Free plan afterwards.</p>{% endblock %}

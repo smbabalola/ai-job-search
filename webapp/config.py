@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 from product.autonomy_contract import Capability
 
@@ -46,6 +47,34 @@ def _parse_step_cost_max(raw: str | None) -> dict[str, Decimal]:
     return out
 
 
+def _parse_writer_lock_timeout() -> int:
+    """Spec §10.7: bounded writer-lock acquisition, 1000-30000 ms, default 10000."""
+    try:
+        value = int(os.environ.get("JOBSEARCH_WRITER_LOCK_TIMEOUT_MS", "10000"))
+    except ValueError:
+        return 10000
+    return max(1000, min(30000, value))
+
+
+def _parse_csv(raw: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_json_object(raw: str | None) -> dict:
+    """A malformed or non-object value yields {} so validation reports it."""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_object_store(raw: str | None) -> dict:
+    return _parse_json_object(raw) if raw else {"kind": "local"}
+
+
 @dataclass
 class Settings:
     db_path: Path = field(default_factory=lambda: Path(".jobsearch/jobsearch.sqlite3"))
@@ -74,6 +103,15 @@ class Settings:
         )
     )
     autonomy_live_submit_daily_cap: int = 1
+    # Bundle 6E-A (spec §3 E5/E6). Human-authorized submission is off by
+    # default; the fixture-origin switch is honoured only for loopback
+    # origins (product.submit_certification.submission_permitted).
+    human_submit_enabled: bool = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_HUMAN_SUBMIT_ENABLED") == "1"
+    )
+    submit_fixture_origins_enabled: bool = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_SUBMIT_FIXTURE_ORIGINS") == "1"
+    )
     autonomy_shadow_enabled: bool = field(
         default_factory=lambda: os.environ.get("JOBSEARCH_AUTONOMY_SHADOW") == "1"
     )
@@ -93,8 +131,59 @@ class Settings:
     autonomy_dispatch_result_timeout: float = 600.0
     autonomy_retry_delays: tuple = (60.0, 300.0, 900.0)
     review_approval_ttl_days: int = field(default_factory=_parse_review_ttl)
+    # Bundle 7 (spec H1). "local" is the single-user development mode;
+    # "hosted" is the multi-tenant production mode and is validated by
+    # webapp.deployment.validate_settings before the app starts.
+    deployment: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_DEPLOYMENT", "local"))
+    database_url: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_DATABASE_URL") or None)
+    secret_key: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_SECRET_KEY") or None)
+    # Bundle 7: AES-256-GCM key ring for staff TOTP secrets, "kid:base64url-key[,kid:key]" (first encrypts).
+    totp_encryption_keys: str | None = field(
+        default_factory=lambda: os.environ.get("JOBSEARCH_TOTP_ENCRYPTION_KEYS") or None)
+    public_origin: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_PUBLIC_ORIGIN") or None)
+    extension_ids: tuple[str, ...] = field(
+        default_factory=lambda: _parse_csv(os.environ.get("JOBSEARCH_EXTENSION_IDS", ""))
+    )
+    object_store: dict = field(default_factory=lambda: _parse_object_store(os.environ.get("JOBSEARCH_OBJECT_STORE")))
+    billing_provider: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_BILLING_PROVIDER", "fake"))
+    email_provider: str = field(default_factory=lambda: os.environ.get("JOBSEARCH_EMAIL_PROVIDER", "console"))
+    smtp: dict = field(default_factory=lambda: _parse_json_object(os.environ.get("JOBSEARCH_SMTP")))
+    metrics_token: str | None = field(default_factory=lambda: os.environ.get("JOBSEARCH_METRICS_TOKEN") or None)
+    plan_catalog_path: Path = field(
+        default_factory=lambda: Path(os.environ.get("JOBSEARCH_PLAN_CATALOG", "product/plans/plan-catalog.dev.json"))
+    )
+    retention_policy_path: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("JOBSEARCH_RETENTION_POLICY", "product/policies/retention-policy.dev.json")
+        )
+    )
+    ai_pricing_path: Path = field(
+        default_factory=lambda: Path(os.environ.get("JOBSEARCH_AI_PRICING", "product/policies/ai-pricing.dev.json"))
+    )
+
+    writer_lock_timeout_ms: int = field(default_factory=_parse_writer_lock_timeout)
+
+    # Test/journey switch (Bundle 7 Task 8): local mode with real sign-in.
+    auth_required_in_local: bool = False
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.deployment == "hosted"
+
+    @property
+    def auth_enabled(self) -> bool:
+        """Real users and sessions: always in hosted mode, opt-in locally."""
+        return self.is_hosted or self.auth_required_in_local
+
+    @property
+    def app_origin(self) -> str:
+        return self.public_origin or f"http://{self.host}:{self.port}"
 
     def __post_init__(self) -> None:
+        self.plan_catalog_path = Path(self.plan_catalog_path)
+        self.retention_policy_path = Path(self.retention_policy_path)
+        self.ai_pricing_path = Path(self.ai_pricing_path)
+        self.extension_ids = tuple(self.extension_ids)
         self.db_path = Path(self.db_path)
         self.extensions_dir = Path(self.extensions_dir)
         self.documents_root = Path(self.documents_root)
@@ -106,6 +195,29 @@ class Settings:
             return Capability[self.autonomy_max_capability]
         except KeyError:
             return Capability.NONE  # fail closed on a mistyped setting
+
+    def human_submit_ceiling(self, conn: Any = None, *, certification: Any = None) -> Capability:
+        """The deployment ceiling for a HUMAN_SUBMIT evaluation (6E-A §8.2).
+
+        Hosted mode (Bundle 7 §8.6, the live submission gate): SUBMIT only when
+        JOBSEARCH_HUMAN_SUBMIT_ENABLED, the SUBMIT_ENABLED and
+        HOSTED_THREAT_MODEL_SIGNED_OFF platform controls are on, and the target
+        adapter's certification is LIVE_CERTIFIED with evidence; otherwise
+        FILL. Local mode is unchanged (fixture origins are gated elsewhere)."""
+        if not self.human_submit_enabled:
+            return Capability.FILL
+        if not self.is_hosted:
+            return Capability.SUBMIT
+        from product.submit_certification import LIVE_CERTIFIED
+        from webapp.services.entitlements import platform_control
+        if conn is None or certification is None:
+            return Capability.FILL
+        if not (platform_control(conn, "SUBMIT_ENABLED", settings=self)
+                and platform_control(conn, "HOSTED_THREAT_MODEL_SIGNED_OFF", settings=self)):
+            return Capability.FILL
+        if certification.status != LIVE_CERTIFIED or not certification.live_evidence:
+            return Capability.FILL
+        return Capability.SUBMIT
 
     @property
     def autonomy_sentinel_path(self) -> Path:

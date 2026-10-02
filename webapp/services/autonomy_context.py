@@ -16,7 +16,6 @@ Deviations from the task-13 brief (fail-closed hardening):
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -25,12 +24,13 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from product.autonomy_contract import (
-    UNKNOWN, AnswerCandidate, ApplyTargetFacts, AuthorizationContext, BudgetState, Capability,
+    UNKNOWN, AnswerCandidate, ApplyTargetFacts, AuthorityKind, AuthorizationContext, BudgetState, Capability,
     CounterState, EmployerKeyStrength, IdentityStrength, Mode, ProvenanceTier, Reach,
     RepresentationRequirement, RuleAcknowledgement, canonical_hash, normalized_employer_key, parse_utc,
     to_utc_iso,
 )
 from product.job_identity import job_identity
+from product.submit_certification import submission_permitted, submit_certified
 from product.semantic_subject_policy import load_subject_policy
 from product.standing_policy import normalize_employment_type
 from webapp.config import Settings
@@ -48,6 +48,7 @@ from webapp.persistence.workspaces import get_profile_workspace_id, get_workspac
 from webapp.services.decision_policy import current_application_blockers, current_policy_decisions
 from webapp.services.staleness import check_staleness
 from webapp.services.workspace_view import resolve_apply_target
+from webapp.persistence import dbapi
 
 GOVERNING_ARTIFACT_TYPES = ("job_understanding_result", "job_fit_result", "application_intelligence_result")
 
@@ -295,13 +296,34 @@ def _budgets(conn, *, doc: dict, account_id: str, workspace_id: str, now: dateti
     return tuple(out)
 
 
-def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: str, application_workspace_id: str,
+def _automation_ceiling(conn, settings: Settings, account_id: str, requested_stage: Capability,
+                        now: datetime) -> Capability:
+    """Bundle 7 §11.3: autonomous PREPARE (the 6C engine, the only stage
+    automation runs) is also capped by the plan and AUTOMATION_ENABLED, read at
+    every decision. FILL is requested by the user's own 6D-B fill
+    (apply.assisted_fill, every plan) and the 6E-A human submit has its own
+    ceiling, so neither is capped by the automation entitlement."""
+    if requested_stage is not Capability.PREPARE:
+        return settings.autonomy_deployment_ceiling()
+    from webapp.services.autonomy_entitlements import entitlement_ceiling
+    return min(settings.autonomy_deployment_ceiling(), entitlement_ceiling(conn, account_id, settings=settings,
+                                                                           now=now))
+
+
+def build_context(conn: dbapi.Connection, *, settings: Settings, account_id: str, application_workspace_id: str,
                   requested_stage: Capability, mode: Mode, now: datetime, sentinel_present: bool,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   executor_hard_stops: Sequence[str] = (), run_id: str | None = None,
                   grant_binding_drift: Sequence[str] = (),
-                  cost_estimates: Mapping[str, Decimal] | None = None) -> AuthorizationContext:
+                  cost_estimates: Mapping[str, Decimal] | None = None,
+                  authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                  submit_origin: str | None = None) -> AuthorizationContext:
+    """authority=HUMAN_SUBMIT (6E-A spec §8.2) takes the deployment ceiling
+    from settings.human_submit_ceiling() and the adapter's submit capability
+    from the submit certification for `submit_origin` (§9.5), never from the
+    6B JOBSEARCH_AUTONOMY_SUBMIT_ADAPTERS list."""
     ws = application_workspace_id
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     search_ws = get_search_workspace_for_application(conn, ws)
     account_max, workspace_ceiling = resolve_authority(conn, account_id=account_id, search_workspace_id=search_ws)
     policy = current_policy(conn, account_id)
@@ -326,6 +348,8 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
         "company.key": employer_key or UNKNOWN,
         "workspace.id": search_ws or UNKNOWN,
         "identity.strength": identity_strength.value,
+        **v2_attributes(conn, account_id=account_id, workspace_id=ws, posting=posting, workspace=workspace,
+                        policy_doc=doc),
     }
 
     auto_reject, unresolved = _governing(conn, ws)
@@ -338,7 +362,10 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     else:
         apply_target = ApplyTargetFacts(
             provenance=provenance, adapter_id=observation.adapter_id,
-            adapter_submit_capable=observation.adapter_id in settings.autonomy_submit_capable_adapters,
+            adapter_submit_capable=(
+                submission_permitted(submit_certified(observation.adapter_id, observation.adapter_version),
+                                     submit_origin or "", fixture_origins_enabled=settings.submit_fixture_origins_enabled)[0]
+                if human else observation.adapter_id in settings.autonomy_submit_capable_adapters),
             landing_within_redirect_set=observation.landing_within_redirect_set,
             tenant_matches_employer=observation.tenant_matches_employer,
             ats_job_id_matches=observation.ats_job_id_matches,
@@ -381,8 +408,11 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
     return AuthorizationContext(
         mode=mode, requested_stage=requested_stage, now=now, account_id=account_id,
         application_workspace_id=ws, search_workspace_id=search_ws,
-        deployment_ceiling=settings.autonomy_deployment_ceiling(), account_max=account_max,
-        workspace_ceiling=workspace_ceiling,
+        deployment_ceiling=settings.human_submit_ceiling(conn, certification=(
+            submit_certified(observation.adapter_id, observation.adapter_version) if observation else None))
+        if human else _automation_ceiling(
+            conn, settings, account_id, requested_stage, now),
+        account_max=account_max, workspace_ceiling=workspace_ceiling,
         kill_switch_engaged=kill_switch["halted"], control_epoch=kill_switch["latest_engage_seq"],
         sentinel_present=sentinel_present,
         standing_policy=doc, subject_policy=load_subject_policy(), attributes=attributes,
@@ -392,5 +422,31 @@ def build_context(conn: sqlite3.Connection, *, settings: Settings, account_id: s
         identity_conflict=identity_conflict, existing_intent_state=intent_state, intent_overridden=overridden,
         employer_key=employer_key, employer_key_strength=employer_strength, counters=counters,
         budgets=budgets, rule_acknowledgements=acks, executor_hard_stops=tuple(executor_hard_stops),
-        grant_binding_drift=tuple(grant_binding_drift), run_id=run_id,
+        grant_binding_drift=tuple(grant_binding_drift), run_id=run_id, authority=authority,
     )
+
+
+def v2_attributes(conn, *, account_id: str, workspace_id: str, posting: Mapping[str, Any],
+                  workspace: Mapping[str, Any], policy_doc: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bundle 7 standing-policy.v2 job attributes (spec 16.2), derived
+    deterministically; anything underivable is UNKNOWN (never a guess)."""
+    from product.job_families import classify
+    from product.rule_attributes import (
+        annual_compensation_max, country_from, family_attribute, remote_mode_from, rotation_from_text,
+    )
+    from webapp.services.cv_strategy import current_job_families
+    understanding_artifact = get_current_artifact(conn, workspace_id, "job_understanding_result")
+    understanding = (understanding_artifact or {}).get("payload") or {}
+    title = understanding.get("title") or posting.get("title") or workspace.get("title") or ""
+    seniority = understanding.get("seniority") if isinstance(understanding.get("seniority"), str) else None
+    families, _ = current_job_families(conn, account_id)
+    text = " ".join(str(posting.get(k) or "") for k in ("description", "raw_text", "title"))
+    compensation = understanding.get("compensation") or posting.get("compensation")
+    currency = (policy_doc or {}).get("currency")
+    return {
+        "job.family": family_attribute(classify(families, title=title, seniority=seniority).family_id),
+        "job.compensation_max_annual": annual_compensation_max(compensation, currency),
+        "job.country": country_from(understanding) if understanding else country_from(posting),
+        "job.remote_mode": remote_mode_from(understanding) if understanding else remote_mode_from(posting),
+        "job.rotation": rotation_from_text(text),
+    }

@@ -1,6 +1,9 @@
 # tests/webapp/persistence/test_review_approval_migration.py
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import sqlite3
 
 import pytest
@@ -8,6 +11,7 @@ import pytest
 from webapp.persistence.db import connect, init_db
 from webapp.persistence.migrations import REVIEW_APPROVAL_APPEND_ONLY_TABLES, REVIEW_APPROVAL_MIGRATION_ID
 from webapp.persistence.workspaces import create_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 @pytest.fixture
@@ -19,11 +23,11 @@ def conn(tmp_path):
 
 
 def test_migration_is_recorded_and_rerun_is_a_noop(tmp_path, conn):
-    ids = [r[0] for r in conn.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
-    # 019 is applied, immediately followed by 6D-B's 020_fill.
-    assert ids[ids.index(REVIEW_APPROVAL_MIGRATION_ID) + 1:] == ["020_fill"]
+    ids = [r[0] for r in conn.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
+    # 019 is applied, immediately followed by 6D-B's 020_fill and 6E-A's 021.
+    assert ids[ids.index(REVIEW_APPROVAL_MIGRATION_ID) + 1:] == ["020_fill", "021_human_submit"]
     init_db(tmp_path / "db.sqlite3")
-    assert [r[0] for r in conn.execute("SELECT id FROM schema_migrations ORDER BY rowid")] == ids
+    assert [r[0] for r in conn.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")] == ids
 
 
 def _approval(conn, ws, scope="FILL"):
@@ -33,7 +37,7 @@ def _approval(conn, ws, scope="FILL"):
 
 
 def test_scope_can_only_be_fill(conn):
-    ws = create_workspace(conn, company="A", title="B")["id"]
+    ws = create_workspace(conn, company="A", title="B", account_id=DEFAULT_ACCOUNT_ID)["id"]
     with pytest.raises(sqlite3.IntegrityError):
         _approval(conn, ws, scope="SUBMIT")
     _approval(conn, ws)
@@ -48,7 +52,7 @@ def test_history_tables_are_append_only(conn, table):
 
 
 def test_disposition_and_event_vocabularies_are_closed(conn):
-    ws = create_workspace(conn, company="A", title="B")["id"]
+    ws = create_workspace(conn, company="A", title="B", account_id=DEFAULT_ACCOUNT_ID)["id"]
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO application_field_dispositions (id, account_id, application_workspace_id, answer_key, "
                      "disposition, actor, created_at) VALUES ('d', 'account_local', ?, 'k', 'MAYBE', 'u', 't')", (ws,))

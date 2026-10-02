@@ -1,0 +1,7 @@
+{% extends "admin/_base.html" %}
+{% block title %}Outbox{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Staff console</p><h1>Outbox</h1><p><a href="/admin/outbox">All</a> · <a href="/admin/outbox?status=FAILED">Failed</a> · <a href="/admin/outbox?status=QUEUED">Queued</a></p></div></section>
+<section class="panel"><table><thead><tr><th>Template</th><th>Category</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr></thead><tbody>
+{% for m in messages %}<tr><td>{{ m.template_id }}</td><td>{{ m.category }}</td><td>{{ m.status }}</td><td>{{ m.attempts }}</td><td>{{ m.last_error }}</td><td>{% if m.status == "FAILED" %}<form data-json-form="/api/admin/outbox/{{ m.id }}/retry"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small" type="submit">Retry</button></form>{% endif %}</td></tr>{% else %}<tr><td colspan="6">None.</td></tr>{% endfor %}</tbody></table></section>
+{% endblock %}

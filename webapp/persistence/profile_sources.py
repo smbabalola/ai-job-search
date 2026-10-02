@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 
 from product.profile_snapshot import SOURCE_PATHS
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence import dbapi
 
 
 CANDIDATE_SOURCE = ".claude/skills/job-application-assistant/01-candidate-profile.md"
@@ -15,7 +15,7 @@ def _now() -> str:
 
 
 def list_profile_source_settings(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict]:
     rows = {
         row["source_path"]: bool(row["included"])
@@ -37,7 +37,7 @@ def list_profile_source_settings(
 
 
 def included_profile_sources(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> tuple[str, ...]:
     return tuple(
         source["source_path"]
@@ -47,11 +47,11 @@ def included_profile_sources(
 
 
 def set_supplemental_source_included(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     source_path: str,
     included: bool,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> None:
     if source_path not in SOURCE_PATHS:
         raise ValueError(f"unknown profile source {source_path!r}")

@@ -11,8 +11,31 @@ const extensionRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // production build (dist/extension) never contains the hook: the branch is
 // compiled out by the __FILL_TEST_HOOKS__ define.
 const testHooks = process.env.FILL_TEST_HOOKS === "1";
-const outputRoot = resolve(extensionRoot, "dist", testHooks ? "extension-test-hooks" : "extension");
-const define = { __FILL_TEST_HOOKS__: String(testHooks) };
+
+// Bundle 7 spec X1: the JobSearch backend origin is a build-time constant. The
+// default is the local development server; a hosted build must name its
+// https origin (--origin https://app.example.com) and gets its own output.
+const DEV_ORIGIN = "http://127.0.0.1:8420";
+function requestedOrigin() {
+  const index = process.argv.indexOf("--origin");
+  const raw = index >= 0 ? process.argv[index + 1] : process.env.JOBSEARCH_EXTENSION_ORIGIN;
+  if (!raw) return null;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`--origin is not a URL: ${raw}`);
+  }
+  if (url.protocol !== "https:" || (url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
+    throw new Error(`--origin must be an https origin without a path: ${raw}`);
+  }
+  return url.origin;
+}
+const hostedOrigin = requestedOrigin();
+const backendOrigin = hostedOrigin ?? DEV_ORIGIN;
+const outputName = testHooks ? "extension-test-hooks" : hostedOrigin ? "extension-hosted" : "extension";
+const outputRoot = resolve(extensionRoot, "dist", outputName);
+const define = { __FILL_TEST_HOOKS__: String(testHooks), __JOBSEARCH_ORIGIN__: JSON.stringify(backendOrigin) };
 
 export async function buildExtension() {
   await rm(outputRoot, { recursive: true, force: true });
@@ -50,6 +73,7 @@ export async function buildExtension() {
     format: "esm",
     platform: "browser",
     target: "chrome120",
+    define,
     outfile: resolve(outputRoot, "popup", "index.js"),
   });
   await build({
@@ -58,6 +82,7 @@ export async function buildExtension() {
     format: "iife",
     platform: "browser",
     target: "chrome120",
+    define,
     outfile: resolve(outputRoot, "content-bridge", "index.js"),
   });
   // 6D-B: the observer + executor + detections page bundle, injected on
@@ -70,6 +95,12 @@ export async function buildExtension() {
     target: "chrome120",
     outfile: resolve(outputRoot, "fill-page", "index.js"),
   });
+  // The backend origin is the only host permission and the only page the
+  // webapp bridge runs on (spec X1). Other permissions are unchanged.
+  const built = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
+  built.host_permissions = [`${backendOrigin}/*`];
+  for (const script of built.content_scripts ?? []) script.matches = [`${backendOrigin}/*`];
+  await writeFile(resolve(outputRoot, "manifest.json"), JSON.stringify(built, null, 2));
   if (testHooks) {
     const testManifest = JSON.parse(await readFile(resolve(outputRoot, "manifest.json"), "utf8"));
     testManifest.permissions = [...testManifest.permissions, ...(testManifest.optional_permissions ?? [])];

@@ -55,6 +55,10 @@ class FencedConnection:
 
 
 def database_file(conn) -> str:
+    """What ``connect`` needs to open another connection to conn's database:
+    the PostgreSQL URL, or the SQLite file."""
+    if getattr(conn, "dialect", "sqlite") == "postgres":
+        return conn.dsn
     return conn.execute("PRAGMA database_list").fetchone()[2]
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from product.application_document_contract import DOCX_MEDIA_TYPE, ApplicationDocumentContractError
+from product.application_document_contract import MEDIA_TYPE_EXTENSIONS, ApplicationDocumentContractError
 from product.docx_package import DocxPackageError
 from webapp.api.cv_generation_v2 import require_owned_artifact
 from webapp.api.dependencies import get_account_scope, get_conn, get_documents_root, get_extensions_dir
@@ -18,14 +17,17 @@ from webapp.services.application_documents import (
     set_application_document_reusable, unset_application_document_reusable,
 )
 from webapp.persistence.application_documents import list_reusable
+from webapp.services.cv_library import DocumentRejected  # handled app-wide: DOCUMENT_REJECTED
 from webapp.services.document_blob_store import DocumentBlobError
 from webapp.services.http_api import JobWorkspaceNotFound, require_job_workspace
 from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/application-documents", tags=["application-documents"])
-reusable_router = APIRouter(prefix="/api/reusable-application-documents", tags=["application-documents"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}/application-documents", tags=["application-documents"])
+reusable_router = APIRouter(dependencies=[Depends(USER)], prefix="/api/reusable-application-documents", tags=["application-documents"])
 
 
 class SelectionBody(BaseModel):
@@ -50,7 +52,7 @@ def _error(exc: Exception) -> HTTPException:
 
 
 @router.put("/selection/{kind}")
-def put_selection(workspace_id: str, kind: str, body: SelectionBody, conn: sqlite3.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+def put_selection(workspace_id: str, kind: str, body: SelectionBody, conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     try:
         return select_application_document(conn, workspace_id, kind=kind, document_version_id=body.document_version_id, expected_revision=body.expected_revision, account_id=scope.account_id)
     except ValueError as exc:
@@ -60,7 +62,7 @@ def put_selection(workspace_id: str, kind: str, body: SelectionBody, conn: sqlit
 
 
 @router.post("/generate", status_code=201)
-def post_generate(workspace_id: str, request: Request, body: GenerateBody | None = None, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
+def post_generate(workspace_id: str, request: Request, body: GenerateBody | None = None, conn: dbapi.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), extensions_dir: Path = Depends(get_extensions_dir), scope: AccountScope = Depends(get_account_scope)):
     # No body / null basis ID: unchanged legacy generation. An exact basis ID
     # selects CV Quality v2 and must belong to this account's own workspace.
     basis_id = body.cv_generation_basis_artifact_id if body else None
@@ -79,18 +81,20 @@ def post_generate(workspace_id: str, request: Request, body: GenerateBody | None
 
 
 @router.post("/upload/{kind}", status_code=201)
-def post_upload(workspace_id: str, kind: str, file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
+def post_upload(workspace_id: str, kind: str, request: Request, file: UploadFile = File(...), conn: dbapi.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
     try:
         content = file.file.read(10 * 1024 * 1024 + 1)
         if file.file.read(1):
-            raise DocxPackageError("DOCX exceeds the compressed-size limit")
+            raise DocumentRejected("TOO_LARGE")
+        # §13.2: the storage gauge is checked before any blob is written
+        request.app.state.metering.gauge_check(conn, scope, "storage.bytes", adding=len(content))
         return upload_application_document(conn, workspace_id, kind=kind, filename=file.filename or "", content=content, documents_root=documents_root, account_id=scope.account_id)
     except (PipelineError, DocxPackageError, ApplicationDocumentContractError, DocumentBlobError) as exc:
         raise _error(exc) from exc
 
 
 @router.get("")
-def get_documents(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+def get_documents(workspace_id: str, conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     try:
         result = list_application_documents(conn, workspace_id, account_id=scope.account_id)
         for item in result["versions"]:
@@ -101,18 +105,19 @@ def get_documents(workspace_id: str, conn: sqlite3.Connection = Depends(get_conn
 
 
 @router.get("/{document_version_id}/download")
-def get_download(workspace_id: str, document_version_id: str, conn: sqlite3.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
+def get_download(workspace_id: str, document_version_id: str, conn: dbapi.Connection = Depends(get_conn), documents_root: Path = Depends(get_documents_root), scope: AccountScope = Depends(get_account_scope)):
     try:
         document, content = download_application_document(conn, workspace_id, document_version_id, documents_root=documents_root, account_id=scope.account_id)
     except (PipelineError, DocumentBlobError) as exc:
         raise _error(exc) from exc
-    fallback = "CV.docx" if document["document_kind"] == "cv" else "Cover_Letter.docx"
+    extension = MEDIA_TYPE_EXTENSIONS.get(document["media_type"], ".docx")
+    fallback = ("CV" if document["document_kind"] == "cv" else "Cover_Letter") + extension
     disposition = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(document['original_filename'])}"
-    return Response(content=content, media_type=DOCX_MEDIA_TYPE, headers={"Content-Disposition": disposition, "Content-Length": str(document["byte_length"]), "X-Content-Hash": "sha256:" + document["sha256"], "X-Document-Kind": document["document_kind"], "X-Document-Origin": document["origin"]})
+    return Response(content=content, media_type=document["media_type"], headers={"Content-Disposition": disposition, "Content-Length": str(document["byte_length"]), "X-Content-Hash": "sha256:" + document["sha256"], "X-Document-Kind": document["document_kind"], "X-Document-Origin": document["origin"]})
 
 
 @router.post("/{document_version_id}/save-for-reuse")
-def post_reusable(workspace_id: str, document_version_id: str, body: ReusableBody, conn: sqlite3.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+def post_reusable(workspace_id: str, document_version_id: str, body: ReusableBody, conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     try:
         return set_application_document_reusable(conn, workspace_id, document_version_id, label=body.label, account_id=scope.account_id)
     except PipelineError as exc:
@@ -120,7 +125,7 @@ def post_reusable(workspace_id: str, document_version_id: str, body: ReusableBod
 
 
 @router.delete("/{document_version_id}/save-for-reuse", status_code=204)
-def delete_reusable(workspace_id: str, document_version_id: str, conn: sqlite3.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+def delete_reusable(workspace_id: str, document_version_id: str, conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     try:
         unset_application_document_reusable(conn, workspace_id, document_version_id, account_id=scope.account_id)
     except PipelineError as exc:
@@ -128,5 +133,5 @@ def delete_reusable(workspace_id: str, document_version_id: str, conn: sqlite3.C
 
 
 @reusable_router.get("")
-def get_reusable(conn: sqlite3.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
+def get_reusable(conn: dbapi.Connection = Depends(get_conn), scope: AccountScope = Depends(get_account_scope)):
     return {"documents": list_reusable(conn, account_id=scope.account_id)}

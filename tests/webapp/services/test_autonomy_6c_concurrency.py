@@ -48,7 +48,8 @@ def race(db_path, *work):
 
 
 def _db(conn):
-    return conn.execute("PRAGMA database_list").fetchone()["file"]
+    from webapp.services.autonomy_fence import database_file
+    return database_file(conn)
 
 
 def _lease(queue, item_id, worker):

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence import dbapi
 
 
 DEFAULT_SEARCH_WORKSPACE_ID = "search_default"
@@ -24,10 +24,10 @@ def _now() -> str:
 
 
 def get_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM search_workspaces WHERE id = ? AND account_id = ?",
@@ -37,9 +37,9 @@ def get_search_workspace(
 
 
 def list_search_workspaces(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
     include_archived: bool = False,
 ) -> list[dict[str, Any]]:
     if include_archived:
@@ -58,12 +58,13 @@ def list_search_workspaces(
 
 
 def create_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     name: str,
     search_workspace_id: str | None = None,
     copy_profile_from: str | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
+    commit: bool = True,
 ) -> dict[str, Any]:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -105,12 +106,13 @@ def create_search_workspace(
                 now,
             ),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_search_workspace(conn, workspace_id, account_id=account_id)
 
 
 def _mutate_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     account_id: str,
@@ -145,12 +147,12 @@ def _mutate_workspace(
 
 
 def rename_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     name: str,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     normalized_name = " ".join(name.split())
     if not normalized_name:
@@ -165,11 +167,11 @@ def rename_search_workspace(
 
 
 def archive_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -199,11 +201,11 @@ def archive_search_workspace(
 
 
 def restore_search_workspace(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
     *,
     expected_revision: int,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id

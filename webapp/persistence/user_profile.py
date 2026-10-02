@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from product.user_profile import normalize_user_profile, user_profile_content_id
+from product.user_profile import normalize_user_profile_for_write, normalize_user_profile, user_profile_content_id
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
@@ -14,6 +13,7 @@ from webapp.persistence.search_workspaces import (
     SearchWorkspaceError,
     get_search_workspace,
 )
+from webapp.persistence import dbapi
 
 
 CURRENT_USER_PROFILE_ID = "current"
@@ -23,7 +23,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _row_to_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def _row_to_record(row: dbapi.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     record = dict(row)
@@ -32,10 +32,10 @@ def _row_to_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def get_current_user_profile(
-    conn: sqlite3.Connection,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    conn: dbapi.Connection,
+    search_workspace_id: str,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT v.*, p.revision AS profile_revision, p.updated_at AS profile_updated_at "
@@ -49,12 +49,12 @@ def get_current_user_profile(
 
 
 def save_user_profile(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     profile: dict[str, Any],
     *,
-    search_workspace_id: str = DEFAULT_SEARCH_WORKSPACE_ID,
+    search_workspace_id: str,
     expected_revision: int | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -63,7 +63,7 @@ def save_user_profile(
         raise SearchWorkspaceError(f"unknown search workspace {search_workspace_id!r}")
     if workspace["status"] != "active":
         raise SearchWorkspaceError("archived search workspaces are read-only")
-    payload = normalize_user_profile(profile)
+    payload = normalize_user_profile_for_write(profile)  # Bundle 7: v2 writes only
     content_id = user_profile_content_id(payload)
     current = get_current_user_profile(
         conn, search_workspace_id, account_id=account_id
@@ -76,19 +76,23 @@ def save_user_profile(
             )
     if current is not None and current["content_id"] == content_id:
         return current
+    # Versions are per account: identical preferences in two accounts are two
+    # rows (no cross-tenant content dedupe, Bundle 7 spec H6).
     existing = conn.execute(
-        "SELECT * FROM user_profile_versions WHERE content_id = ?", (content_id,)
+        "SELECT * FROM user_profile_versions WHERE account_id = ? AND content_id = ?",
+        (account_id, content_id),
     ).fetchone()
     if existing is None:
         version_id = f"usrprof_{uuid.uuid4().hex[:20]}"
         conn.execute(
             "INSERT INTO user_profile_versions "
-            "(id, content_id, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            "(id, content_id, payload_json, created_at, account_id) VALUES (?, ?, ?, ?, ?)",
             (
                 version_id,
                 content_id,
                 json.dumps(payload, ensure_ascii=False, sort_keys=True),
                 _now(),
+                account_id,
             ),
         )
     else:
@@ -138,7 +142,7 @@ def save_user_profile(
 
 
 def list_user_profile_versions(
-    conn: sqlite3.Connection, *, account_id: str = DEFAULT_ACCOUNT_ID
+    conn: dbapi.Connection, *, account_id: str
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT DISTINCT v.* FROM user_profile_versions v "

@@ -5,10 +5,16 @@ function showMessage(message, isError = false) {
   toast.hidden = false;
 }
 
+// Legacy refusals carry a string `detail`; the §21.3 contract carries `message`
+// and an object `detail` (which must never be shown as "[object Object]").
+function errorMessage(body, fallback) {
+  return (typeof body.detail === "string" && body.detail) || body.message || fallback;
+}
+
 async function api(url, options) {
   const response = await fetch(url, options);
   const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || "Request failed");
+  if (!response.ok) throw new Error(errorMessage(body, "Request failed"));
   return body;
 }
 
@@ -19,6 +25,13 @@ document.addEventListener("click", async (event) => {
   try {
     if (button.dataset.action === "refresh-profile") {
       await api("/api/profile/refresh", {method: "POST"});
+    } else if (button.dataset.action === "copy-text") {
+      const target = document.getElementById(button.dataset.copyTarget);
+      if (!target) throw new Error("Nothing to copy");
+      await navigator.clipboard.writeText(target.textContent.trim());
+      showMessage("Copied.");
+      button.disabled = false;
+      return;
     } else if (button.dataset.action === "copy-reviewed-output") {
       const target = document.getElementById(button.dataset.copyTarget);
       if (!target) throw new Error("Reviewed output is unavailable");
@@ -458,4 +471,135 @@ if (importProfileForm) importProfileForm.addEventListener("submit", async event 
   }
   refresh();
   setInterval(refresh, 60000);
+})();
+
+// Bundle 7 §17.4: the header badge (Action required + unread critical) and the Updates actions.
+(function () {
+  const badge = document.querySelector("[data-inbox-badge]");
+  if (badge) {
+    const refresh = async () => {
+      try {
+        const r = await fetch("/api/inbox/summary");
+        if (!r.ok) return;
+        const summary = await r.json();
+        badge.textContent = String(summary.badge);
+        badge.hidden = summary.badge === 0;
+      } catch (error) { /* offline or signed out: leave the badge */ }
+    };
+    refresh();
+    setInterval(refresh, 60000);
+  }
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-notification-read], button[data-notification-archive]");
+    if (!button) return;
+    const id = button.dataset.notificationRead || button.dataset.notificationArchive;
+    const action = button.dataset.notificationRead ? "read" : "archive";
+    button.disabled = true;
+    try {
+      await api(`/api/notifications/${encodeURIComponent(id)}/${action}`, {method: "POST"});
+      if (action === "archive") button.closest("article").remove(); else button.remove();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+})();
+
+// Bundle 7 §14.6: the CV library forms (multipart uploads to the JSON API, then reload).
+(function () {
+  async function send(url, form) {
+    const response = await fetch(url, {method: "POST", body: form ? new FormData(form) : undefined});
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(errorMessage(body, "Request failed"));
+    return body;
+  }
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("form[data-cv-create], form[data-cv-add-version]");
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const url = form.dataset.cvAddVersion ? `/api/cvs/${encodeURIComponent(form.dataset.cvAddVersion)}/versions` : "/api/cvs";
+      const body = await send(url, form);
+      window.location.href = form.dataset.cvAddVersion ? window.location.pathname : `/cvs/${encodeURIComponent(body.item.id)}`;
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-cv-archive]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      await send(`/api/cvs/${encodeURIComponent(button.dataset.cvArchive)}/${button.dataset.cvAction}`);
+      window.location.reload();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+})();
+
+// Bundle 7 §14.3: choose a library CV for this application (recorded as a user choice).
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-cv-choice]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(button.dataset.workspaceId)}/cv-choice`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version_id: button.dataset.cvChoice})});
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); button.disabled = false; }
+});
+
+// Bundle 7 16.3: acknowledge a BLOCK rule for this application only.
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-rule-ack]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await api(`/api/workspaces/${encodeURIComponent(button.dataset.workspaceId)}/review/rule-acknowledgements`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rule_id: button.dataset.ruleAck})});
+    window.location.reload();
+  } catch (error) { showMessage(error.message, true); button.disabled = false; }
+});
+
+// Bundle 7 §12.3/§13.3: billing actions, device revocation, account forms and the checkout return poll.
+(function () {
+  document.addEventListener("click", async (event) => {
+    const portal = event.target.closest("button[data-billing-portal]");
+    const cancel = event.target.closest("button[data-billing-cancel]");
+    const device = event.target.closest("button[data-device-revoke]");
+    const button = portal || cancel || device;
+    if (!button) return;
+    button.disabled = true;
+    try {
+      if (portal) { window.location.href = (await api("/api/billing/portal", {method: "POST"})).url; return; }
+      if (cancel) { await api("/api/billing/cancel", {method: "POST"}); window.location.reload(); return; }
+      const r = await fetch(`/api/settings/devices/${encodeURIComponent(device.dataset.deviceRevoke)}/revoke`, {method: "POST"});
+      if (!r.ok) throw new Error("Could not disconnect the extension");
+      button.closest("li").remove();
+    } catch (error) { showMessage(error.message, true); button.disabled = false; }
+  });
+  document.addEventListener("submit", async (event) => {
+    const form = event.target.closest("form[data-json-form]");
+    if (!form) return;
+    event.preventDefault();
+    const response = await fetch(form.dataset.jsonForm, {method: "POST", body: new FormData(form)});
+    const body = await response.json().catch(() => ({}));
+    showMessage(response.ok ? "Saved." : (body.errors || [body.message || "Request failed"]).join(" "), !response.ok);
+    if (response.ok) form.reset();
+  });
+  const polling = document.querySelector("[data-checkout-polling]");
+  if (polling) {
+    let tries = 0;
+    const tick = async () => {
+      tries += 1;
+      try {
+        const status = await (await fetch("/api/billing/status")).json();
+        if (status.checkout && status.checkout.status === "COMPLETED" && status.state) {
+          polling.querySelector("[data-checkout-message]").textContent = `You're on ${status.plan_id}. Thank you!`;
+          return;
+        }
+      } catch (error) { /* keep polling */ }
+      if (tries < 30) setTimeout(tick, 2000);
+      else polling.querySelector("[data-checkout-message]").textContent = "Still confirming. Refresh this page in a minute.";
+    };
+    tick();
+  }
 })();

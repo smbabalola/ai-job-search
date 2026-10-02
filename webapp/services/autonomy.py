@@ -53,7 +53,7 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from product.autonomy_contract import (
-    CLICK_DISPATCH_TTL, ENGINE_VERSION, FILL_SESSION_TTL, SUBMIT_GRANT_TTL, AuthorizationContext,
+    CLICK_DISPATCH_TTL, ENGINE_VERSION, FILL_SESSION_TTL, SUBMIT_GRANT_TTL, AuthorityKind, AuthorizationContext,
     AuthorizationDecision, Capability, Mode, canonical_json, parse_utc, to_utc_iso,
 )
 from product.autonomy_gate import evaluate_authorization
@@ -182,7 +182,13 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                   stage: Capability, now: datetime, fill_manifest: dict | None,
                   requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
                   run_id: str | None = None, cost_estimates: Mapping[str, Decimal] | None = None,
-                  in_transaction: bool = False) -> GrantOutcome:
+                  in_transaction: bool = False, authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                  extra_binding: Mapping[str, Any] | None = None,
+                  submit_origin: str | None = None) -> GrantOutcome:
+    """authority=HUMAN_SUBMIT (6E-A §8.3) is reached only through
+    request_human_submit_grant: no autonomy run is required and no autonomous
+    budget is reserved; extra_binding carries the human authorization."""
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     if stage not in (Capability.FILL, Capability.SUBMIT):
         raise ValueError("grants exist only for FILL and SUBMIT")
     if fill_manifest is None:
@@ -191,13 +197,14 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
 
     def work():
         _check_not_paused(conn, account_id=account_id, application_workspace_id=application_workspace_id)
-        if stage == Capability.SUBMIT:
+        if stage == Capability.SUBMIT and not human:
             _require_active_run(conn, account_id=account_id, run_id=run_id)
         sentinel = _observe_sentinel_in_transaction(conn, settings=settings, account_id=account_id, now=now)
         ctx = build_context(conn, settings=settings, account_id=account_id,
                             application_workspace_id=application_workspace_id, requested_stage=stage,
                             mode=Mode.LIVE, now=now, sentinel_present=sentinel, requirements=requirements,
-                            observation=observation, run_id=run_id, cost_estimates=cost_estimates)
+                            observation=observation, run_id=run_id, cost_estimates=cost_estimates,
+                            authority=authority, submit_origin=submit_origin)
         decision = evaluate_authorization(ctx)
         row = insert_decision(conn, ctx=ctx, decision=decision, commit=False)
         if not decision.grantable:
@@ -207,8 +214,9 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                                                        account_id=account_id)
         grant = insert_grant(conn, decision_id=row["id"], account_id=account_id,
                              application_workspace_id=application_workspace_id, stage=stage,
-                             binding=build_binding(ctx, stage=stage, fill_manifest=fill_manifest,
-                                                   observation=observation, target_url=target_url),
+                             binding={**build_binding(ctx, stage=stage, fill_manifest=fill_manifest,
+                                                     observation=observation, target_url=target_url),
+                                      **(extra_binding or {})},
                              issued_at=now, expires_at=now + ttl, commit=False)
         if stage == Capability.FILL:
             day, _ = day_window(now, ctx.standing_policy["timezone"])
@@ -216,7 +224,7 @@ def _request_grant_core(conn, *, settings: Settings, account_id: str, applicatio
                                    limit=ctx.standing_policy["limits"]["fill_per_day"], now=now, grant_id=grant["id"])
             if reserved is None:  # impossible under BEGIN IMMEDIATE unless the gate is wrong
                 raise RuntimeError("fill_per_day reservation failed after an ALLOW decision")
-        for budget in ctx.budgets:
+        for budget in () if human else ctx.budgets:
             key = day_window(now, ctx.standing_policy["timezone"])[0] if budget.window == "day" else application_workspace_id
             reserve_budget(conn, account_id=account_id, counter_name=f"budget:{budget.category}:{budget.window}",
                            window_key=key, amount=budget.estimate, grant_id=grant["id"], now=now)
@@ -251,13 +259,22 @@ def _settle_reservations(conn, grant_id: str, status: str, now: datetime) -> Non
 
 def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,
                      requirements: Sequence[RequirementSpec] = (), observation: ApplyTargetObservation | None = None,
-                     run_id: str | None = None) -> PreClickResult:
+                     run_id: str | None = None, authority: AuthorityKind = AuthorityKind.STANDING_POLICY,
+                     intent_source: str = "AUTONOMOUS", submit_origin: str | None = None,
+                     in_transaction: bool = False) -> PreClickResult:
     """Spec §10.3: one BEGIN IMMEDIATE transaction re-checks the kill switch and
     sentinel, re-evaluates against current state, compares with the grant
     binding and the verification snapshot, reserves limits, consumes the
     single-use grant, claims the intent and creates the AUTHORIZED attempt.
     Commit is the authorization point of no return -- not proof of submission.
-    Any exception rolls back every write of the transaction."""
+    Any exception rolls back every write of the transaction.
+
+    authority=HUMAN_SUBMIT (6E-A §8.3, reached only from
+    human_submit.human_pre_click_commit, which proves the page itself): no
+    autonomy run, no 6B verification snapshot and no autonomous limit
+    reservations; the human authorization keys bound in the grant are
+    carried into the drift comparison; the intent source is the caller's."""
+    human = authority is AuthorityKind.HUMAN_SUBMIT
     initial = get_grant(conn, grant_id)
     if initial is None or initial["stage"] != "SUBMIT":
         raise ValueError(f"{grant_id!r} is not a SUBMIT grant")
@@ -265,18 +282,23 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
 
     def work() -> PreClickResult:
         _check_not_paused(conn, account_id=account_id, application_workspace_id=ws)
-        _require_active_run(conn, account_id=account_id, run_id=run_id)
+        if not human:
+            _require_active_run(conn, account_id=account_id, run_id=run_id)
         sentinel = _observe_sentinel_in_transaction(conn, settings=settings, account_id=account_id, now=now)
         grant = get_grant(conn, grant_id)
         fill_manifest = grant["binding"]["fill_manifest"]
         ctx = build_context(conn, settings=settings, account_id=account_id, application_workspace_id=ws,
                             requested_stage=Capability.SUBMIT, mode=Mode.LIVE, now=now, sentinel_present=sentinel,
-                            requirements=requirements, observation=observation, run_id=run_id)
+                            requirements=requirements, observation=observation, run_id=run_id,
+                            authority=authority, submit_origin=submit_origin)
         target_url = autonomy_context.apply_target_url(conn, workspace_id=ws, account_id=account_id)
         current = build_binding(ctx, stage=Capability.SUBMIT, fill_manifest=fill_manifest,
                                 observation=observation, target_url=target_url)
+        if human:
+            current = {**current, **{k: grant["binding"].get(k)
+                                     for k in ("authority", "human_authorization_id", "review_hash")}}
         drift = list(binding_drift(grant["binding"], current))
-        if not _verification_matches(fill_manifest, verification):
+        if not human and not _verification_matches(fill_manifest, verification):
             drift.append("verification_snapshot")
         ctx = dataclasses.replace(ctx, grant_binding_drift=tuple(drift))
         decision = evaluate_authorization(ctx)
@@ -288,14 +310,14 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
         if grant["status"] != "ISSUED" or parse_utc(grant["expires_at"]) <= now:
             return PreClickResult(False, None, row["id"], "grant_not_consumable")
         doc = ctx.standing_policy
-        day, _ = day_window(now, doc["timezone"])
-        limits = doc["limits"]
-        reservations = [
+        day, _ = day_window(now, doc["timezone"]) if not human else (None, None)
+        limits = doc["limits"] if not human else {}
+        reservations = [] if human else [
             ("submit_per_day", day, min(limits["submit_per_day"], settings.autonomy_live_submit_daily_cap), None),
             ("submit_per_employer_30d", ctx.employer_key, limits["submit_per_employer_30d"],
              now - timedelta(days=30)),
         ]
-        if "submit_per_run" in limits:
+        if not human and "submit_per_run" in limits:
             reservations.append(("submit_per_run", run_id, limits["submit_per_run"], None))
         for name, key, limit, since in reservations:
             if try_reserve(conn, account_id=account_id, counter_name=name, window_key=key, limit=limit,
@@ -304,12 +326,16 @@ def _pre_click_commit_core(conn, *, settings: Settings, grant_id: str, verificat
         if not consume_grant(conn, grant_id=grant_id, now=now):
             raise RuntimeError("grant consumption failed after it was checked consumable")
         intent = claim_intent(conn, account_id=account_id, job_identity_key=ctx.identity_key,
-                              application_workspace_id=ws, source="AUTONOMOUS", now=now)
+                              application_workspace_id=ws, source=intent_source, now=now)
         attempt = create_attempt(conn, grant_id=grant_id, intent_id=intent["id"], application_workspace_id=ws,
                                  run_id=run_id, now=now)
         set_intent_state(conn, intent_id=intent["id"], state="CLAIMED", now=now, attempt_id=attempt["id"])
         return PreClickResult(True, attempt["id"], row["id"], None)
 
+    if in_transaction:
+        if not conn.in_transaction:
+            raise RuntimeError("in_transaction=True needs the caller's open BEGIN IMMEDIATE transaction")
+        return work()
     return run_immediate(conn, work)
 
 
@@ -339,6 +365,10 @@ def _confirm(conn, attempt: dict[str, Any], now: datetime) -> None:
 def record_click_dispatched(conn, *, attempt_id: str, now: datetime) -> bool:
     """Server acknowledgement that CLICK_DISPATCHED is durable. The executor
     must not click unless this returns True."""
+    return run_immediate(conn, lambda: record_click_dispatched_in_transaction(conn, attempt_id=attempt_id, now=now))
+
+
+def record_click_dispatched_in_transaction(conn, *, attempt_id: str, now: datetime) -> bool:
     def work() -> bool:
         attempt = _attempt(conn, attempt_id)
         if attempt_state(conn, attempt_id) != "AUTHORIZED":
@@ -356,7 +386,7 @@ def record_click_dispatched(conn, *, attempt_id: str, now: datetime) -> bool:
         append_attempt_event(conn, attempt_id=attempt_id, state="CLICK_DISPATCHED", source="EXECUTOR",
                              evidence={}, now=now)
         return True
-    return run_immediate(conn, work)
+    return work()
 
 
 def _attempts_in_state(conn, state: str) -> list[dict[str, Any]]:
@@ -402,31 +432,40 @@ def record_submission_result(conn, *, attempt_id: str, state: str, source: str, 
     if state not in ("CONFIRMED_SUCCESS", "SUBMISSION_AMBIGUOUS", "SUBMISSION_FAILED"):
         raise ValueError(state)
 
-    def work() -> str:
-        attempt = _attempt(conn, attempt_id)
-        recorded = state
-        if state == "SUBMISSION_FAILED" and evidence.get("proven_not_submitted") is not True:
-            recorded = "SUBMISSION_AMBIGUOUS"  # spec §10.4: anything short of proof is ambiguous
-        append_attempt_event(conn, attempt_id=attempt_id, state=recorded, source=source, evidence=evidence, now=now)
-        if recorded == "CONFIRMED_SUCCESS":
-            _confirm(conn, attempt, now)
-        elif recorded == "SUBMISSION_FAILED":
-            _release(conn, attempt, now)
-        return recorded
-    return run_immediate(conn, work)
+    return run_immediate(conn, lambda: record_submission_result_in_transaction(
+        conn, attempt_id=attempt_id, state=state, source=source, evidence=evidence, now=now))
+
+
+def record_submission_result_in_transaction(conn, *, attempt_id: str, state: str, source: str,
+                                            evidence: dict[str, Any], now: datetime) -> str:
+    if state not in ("CONFIRMED_SUCCESS", "SUBMISSION_AMBIGUOUS", "SUBMISSION_FAILED"):
+        raise ValueError(state)
+    attempt = _attempt(conn, attempt_id)
+    recorded = state
+    if state == "SUBMISSION_FAILED" and evidence.get("proven_not_submitted") is not True:
+        recorded = "SUBMISSION_AMBIGUOUS"  # spec §10.4: anything short of proof is ambiguous
+    append_attempt_event(conn, attempt_id=attempt_id, state=recorded, source=source, evidence=evidence, now=now)
+    if recorded == "CONFIRMED_SUCCESS":
+        _confirm(conn, attempt, now)
+    elif recorded == "SUBMISSION_FAILED":
+        _release(conn, attempt, now)
+    return recorded
 
 
 def resolve_ambiguous(conn, *, attempt_id: str, submitted: bool, actor: str, now: datetime) -> str:
-    def work() -> str:
-        attempt = _attempt(conn, attempt_id)
-        if attempt_state(conn, attempt_id) != "SUBMISSION_AMBIGUOUS":
-            raise ValueError("only an ambiguous attempt can be resolved by the user")
-        state = "CONFIRMED_SUCCESS" if submitted else "SUBMISSION_FAILED"
-        append_attempt_event(conn, attempt_id=attempt_id, state=state, source="USER",
-                             evidence={"attested_by": actor}, now=now)
-        (_confirm if submitted else _release)(conn, attempt, now)
-        return state
-    return run_immediate(conn, work)
+    return run_immediate(conn, lambda: resolve_ambiguous_in_transaction(
+        conn, attempt_id=attempt_id, submitted=submitted, actor=actor, now=now))
+
+
+def resolve_ambiguous_in_transaction(conn, *, attempt_id: str, submitted: bool, actor: str, now: datetime) -> str:
+    attempt = _attempt(conn, attempt_id)
+    if attempt_state(conn, attempt_id) != "SUBMISSION_AMBIGUOUS":
+        raise ValueError("only an ambiguous attempt can be resolved by the user")
+    state = "CONFIRMED_SUCCESS" if submitted else "SUBMISSION_FAILED"
+    append_attempt_event(conn, attempt_id=attempt_id, state=state, source="USER",
+                         evidence={"attested_by": actor}, now=now)
+    (_confirm if submitted else _release)(conn, attempt, now)
+    return state
 
 
 # ---- Bundle 6D-A Task 11 (spec §12 G2): no public SUBMIT authority ----------------
@@ -452,6 +491,26 @@ def request_grant(conn, *, settings: Settings, account_id: str, application_work
                                application_workspace_id=application_workspace_id, stage=stage, now=now,
                                fill_manifest=fill_manifest, requirements=requirements, observation=observation,
                                run_id=run_id, cost_estimates=cost_estimates, in_transaction=in_transaction)
+
+
+def request_human_submit_grant(conn, *, settings: Settings, account_id: str, application_workspace_id: str,
+                               authorization_id: str, review_hash: str, fill_manifest: dict,
+                               observation: ApplyTargetObservation, submit_origin: str,
+                               now: datetime) -> GrantOutcome:
+    """6E-A §8.3: the ONLY entry point that issues a SUBMIT grant. It runs the
+    unchanged 6B grant engine under HUMAN_SUBMIT authority, inside the
+    caller's BEGIN IMMEDIATE transaction -- the one that inserts the human
+    authorization this grant names (J1). The autonomous request_grant(SUBMIT)
+    keeps refusing."""
+    if not conn.in_transaction:
+        raise RuntimeError("request_human_submit_grant runs inside the authorization transaction")
+    return _request_grant_core(conn, settings=settings, account_id=account_id,
+                               application_workspace_id=application_workspace_id, stage=Capability.SUBMIT, now=now,
+                               fill_manifest=fill_manifest, observation=observation, in_transaction=True,
+                               authority=AuthorityKind.HUMAN_SUBMIT, submit_origin=submit_origin,
+                               extra_binding={"authority": AuthorityKind.HUMAN_SUBMIT.value,
+                                              "human_authorization_id": authorization_id,
+                                              "review_hash": review_hash})
 
 
 def pre_click_commit(conn, *, settings: Settings, grant_id: str, verification: Mapping[str, str], now: datetime,

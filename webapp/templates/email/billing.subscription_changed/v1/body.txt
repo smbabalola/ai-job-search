@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}Your plan is now {{ plan_name }}. Your allowances have been updated.{% endblock %}

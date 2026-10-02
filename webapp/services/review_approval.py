@@ -42,6 +42,9 @@ def approve(conn, *, settings: Settings, account_id: str, application_workspace_
             raise ReviewRefused("no_pack")
         if displayed_binding_hash != state.binding_hash:
             raise ReviewRefused("stale")
+        from webapp.services.manual_rules import unacknowledged_blocks  # Bundle 7 16.3
+        if unacknowledged_blocks(conn, account_id=account_id, workspace_id=ws):
+            raise ReviewRefused("rule_acknowledgement_required")
         if state.blocking:
             raise ReviewRefused("blocking")
         if "unacknowledged_attention" in state.reasons:

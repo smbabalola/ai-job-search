@@ -4,10 +4,10 @@ A run belongs to the handoff session that started it: a foreign session, or
 a run of another session/account, is 404. FillRefused/ReviewRefused are 409
 with the exact reason; invalid bodies and observations are 422. The intent
 response is the only body that may carry a cleartext value. No route
-submits, lifts a quarantine or accepts a SUBMIT stage."""
+here submits, lifts a quarantine or accepts a SUBMIT stage (6E-A's submit routes live in
+webapp/api/submit_extension.py)."""
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -21,8 +21,10 @@ from webapp.services import fill_actions, fill_runs
 from webapp.services.fill_results import fill_status, run_plan_hash
 from webapp.services.handoff import SessionScope
 from webapp.services.review_application import ReviewRefused
+from webapp.persistence import dbapi
+from webapp.api.route_classes import EXTENSION
 
-router = APIRouter(prefix="/api/handoff/sessions/{session_id}/fill", tags=["fill"])
+router = APIRouter(dependencies=[Depends(EXTENSION)], prefix="/api/handoff/sessions/{session_id}/fill", tags=["fill"])
 
 
 class _Body(BaseModel):
@@ -106,9 +108,10 @@ def _owned_run(conn, scope: SessionScope, session_id: str, run_id: str) -> dict[
 
 
 @router.post("/runs", status_code=201)
-def post_run(session_id: str, body: StartBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_run(session_id: str, body: StartBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
              scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _scope(session_id, scope)
+    request.app.state.metering.require_feature(conn, scope, "apply.assisted_fill")  # §11.4: feature only
     return call(lambda: fill_runs.start_run(
         conn, settings=request.app.state.settings, account_id=scope.account_id,
         handoff_session_id=scope.handoff_session_id, application_workspace_id=scope.workspace_id,
@@ -118,7 +121,7 @@ def post_run(session_id: str, body: StartBody, request: Request, conn: sqlite3.C
 
 @router.post("/runs/{run_id}/observations")
 def post_observation(session_id: str, run_id: str, body: ObservationBody, request: Request,
-                     conn: sqlite3.Connection = Depends(get_conn),
+                     conn: dbapi.Connection = Depends(get_conn),
                      scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_runs.record_observation(
@@ -127,7 +130,7 @@ def post_observation(session_id: str, run_id: str, body: ObservationBody, reques
 
 
 @router.get("/runs/{run_id}/plan-status")
-def get_plan_status(session_id: str, run_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_plan_status(session_id: str, run_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                     scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     run = _owned_run(conn, scope, session_id, run_id)
     last = f.run_state(conn, run_id)
@@ -146,7 +149,7 @@ def get_plan_status(session_id: str, run_id: str, request: Request, conn: sqlite
 
 
 @router.post("/runs/{run_id}/quarantine")
-def post_quarantine(session_id: str, run_id: str, body: QuarantineBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_quarantine(session_id: str, run_id: str, body: QuarantineBody, conn: dbapi.Connection = Depends(get_conn),
                     scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_runs.record_quarantine(conn, run_id=run_id, phase=body.phase,
@@ -155,7 +158,7 @@ def post_quarantine(session_id: str, run_id: str, body: QuarantineBody, conn: sq
 
 
 @router.post("/runs/{run_id}/grant")
-def post_grant(session_id: str, run_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_grant(session_id: str, run_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     out = call(lambda: fill_runs.request_fill_grant(conn, settings=request.app.state.settings, run_id=run_id,
@@ -165,7 +168,7 @@ def post_grant(session_id: str, run_id: str, request: Request, conn: sqlite3.Con
 
 @router.post("/runs/{run_id}/actions/{action_index}/intent")
 def post_intent(session_id: str, run_id: str, action_index: int, body: IntentBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     out = call(lambda: fill_actions.request_intent(conn, settings=request.app.state.settings, run_id=run_id,
@@ -180,7 +183,7 @@ def post_intent(session_id: str, run_id: str, action_index: int, body: IntentBod
 
 @router.post("/runs/{run_id}/actions/{action_index}/outcome")
 def post_outcome(session_id: str, run_id: str, action_index: int, body: OutcomeBody,
-                 conn: sqlite3.Connection = Depends(get_conn),
+                 conn: dbapi.Connection = Depends(get_conn),
                  scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_actions.record_outcome(
@@ -189,7 +192,7 @@ def post_outcome(session_id: str, run_id: str, action_index: int, body: OutcomeB
 
 
 @router.post("/runs/{run_id}/actions/{action_index}/unknown")
-def post_unknown(session_id: str, run_id: str, action_index: int, conn: sqlite3.Connection = Depends(get_conn),
+def post_unknown(session_id: str, run_id: str, action_index: int, conn: dbapi.Connection = Depends(get_conn),
                  scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_actions.record_unknown_outcome(conn, run_id=run_id, action_index=action_index,
@@ -197,14 +200,23 @@ def post_unknown(session_id: str, run_id: str, action_index: int, conn: sqlite3.
 
 
 @router.post("/runs/{run_id}/heartbeat")
-def post_heartbeat(session_id: str, run_id: str, conn: sqlite3.Connection = Depends(get_conn),
+def post_heartbeat(session_id: str, run_id: str, conn: dbapi.Connection = Depends(get_conn),
                    scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
-    return call(lambda: fill_runs.heartbeat(conn, run_id=run_id, now=_now()))
+    now = _now()
+    out = call(lambda: fill_runs.heartbeat(conn, run_id=run_id, now=now))
+    # 6E-A (spec E12): additive directives -- a pending Submit Review
+    # re-observation request, and an issued human SUBMIT authorization.
+    from webapp.services.human_submit import pending_authorization
+    from webapp.services.submit_review import pending_reobservation
+    request = pending_reobservation(conn, run_id)
+    out["reobserve"] = {"request_id": request["id"]} if request else None
+    out["authorization"] = pending_authorization(conn, run_id, now)
+    return out
 
 
 @router.post("/runs/{run_id}/detections")
-def post_detection(session_id: str, run_id: str, body: DetectionBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_detection(session_id: str, run_id: str, body: DetectionBody, conn: dbapi.Connection = Depends(get_conn),
                    scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_actions.record_detection(conn, run_id=run_id, kind=body.kind, detail=body.detail,
@@ -212,14 +224,14 @@ def post_detection(session_id: str, run_id: str, body: DetectionBody, conn: sqli
 
 
 @router.post("/runs/{run_id}/final")
-def post_final(session_id: str, run_id: str, body: FinalBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_final(session_id: str, run_id: str, body: FinalBody, conn: dbapi.Connection = Depends(get_conn),
                scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     _owned_run(conn, scope, session_id, run_id)
     return call(lambda: fill_actions.final_validate(conn, run_id=run_id, observation=body.observation, now=_now()))
 
 
 @router.post("/runs/{run_id}/stop")
-def post_stop(session_id: str, run_id: str, body: StopBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_stop(session_id: str, run_id: str, body: StopBody, conn: dbapi.Connection = Depends(get_conn),
               scope: SessionScope = Depends(get_session_scope)) -> dict[str, Any]:
     """Reduce-only: the executor may end its own run for a condition only it
     can observe (fill_runs.EXECUTOR_STOP_REASONS), never extend it."""

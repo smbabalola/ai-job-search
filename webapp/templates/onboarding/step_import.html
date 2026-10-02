@@ -1,0 +1,17 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<p>We can read your CV and suggest profile entries. Nothing is added until you accept it.</p>
+{% if not runs %}{% if items %}<form method="post" action="/onboarding/import"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <label class="field"><span>CV to read</span><select name="item_id">{% for i in items %}<option value="{{ i.id }}">{{ i.title }}</option>{% endfor %}</select></label>
+  <button class="button" type="submit">Read my CV</button></form>{% else %}<p>Add a CV first.</p>{% endif %}
+{% elif runs[0].status == "FAILED" %}<p class="blocked-note">We couldn't read that CV{% if runs[0].error_code == "NO_TEXT" %} (it looks like a scanned image with no text){% endif %}. You can enter your details on the <a href="/profile">profile page</a> instead.</p>
+{% else %}<form method="post" action="/onboarding/import/resolve"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  {% for p in proposals if not p.resolution %}<fieldset class="field-group" data-proposal="{{ p.kind }}"><legend>{{ p.kind | replace("_", " ") }}</legend>
+    {% for name, value in p.fields.items() %}<label class="field"><span>{{ name | replace("_", " ") }}</span><input name="field_{{ p.id }}_{{ name }}" value="{{ value }}"></label>{% endfor %}
+    <p class="muted">From your CV: “{{ p.source_excerpt }}”</p>
+    <label><input type="radio" name="resolution_{{ p.id }}" value="ACCEPTED" checked> Add</label>
+    <label><input type="radio" name="resolution_{{ p.id }}" value="EDITED_ACCEPTED"> Add with my edits</label>
+    <label><input type="radio" name="resolution_{{ p.id }}" value="REJECTED"> Don't add</label>
+  </fieldset>{% else %}<p>Everything has been reviewed.</p>{% endfor %}
+  <button class="button" type="submit">Save and continue</button></form>{% endif %}
+{% endblock %}

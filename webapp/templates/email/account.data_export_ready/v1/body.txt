@@ -1,0 +1,2 @@
+{% extends "_layout.txt" %}{% block content %}Your data export is ready to download until {{ expires_at }}: {{ download_url }}
+You'll need to be signed in.{% endblock %}

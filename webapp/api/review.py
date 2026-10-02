@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from urllib.parse import quote
 
@@ -28,8 +27,10 @@ from webapp.services.http_api import (
 from webapp.services.autonomy_shadow import record_shadow_decision
 from webapp.services.pipeline import PipelineError
 from webapp.services.review_view import build_review_view_model
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}", tags=["review"])
 
 
 class StrictBody(BaseModel):
@@ -74,7 +75,7 @@ def _translate(exc: Exception) -> HTTPException:
 @router.get("/review")
 def get_review(
     workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -88,7 +89,7 @@ def get_review(
 @router.post("/review-decisions", status_code=201)
 def post_review_decision(
     workspace_id: str, body: ReviewDecisionBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _reject_dedicated_item_types([body])
@@ -107,7 +108,7 @@ def post_review_decision(
 @router.post("/review-decisions/batch", status_code=201)
 def post_review_decisions_batch(
     workspace_id: str, body: ReviewDecisionBatchBody,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if not 1 <= len(body.decisions) <= 100:
@@ -126,7 +127,7 @@ def post_review_decisions_batch(
 @router.post("/application-pack", status_code=201)
 def post_application_pack(
     workspace_id: str, body: ApplicationPackBody, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     documents_root: Path = Depends(get_documents_root),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
@@ -150,7 +151,7 @@ def post_application_pack(
 @router.post("/application-pack/{pack_artifact_id}/retry-projection")
 def post_retry_projection(
     workspace_id: str, pack_artifact_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     documents_root: Path = Depends(get_documents_root),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -171,7 +172,7 @@ _RENDER_KINDS = {"cv", "cover_letter"}
 def get_application_pack_document(
     workspace_id: str, kind: str,
     pack_artifact_id: str | None = None,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
     documents_root: Path = Depends(get_documents_root),
 ):

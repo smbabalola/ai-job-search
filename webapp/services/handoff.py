@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,6 +30,7 @@ from webapp.persistence.autonomy_ledger import record_human_intent
 from webapp.persistence.workflow import record_status_change
 from webapp.services.ownership import AccountScope, account_profile_root
 from webapp.services.staleness import check_staleness
+from webapp.persistence import dbapi
 
 
 class HandoffError(RuntimeError):
@@ -45,71 +45,12 @@ class PairingSecretExpired(HandoffError):
     pass
 
 
-def generate_pairing_secret(
-    conn: sqlite3.Connection, *, account_id: str, commit: bool = True,
-) -> str:
-    secret = secrets.token_urlsafe(32)
-    secret_id = f"pairsec_{uuid.uuid4().hex[:20]}"
-    now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(minutes=10)).isoformat()
-    conn.execute(
-        "INSERT INTO pairing_secrets "
-        "(id, account_id, secret_hash, created_at, expires_at, consumed_at) "
-        "VALUES (?, ?, ?, ?, ?, NULL)",
-        (secret_id, account_id, hash_pairing_secret(secret), now.isoformat(), expires_at),
-    )
-    if commit:
-        conn.commit()
-    return secret
-
-
-def exchange_pairing_secret_for_credential(
-    conn: sqlite3.Connection, *, one_time_secret: str,
-) -> dict[str, Any]:
-    secret_hash = hash_pairing_secret(one_time_secret)
-    row = conn.execute(
-        "SELECT * FROM pairing_secrets WHERE secret_hash = ?", (secret_hash,)
-    ).fetchone()
-    if row is None:
-        raise PairingSecretInvalid("pairing code not recognized")
-    if row["consumed_at"] is not None:
-        raise PairingSecretInvalid("pairing code already used")
-    now_iso = datetime.now(timezone.utc).isoformat()
-    if row["expires_at"] < now_iso:
-        raise PairingSecretExpired("pairing code expired")
-
-    conn.execute(
-        "UPDATE pairing_secrets SET consumed_at = ? WHERE id = ?",
-        (now_iso, row["id"]),
-    )
-    durable_secret = secrets.token_urlsafe(32)
-    credential = create_extension_credential(
-        conn, account_id=row["account_id"],
-        secret_hash=hash_pairing_secret(durable_secret),
-    )
-    conn.commit()
-    return {"credential_id": credential["id"], "durable_secret": durable_secret}
-
-
-def resolve_account_scope_from_extension_credential(
-    conn: sqlite3.Connection, *, presented_secret: str, base_profile_root: str,
-) -> AccountScope:
-    secret_hash = hash_pairing_secret(presented_secret)
-    credential = get_extension_credential_by_hash(conn, secret_hash)
-    if credential is None:
-        raise PairingSecretInvalid("extension credential not recognized or revoked")
-    return AccountScope(
-        account_id=credential["account_id"],
-        profile_root=account_profile_root(base_profile_root, credential["account_id"]),
-    )
-
-
 class HandoffPackNotFound(HandoffError):
     pass
 
 
 def start_handoff_session(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     scope: AccountScope,
     *,
     workspace_id: str,
@@ -147,7 +88,7 @@ def start_handoff_session(
 
 
 def discover_resumable_handoff_sessions(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     scope: AccountScope,
     *,
     workspace_id: str,
@@ -219,11 +160,11 @@ class SessionScope:
     pack_artifact_id: str
 
 
-def mint_session_token(conn: sqlite3.Connection, *, handoff_session_id: str) -> str:
+def mint_session_token(conn: dbapi.Connection, *, handoff_session_id: str) -> str:
     return create_session_token(conn, handoff_session_id=handoff_session_id)
 
 
-def rotate_session_token(conn: sqlite3.Connection, *, handoff_session_id: str) -> str:
+def rotate_session_token(conn: dbapi.Connection, *, handoff_session_id: str) -> str:
     # Revoking every prior live token before minting the new one keeps
     # exactly one live token per session at a time — an old, possibly
     # leaked token stops working the moment the session is re-authorized
@@ -232,7 +173,7 @@ def rotate_session_token(conn: sqlite3.Connection, *, handoff_session_id: str) -
     return create_session_token(conn, handoff_session_id=handoff_session_id)
 
 
-def resolve_session_scope(conn: sqlite3.Connection, *, raw_token: str) -> SessionScope:
+def resolve_session_scope(conn: dbapi.Connection, *, raw_token: str) -> SessionScope:
     token_hash = hash_pairing_secret(raw_token)
     row = get_session_token_row(conn, token_hash=token_hash)
     if row is None:
@@ -252,7 +193,7 @@ def resolve_session_scope(conn: sqlite3.Connection, *, raw_token: str) -> Sessio
 
 
 def resume_handoff_session(
-    conn: sqlite3.Connection, scope: AccountScope, *, handoff_session_id: str,
+    conn: dbapi.Connection, scope: AccountScope, *, handoff_session_id: str,
 ) -> str:
     # Ownership failure and not-found are deliberately indistinguishable
     # here (both raise HandoffSessionNotFound), matching
@@ -291,7 +232,7 @@ _SESSION_DOCUMENT_KINDS = frozenset({"cv", "cover_letter"})
 
 
 def fetch_session_document(
-    conn: sqlite3.Connection, scope: SessionScope, *, kind: str, documents_root: Path,
+    conn: dbapi.Connection, scope: SessionScope, *, kind: str, documents_root: Path,
 ):
     # Deferred import: webapp.services.http_api does not import from this
     # module, so this is not circular, but importing at module load time
@@ -331,7 +272,7 @@ _PRESENCE_ONLY_EVENT_TYPES = frozenset({"user_value_present_observed"})
 
 
 def _require_owned_session(
-    conn: sqlite3.Connection, scope: SessionScope, handoff_session_id: str,
+    conn: dbapi.Connection, scope: SessionScope, handoff_session_id: str,
 ) -> dict[str, Any]:
     # A session token is bound to exactly one handoff_session_id — a
     # token minted for session A must never be usable against session
@@ -347,7 +288,7 @@ def _require_owned_session(
 
 
 def record_handoff_event(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     scope: SessionScope,
     *,
     handoff_session_id: str,
@@ -382,14 +323,14 @@ def record_handoff_event(
 
 
 def replay_handoff_session(
-    conn: sqlite3.Connection, scope: SessionScope, handoff_session_id: str,
+    conn: dbapi.Connection, scope: SessionScope, handoff_session_id: str,
 ) -> dict[str, Any]:
     session = _require_owned_session(conn, scope, handoff_session_id)
     return {"session": session, "events": list_handoff_events(conn, handoff_session_id)}
 
 
 def confirm_handoff_submission(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     scope: SessionScope,
     *,
     handoff_session_id: str,

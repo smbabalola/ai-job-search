@@ -106,7 +106,7 @@ def test_sensitive_answer_for_application_a_is_not_available_to_application_b_at
     from webapp.persistence.workspaces import get_workspace
     other = _second(v2_chain)
     v2_chain.conn.execute("UPDATE workspaces SET company = ? WHERE id = ?",
-                          (get_workspace(v2_chain.conn, v2_chain.ws)["company"], other.ws))  # same employer
+                          (get_workspace(v2_chain.conn, v2_chain.ws, account_id=DEFAULT_ACCOUNT_ID)["company"], other.ws))  # same employer
     for world in (v2_chain, other):
         blocker(world.conn, world.ws, EEO)
     out = _answer(v2_chain, "prefer not to say", key=f"subject:{EEO}", reach=Reach.ACCOUNT)  # forced per application
@@ -172,6 +172,7 @@ def test_each_action_and_its_event_are_atomic(v2_chain, monkeypatch):
 # ---- final-review corrections: optional answers decide ANSWER; R4 declarations ----
 
 from tests.webapp.services.review_fixtures import add_contact_claim, answer, open_delta  # noqa: E402
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 START = "employment.availability_start"
 

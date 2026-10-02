@@ -11,13 +11,14 @@ from webapp.persistence.policy_decisions import (
     list_policy_decisions,
     save_policy_decision,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _setup(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     artifact = save_artifact(
         conn, workspace_id=ws["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )
@@ -220,7 +221,7 @@ def test_unknown_stage_rejected_by_persistence_function(tmp_path):
 
 def test_list_policy_decisions_filters_by_workspace_and_artifact(tmp_path):
     conn, workspace_id, artifact_id = _setup(tmp_path)
-    other_ws = create_workspace(conn, company="Other Co", title="Other Role")
+    other_ws = create_workspace(conn, company="Other Co", title="Other Role", account_id=DEFAULT_ACCOUNT_ID)
     other_artifact = save_artifact(
         conn, workspace_id=other_ws["id"], artifact_type="job_fit_result", payload={"gaps": []}
     )

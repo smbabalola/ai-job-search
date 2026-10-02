@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import json
 import sqlite3
 
@@ -74,7 +77,7 @@ def test_new_database_has_one_deterministic_default_search_workspace(tmp_path):
     assert dict(workspace)["name"] == "Default search"
     assert conn.execute("SELECT COUNT(*) FROM search_workspaces").fetchone()[0] == 1
     assert {
-        row["id"] for row in conn.execute("SELECT id FROM schema_migrations")
+        row["id"] for row in conn.execute("SELECT id FROM schema_migrations WHERE id < '022'")
     } == {
         "001_search_workspaces",
         "002_evidence_profile_manager",
@@ -96,6 +99,7 @@ def test_new_database_has_one_deterministic_default_search_workspace(tmp_path):
         "018_autonomy_prepare",
         "019_review_approval",
         "020_fill",
+        "021_human_submit",
     }
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -110,9 +114,9 @@ def test_profile_manager_and_account_migrations_are_idempotent(tmp_path):
         row["name"] for row in upgraded.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'profile_source_%'"
         )
-    } == {"profile_source_entries", "profile_source_settings"}
+    } == {"profile_source_entries", "profile_source_settings", "profile_source_revisions"}
     assert {
-        row["id"] for row in upgraded.execute("SELECT id FROM schema_migrations")
+        row["id"] for row in upgraded.execute("SELECT id FROM schema_migrations WHERE id < '022'")
     } == {
         "001_search_workspaces",
         "002_evidence_profile_manager",
@@ -134,6 +138,7 @@ def test_profile_manager_and_account_migrations_are_idempotent(tmp_path):
         "018_autonomy_prepare",
         "019_review_approval",
         "020_fill",
+        "021_human_submit",
     }
     assert upgraded.execute("PRAGMA foreign_key_check").fetchall() == []
 

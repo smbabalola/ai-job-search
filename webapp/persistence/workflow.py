@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +12,7 @@ from webapp.application_material import application_material_completion
 from webapp.persistence.artifacts import get_artifact
 from webapp.persistence.autonomy_ledger import record_human_intent
 from webapp.persistence.workspaces import get_workspace
+from webapp.persistence import dbapi
 
 TRACKER_STATUSES = (
     "drafted", "applied", "interview", "offer",
@@ -31,10 +31,10 @@ def _now() -> str:
 
 
 def _record_status_change_reserved(
-    conn: sqlite3.Connection, *, workspace_id: str, new_status: str, effective_date: str,
+    conn: dbapi.Connection, *, workspace_id: str, new_status: str, effective_date: str,
     note: str | None = None, submitted_pack_artifact_id: str | None = None,
     _allow_drafted: bool = False, commit: bool = True,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     if new_status not in TRACKER_STATUSES:
         raise ValueError(f"unknown tracker status: {new_status!r}")
@@ -171,10 +171,10 @@ def _record_status_change_reserved(
 
 
 def record_status_change(
-    conn: sqlite3.Connection, *, workspace_id: str, new_status: str, effective_date: str,
+    conn: dbapi.Connection, *, workspace_id: str, new_status: str, effective_date: str,
     note: str | None = None, submitted_pack_artifact_id: str | None = None,
     _allow_drafted: bool = False, commit: bool = True,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     """Record one transition, reserving exact-pack reads and event writes together."""
     if not commit:
@@ -199,7 +199,7 @@ def record_status_change(
         raise
 
 
-def list_workflow_events(conn: sqlite3.Connection, workspace_id: str) -> list[dict[str, Any]]:
+def list_workflow_events(conn: dbapi.Connection, workspace_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM workflow_events WHERE workspace_id = ? ORDER BY created_at DESC", (workspace_id,)
     ).fetchall()

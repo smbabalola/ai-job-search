@@ -15,6 +15,8 @@ from webapp.services.input_identity import (
     application_intelligence_generation_contract_identity,
     content_identity,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 
 FIXTURE_PROFILE_ROOT = None  # set in Step 0 below to the same fixture Task 9 created
@@ -24,9 +26,9 @@ def _workspace_with_profile_and_job(tmp_path, profile_root):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    refresh_profile(conn, root=str(profile_root))
+    refresh_profile(conn, root=str(profile_root), account_id=DEFAULT_ACCOUNT_ID)
 
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     job_snapshot = {
         "schema_version": "job-posting-snapshot.v0", "job_id": "jobsrc_test0000000000",
         "source": "manual", "captured_at": "2026-08-18T00:00:00Z",
@@ -44,7 +46,7 @@ def test_run_job_fit_persists_request_result_and_resolved_evidence(tmp_path, web
     conn, workspace_id = _workspace_with_profile_and_job(tmp_path, webapp_profile_root)
     adapter = FakeSemanticProposalAdapter(canned_response={"matches": [], "gates": []})
 
-    saved = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_1")
+    saved = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_1", account_id=DEFAULT_ACCOUNT_ID)
 
     assert saved["artifact_type"] == "job_fit_result"
     assert get_current_artifact(conn, workspace_id, "job_fit_request") is not None
@@ -93,7 +95,7 @@ def test_run_job_fit_uses_global_profile_not_a_workspace_local_one(tmp_path, web
     # no per-workspace profile_snapshot artifact exists — only the global one
     assert get_current_artifact(conn, workspace_id, "profile_snapshot") is None
     adapter = FakeSemanticProposalAdapter(canned_response={"matches": [], "gates": []})
-    saved = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_2")
+    saved = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_2", account_id=DEFAULT_ACCOUNT_ID)
     assert saved["artifact_type"] == "job_fit_result"
     conn.close()
 
@@ -106,9 +108,9 @@ def test_user_profile_preferences_never_enter_or_stale_job_fit(tmp_path, webapp_
         "locations": ["Aberdeen, UK"],
         "remote_preference": "remote_or_hybrid",
         "recency_days": 14,
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
     adapter = FakeSemanticProposalAdapter(canned_response={"matches": [], "gates": []})
-    fit = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_preferences")
+    fit = run_job_fit(conn, workspace_id, adapter, request_id="req_fit_preferences", account_id=DEFAULT_ACCOUNT_ID)
     request = get_current_artifact(conn, workspace_id, "job_fit_request")
 
     assert "user_profile" not in json.dumps(request["payload"])
@@ -122,14 +124,14 @@ def test_user_profile_preferences_never_enter_or_stale_job_fit(tmp_path, webapp_
     assert not any("user_profile" in item for item in fingerprint_types)
     staleness_before_preference_change = check_staleness(
         conn, workspace_id, "job_fit_result"
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
 
     save_user_profile(conn, {
         "target_roles": ["Programme Director"],
         "locations": ["Remote"],
         "remote_preference": "remote_only",
         "recency_days": 7,
-    })
+    }, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)
 
     evidence_after = get_current_artifact(conn, "profile", "profile_snapshot")
     assert evidence_after["id"] == evidence_before["id"]
@@ -137,19 +139,19 @@ def test_user_profile_preferences_never_enter_or_stale_job_fit(tmp_path, webapp_
     assert get_current_artifact(conn, workspace_id, "job_fit_result")["id"] == fit["id"]
     assert check_staleness(
         conn, workspace_id, "job_fit_result"
-    ) == staleness_before_preference_change
+    , account_id=DEFAULT_ACCOUNT_ID) == staleness_before_preference_change
 
 
 def test_run_job_fit_without_profile_raises_pipeline_error(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ws = create_workspace(conn, company="Acme", title="Backend Engineer")
+    ws = create_workspace(conn, company="Acme", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     save_artifact(conn, workspace_id=ws["id"], artifact_type="job_posting_snapshot",
                    payload={"job_id": "jobsrc_x"}, content_id="jobsnap_x")
     adapter = FakeSemanticProposalAdapter(canned_response={"matches": [], "gates": []})
     with pytest.raises(PipelineError):
-        run_job_fit(conn, ws["id"], adapter, request_id="req_fit_3")
+        run_job_fit(conn, ws["id"], adapter, request_id="req_fit_3", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
 
 
@@ -169,7 +171,7 @@ class _FailingSemanticAdapter:
 def test_run_job_fit_proposer_failure_raises_pipeline_error_and_leaves_no_new_result(tmp_path, webapp_profile_root):
     conn, workspace_id = _workspace_with_profile_and_job(tmp_path, webapp_profile_root)
     with pytest.raises(PipelineError):
-        run_job_fit(conn, workspace_id, _FailingSemanticAdapter(), request_id="req_fit_4")
+        run_job_fit(conn, workspace_id, _FailingSemanticAdapter(), request_id="req_fit_4", account_id=DEFAULT_ACCOUNT_ID)
     assert get_current_artifact(conn, workspace_id, "job_fit_result") is None
     audits = list_provider_audits(conn, workspace_id, "semantic_job_fit_proposal")
     assert len(audits) == 1
@@ -202,7 +204,7 @@ def test_run_job_fit_persists_sanitized_provider_audit_separately(
     saved = run_job_fit(
         conn, workspace_id, SemanticProposalAdapter(_AuditedSemanticClient()),
         request_id="req_fit_audit",
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     request = get_current_artifact(conn, workspace_id, "job_fit_request")
     audits = list_provider_audits(conn, workspace_id, "semantic_job_fit_proposal")
     assert len(audits) == 1
@@ -222,11 +224,11 @@ class _FakeApplicationIntelligenceProvider:
 def test_run_application_intelligence_persists_request_and_result(tmp_path, webapp_profile_root):
     conn, workspace_id = _workspace_with_profile_and_job(tmp_path, webapp_profile_root)
     adapter = FakeSemanticProposalAdapter(canned_response={"matches": [], "gates": []})
-    run_job_fit(conn, workspace_id, adapter, request_id="req_fit_5")
+    run_job_fit(conn, workspace_id, adapter, request_id="req_fit_5", account_id=DEFAULT_ACCOUNT_ID)
 
     saved = run_application_intelligence(
         conn, workspace_id, _FakeApplicationIntelligenceProvider(), request_id="req_ai_1"
-    )
+    , account_id=DEFAULT_ACCOUNT_ID)
     assert saved["artifact_type"] == "application_intelligence_result"
     assert get_current_artifact(conn, workspace_id, "application_intelligence_request") is not None
     fingerprint_types = {
@@ -273,5 +275,5 @@ def test_run_application_intelligence_requires_job_fit_result(tmp_path, webapp_p
     with pytest.raises(PipelineError):
         run_application_intelligence(
             conn, workspace_id, _FakeApplicationIntelligenceProvider(), request_id="req_ai_2"
-        )
+        , account_id=DEFAULT_ACCOUNT_ID)
     conn.close()

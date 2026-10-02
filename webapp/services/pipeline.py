@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +30,7 @@ from product.semantic_job_fit import (
     build_semantic_job_fit_request,
     load_semantic_fit_policy,
 )
+from webapp.services.metered_provider import reraise_metering_refusal
 from webapp.services.resolved_blocker_answers import build_resolved_blocker_answers_payload
 
 from webapp.persistence.artifacts import get_current_artifact, save_artifact
@@ -61,6 +61,7 @@ from webapp.services.input_identity import (
     semantic_proposals_identity,
     semantic_proposer_policy_identity,
 )
+from webapp.persistence import dbapi
 
 
 class PipelineError(RuntimeError):
@@ -76,10 +77,10 @@ def _hash_artifact(prefix: str, payload: dict[str, Any]) -> str:
 
 
 def refresh_profile(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
     root: str = ".",
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_workspace = ensure_profile_workspace(conn, account_id=account_id)
     try:
@@ -101,7 +102,7 @@ def refresh_profile(
     return artifact
 
 
-def wake_after_profile_refresh(conn: sqlite3.Connection, *, account_id: str, now: datetime) -> int:
+def wake_after_profile_refresh(conn: dbapi.Connection, *, account_id: str, now: datetime) -> int:
     """Bundle 6C: a new Evidence Profile snapshot can change every enrolled
     application's and candidate's next step (no commit)."""
     from webapp.persistence.autonomy_prepare import wake_account
@@ -109,17 +110,17 @@ def wake_after_profile_refresh(conn: sqlite3.Connection, *, account_id: str, now
 
 
 def get_current_profile_snapshot(
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     *,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any] | None:
     profile_workspace = ensure_profile_workspace(conn, account_id=account_id)
     return get_current_artifact(conn, profile_workspace["id"], "profile_snapshot")
 
 
 def create_job_from_source_record(
-    conn: sqlite3.Connection, *, company: str, title: str, source_record: dict[str, Any],
-    workspace_id: str | None = None, account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, *, company: str, title: str, source_record: dict[str, Any],
+    workspace_id: str | None = None, account_id: str,
     commit: bool = True, source_record_origin: str | None = None,
 ) -> dict[str, Any]:
     try:
@@ -186,7 +187,7 @@ def create_job_from_source_record(
 
 
 def run_job_understanding(
-    conn: sqlite3.Connection, workspace_id: str, provider: JobUnderstandingProvider, *, request_id: str,
+    conn: dbapi.Connection, workspace_id: str, provider: JobUnderstandingProvider, *, request_id: str,
 ) -> dict[str, Any]:
     job_artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
     if job_artifact is None:
@@ -217,9 +218,10 @@ def run_job_understanding(
         result = extract_job_understanding(
             job_artifact["payload"], provider, request_id, policy=policy,
         )
-    except JobUnderstandingProviderError as exc:
-        raise PipelineError(f"job understanding provider failed: {exc}") from exc
     except Exception as exc:
+        reraise_metering_refusal(exc)  # Bundle 7 §13.2: FAIR_USE_LIMIT_REACHED / FEATURE_NOT_IN_PLAN, not a 400
+        if isinstance(exc, JobUnderstandingProviderError):
+            raise PipelineError(f"job understanding provider failed: {exc}") from exc
         raise PipelineError(f"job understanding failed: {exc}") from exc
 
     result_artifact = save_artifact(
@@ -238,10 +240,10 @@ def run_job_understanding(
 
 
 def run_job_fit(
-    conn: sqlite3.Connection, workspace_id: str, semantic_adapter: SemanticProposalAdapter, *,
+    conn: dbapi.Connection, workspace_id: str, semantic_adapter: SemanticProposalAdapter, *,
     request_id: str, extension_paths: list[str] | None = None,
     active_extensions: list[dict[str, Any]] | None = None,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_artifact = get_current_profile_snapshot(conn, account_id=account_id)
     job_artifact = get_current_artifact(conn, workspace_id, "job_posting_snapshot")
@@ -377,8 +379,8 @@ def run_job_fit(
 
 
 def run_application_intelligence(
-    conn: sqlite3.Connection, workspace_id: str, ai_provider: ApplicationIntelligenceProvider, *, request_id: str,
-    account_id: str = DEFAULT_ACCOUNT_ID,
+    conn: dbapi.Connection, workspace_id: str, ai_provider: ApplicationIntelligenceProvider, *, request_id: str,
+    account_id: str,
 ) -> dict[str, Any]:
     profile_artifact = get_current_profile_snapshot(conn, account_id=account_id)
     fit_artifact = get_current_artifact(conn, workspace_id, "job_fit_result")
@@ -420,9 +422,10 @@ def run_application_intelligence(
     try:
         proposal_response = ai_provider.propose(request)
         result = analyze_application_intelligence(request, proposal_response.payload)
-    except ApplicationIntelligenceProviderError as exc:
-        raise PipelineError(f"application intelligence provider failed: {exc}") from exc
     except Exception as exc:
+        reraise_metering_refusal(exc)  # Bundle 7 §13.2
+        if isinstance(exc, ApplicationIntelligenceProviderError):
+            raise PipelineError(f"application intelligence provider failed: {exc}") from exc
         raise PipelineError(f"application intelligence analysis failed: {exc}") from exc
 
     result_saved = save_artifact(
@@ -446,7 +449,7 @@ def _load_application_intelligence_policy() -> dict[str, Any]:
 
 
 def _persist_semantic_provider_audit(
-    conn: sqlite3.Connection, workspace_id: str, semantic_adapter: Any, *,
+    conn: dbapi.Connection, workspace_id: str, semantic_adapter: Any, *,
     request_artifact_id: str | None = None,
 ) -> None:
     audit = getattr(semantic_adapter, "last_audit", None)

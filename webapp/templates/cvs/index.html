@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}My CVs · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">CV library</p><h1>My CVs</h1>
+  <p>Keep a named CV for each kind of role. Every upload becomes a new version; applications always keep the exact version they used.</p></div></section>
+<section class="panel" data-cv-list>
+  <div class="panel-heading"><h2>Your CVs</h2><a href="/cvs/strategy">Which CV is used for which jobs</a></div>
+  {% for item in items %}<article class="evidence-row" data-cv-item="{{ item.id }}" data-cv-status="{{ item.status }}">
+    <div><strong><a href="/cvs/{{ item.id }}">{{ item.title }}</a></strong>
+      {% if item.status == "ARCHIVED" %}<span class="badge">archived</span>{% endif %}
+      <p>{% if item.latest_version_no %}Latest: v{{ item.latest_version_no }} ({{ "PDF" if item.latest_media_type == "application/pdf" else "Word" }}){% else %}No versions yet{% endif %}</p></div>
+  </article>{% else %}<p>You haven't added a CV yet.</p>{% endfor %}
+</section>
+<form class="panel" data-cv-create enctype="multipart/form-data">
+  <div class="panel-heading"><h2>Add a CV</h2></div>
+  <label class="field"><span>Name</span><input name="title" required maxlength="120" placeholder="Drilling Engineer CV"></label>
+  <label class="field"><span>File (Word .docx or PDF, up to {{ max_mb }} MB)</span><input type="file" name="file" accept=".docx,.pdf" required></label>
+  <label class="field"><span>Note (optional)</span><input name="note" maxlength="500"></label>
+  <button class="button" type="submit">Add CV</button>
+</form>
+{% endblock %}

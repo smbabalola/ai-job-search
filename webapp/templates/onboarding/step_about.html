@@ -1,0 +1,11 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<form method="post" action="/onboarding/about"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <label class="field"><span>Your name</span><input name="display_name" required maxlength="120" value="{{ request.state.user.display_name if request.state.user else '' }}"></label>
+  <label class="field"><span>Contact email for applications (optional; defaults to your login email)</span><input name="contact_email" type="email"></label>
+  <label class="field"><span>Phone (optional)</span><input name="phone"></label>
+  <label class="field"><span>City</span><input name="city"></label>
+  <label class="field"><span>Country (two-letter code)</span><input name="country" maxlength="2" placeholder="GB"></label>
+  <button class="button" type="submit">Continue</button>
+</form>
+{% endblock %}

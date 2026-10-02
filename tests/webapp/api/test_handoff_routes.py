@@ -7,6 +7,7 @@ from webapp.config import Settings
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _app(tmp_path):
@@ -16,8 +17,8 @@ def _app(tmp_path):
     app = create_app(settings)
     with TestClient(app):
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             payload={"schema_version": "application-pack.v1"},
@@ -27,15 +28,21 @@ def _app(tmp_path):
 
 
 def _paired_credential(client) -> str:
-    generated = client.post("/api/handoff/pairing/generate")
+    """Pair a device (Bundle 7 spec 9.2) and make its bearer token the client's
+    default, as the extension's service worker does. Returns the access token."""
+    generated = client.post("/api/ext/pairing-codes")
     assert generated.status_code == 201, generated.text
-    one_time_secret = generated.json()["one_time_secret"]
+    paired = client.post("/api/ext/pair", json={"code": generated.json()["code"], "device_label": "test"})
+    assert paired.status_code == 201, paired.text
+    access = paired.json()["access_token"]
+    client.headers["Authorization"] = f"Bearer {access}"
+    return access
 
-    exchanged = client.post(
-        "/api/handoff/pairing/exchange", json={"one_time_secret": one_time_secret}
-    )
-    assert exchanged.status_code == 201, exchanged.text
-    return exchanged.json()["durable_secret"]
+
+def _ticket(client, workspace_id) -> str:
+    issued = client.post("/api/ext/handoff-tickets", json={"workspace_id": workspace_id, "purpose": "HANDOFF"})
+    assert issued.status_code == 201, issued.text
+    return issued.json()["ticket"]
 
 
 def test_pairing_generate_and_exchange_round_trip(tmp_path):
@@ -51,8 +58,8 @@ def test_start_session_requires_valid_extension_credential(tmp_path):
     with TestClient(app) as client:
         response = client.post(
             "/api/handoff/sessions",
-            headers={"X-Handoff-Credential": "not-a-real-credential"},
-            json={
+            headers={"Authorization": "Bearer not-a-real-credential"},
+            json={"handoff_ticket": "v1.x.y.z",
                 "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
                 "target_url": "https://x.test/apply", "target_domain": "x.test",
                 "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
@@ -66,18 +73,10 @@ def test_full_session_lifecycle_over_http(tmp_path):
     with TestClient(app) as client:
         credential = _paired_credential(client)
 
-        started = client.post(
-            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
-            json={
-                "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
-                "target_url": "https://x.test/apply", "target_domain": "x.test",
-                "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
-            },
-        )
-        assert started.status_code == 201, started.text
-        session_id = started.json()["id"]
-        assert "session_token" in started.json()
-        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        assert "session_token" in started
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
 
         event_response = client.post(
             f"/api/handoff/sessions/{session_id}/events", headers=headers,
@@ -120,16 +119,9 @@ def test_sensitive_event_with_value_is_rejected_over_http(tmp_path):
     app, workspace_id, artifact_id = _app(tmp_path)
     with TestClient(app) as client:
         credential = _paired_credential(client)
-        started = client.post(
-            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
-            json={
-                "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
-                "target_url": "https://x.test/apply", "target_domain": "x.test",
-                "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
-            },
-        )
-        session_id = started.json()["id"]
-        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
+        started = _start_session(client, credential, workspace_id, artifact_id)
+        session_id = started["id"]
+        headers = {"X-Handoff-Session-Token": started["session_token"]}
 
         rejected = client.post(
             f"/api/handoff/sessions/{session_id}/events", headers=headers,
@@ -145,13 +137,14 @@ def test_sensitive_event_with_value_is_rejected_over_http(tmp_path):
 
 def _start_session(client, credential, workspace_id, artifact_id, **overrides):
     body = {
+        "handoff_ticket": _ticket(client, workspace_id),
         "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
         "target_url": "https://x.test/apply", "target_domain": "x.test",
         "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
     }
     body.update(overrides)
     response = client.post(
-        "/api/handoff/sessions", headers={"X-Handoff-Credential": credential}, json=body,
+        "/api/handoff/sessions", headers={"Authorization": f"Bearer {credential}"}, json=body,
     )
     assert response.status_code == 201, response.text
     return response.json()
@@ -175,7 +168,7 @@ def test_discover_sessions_returns_metadata_without_session_token(tmp_path):
 
         discovered = client.get(
             "/api/handoff/sessions/discover",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
             params={"workspace_id": workspace_id, "target_domain": "x.test"},
         )
         assert discovered.status_code == 200, discovered.text
@@ -193,13 +186,13 @@ def test_discover_does_not_refresh_last_activity_at(tmp_path):
 
         client.get(
             "/api/handoff/sessions/discover",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
             params={"workspace_id": workspace_id, "target_domain": "x.test"},
         )
 
         discovered = client.get(
             "/api/handoff/sessions/discover",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
             params={"workspace_id": workspace_id, "target_domain": "x.test"},
         )
         assert discovered.json()["sessions"][0]["last_activity_at"] == original_activity
@@ -215,7 +208,7 @@ def test_resume_session_rotates_token_and_invalidates_prior_one(tmp_path):
 
         resumed = client.post(
             f"/api/handoff/sessions/{session_id}/resume",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
         )
         assert resumed.status_code == 201, resumed.text
         new_token = resumed.json()["session_token"]
@@ -258,7 +251,7 @@ def test_resume_session_rejects_wrong_account(tmp_path):
         other_credential = _paired_credential(other_client)
         resumed = other_client.post(
             f"/api/handoff/sessions/{session_id}/resume",
-            headers={"X-Handoff-Credential": other_credential},
+            headers={"Authorization": f"Bearer {other_credential}"},
         )
         assert resumed.status_code == 404
 
@@ -281,7 +274,7 @@ def test_resume_session_rejects_expired_session(tmp_path):
 
         resumed = client.post(
             f"/api/handoff/sessions/{session_id}/resume",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
         )
         assert resumed.status_code == 401
 
@@ -308,7 +301,7 @@ def test_discover_sessions_excludes_expired_session_over_http(tmp_path):
 
         discovered = client.get(
             "/api/handoff/sessions/discover",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
             params={"workspace_id": workspace_id, "target_domain": "x.test"},
         )
         assert discovered.status_code == 200, discovered.text
@@ -331,7 +324,7 @@ def test_resume_session_rejects_terminal_status_session(tmp_path):
 
         resumed = client.post(
             f"/api/handoff/sessions/{session_id}/resume",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
         )
         assert resumed.status_code == 404
 
@@ -345,7 +338,7 @@ def test_send_event_rejects_durable_credential_header(tmp_path):
 
         response = client.post(
             f"/api/handoff/sessions/{session_id}/events",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
             json={
                 "event_id": "evt_1", "event_type": "value_inserted",
                 "event_payload": {"value": "x"},
@@ -454,17 +447,24 @@ def test_cross_account_denial_over_http(tmp_path):
     with TestClient(create_app(other_settings)) as other_client:
         other_credential = _paired_credential(other_client)
 
+        # B cannot even obtain a ticket for A's workspace ...
+        assert other_client.post("/api/ext/handoff-tickets",
+                                 json={"workspace_id": workspace_id}).status_code == 404
+
     with TestClient(app) as client:
+        # ... and A's own ticket presented by B's device is refused (spec X4).
         response = client.post(
             "/api/handoff/sessions",
-            headers={"X-Handoff-Credential": other_credential},
+            headers={"Authorization": f"Bearer {other_credential}"},
             json={
+                "handoff_ticket": _ticket(client, workspace_id),
                 "workspace_id": workspace_id, "pack_artifact_id": artifact_id,
                 "target_url": "https://x.test/apply", "target_domain": "x.test",
                 "ats_adapter_id": "generic", "ats_adapter_version": "generic@1",
             },
         )
-        assert response.status_code == 404
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "ACCOUNT_MISMATCH"
 
 
 _RENDERABLE_PACK_PAYLOAD = {
@@ -486,8 +486,8 @@ def _app_with_renderable_pack(tmp_path, payload=None):
     app = create_app(settings)
     with TestClient(app):
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             payload=payload if payload is not None else _RENDERABLE_PACK_PAYLOAD,
@@ -536,7 +536,7 @@ def test_get_session_document_rejects_durable_extension_credential(tmp_path):
 
         response = client.get(
             f"/api/handoff/sessions/{session_id}/documents/cv",
-            headers={"X-Handoff-Credential": credential},
+            headers={"Authorization": f"Bearer {credential}"},
         )
         assert response.status_code == 422
 

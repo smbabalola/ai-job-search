@@ -1,7 +1,8 @@
 // extension/src/background/index.ts
 import { ChromeEventStore } from "./chrome-event-store";
-import { CredentialStore } from "./credential-store";
+import { TokenClient } from "./token-client";
 import { ServerClient } from "./server-client";
+import { BACKEND_ORIGIN, setAuthHeaderProvider } from "../shared/backend";
 import { DurableEventQueue } from "./event-queue";
 import { PendingContextStore } from "./pending-context-store";
 import { extractValidPendingContext } from "./pending-context-validation";
@@ -20,6 +21,9 @@ import {
   detectCertifiedAdapter, fillPermissionsGranted, fillViewFor, registerFillListeners, routeFillDetection,
   startFillRun,
 } from "./fill-wiring";
+import { cancelSubmit, recoverSubmits, submitViewFor } from "./submit-wiring";
+import { recoverFillRuns, sessionStore } from "./fill-wiring";
+import { isExtensionPageSender } from "./sender";
 
 // 6D-B Task 2 test hook: compiled only into the FILL_TEST_HOOKS build
 // (scripts/build.mjs). In production __FILL_TEST_HOOKS__ is false and this
@@ -35,21 +39,32 @@ if (__FILL_TEST_HOOKS__) {
       return true;
     },
     fillView: (tabId: number) => fillViewFor(tabId),
+    // Bundle 7 release journey: exactly what the popup's "Fill this page"
+    // button sends (popup_start_fill), minus the toolbar gesture.
+    startSafeFill: (tabId: number) => {
+      void startSafeFillOnTab(tabId).catch(() => undefined);
+      return true;
+    },
   };
 }
 
-const BASE_URL = "http://127.0.0.1:8420";
+// The one JobSearch origin (a build-time constant, spec X1) the webapp bridge
+// content script is allowed to message from — matches manifest.json's
+// host_permissions and the content-bridge "matches" entry exactly. A message
+// claiming to be the webapp bridge from any other sender URL is rejected.
+const JOBSEARCH_WEBAPP_ORIGIN = BACKEND_ORIGIN;
 
-// The one loopback origin the webapp bridge content script is allowed
-// to message from — matches manifest.json's host_permissions and the
-// content-bridge content_scripts "matches" entry exactly. A message
-// claiming to be the webapp bridge from any other sender URL is
-// rejected outright, never trusted.
-const JOBSEARCH_WEBAPP_ORIGIN = "http://127.0.0.1:8420";
-
-const credentialStore = new CredentialStore();
+// Bundle 7 spec X2/X5: the device credential. Every backend client takes its
+// bearer headers from here.
+const tokenClient = new TokenClient(chrome.storage.local, chrome.storage.session);
+setAuthHeaderProvider(() => tokenClient.authHeaders());
+tokenClient.onRevoked(async () => {
+  // Restore TOTAL and abort any recorded run before the state is wiped; the
+  // reports to the server fail harmlessly once the device is revoked.
+  await Promise.allSettled([recoverFillRuns(), recoverSubmits(sessionStore)]);
+});
 const eventStore = new ChromeEventStore();
-const serverClient = new ServerClient(() => credentialStore.get());
+const serverClient = new ServerClient(tokenClient);
 const pendingContextStore = new PendingContextStore();
 const sequenceStore = new SessionSequenceStore();
 
@@ -164,7 +179,24 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true; // keep the message channel open for the async sendResponse above
   }
 
-  const typed = typeof message === "object" && message !== null ? message as { type?: unknown; tabId?: unknown } : null;
+  const typed = typeof message === "object" && message !== null
+    ? message as { type?: unknown; tabId?: unknown; code?: unknown; label?: unknown } : null;
+  // Popup-only credential actions: honoured only from this extension's own pages.
+  if (typed?.type === "pair" && typeof typed.code === "string" && isExtensionPageSender(sender)) {
+    tokenClient.pair(typed.code, typeof typed.label === "string" ? typed.label : "Browser extension")
+      .then((accountLabel) => sendResponse({ ok: true, accountLabel }))
+      .catch((err: unknown) => sendResponse({ ok: false, message: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+  if (typed?.type === "sign_out" && isExtensionPageSender(sender)) {
+    void tokenClient.signOut().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (typed?.type === "device_status" && isExtensionPageSender(sender)) {
+    void tokenClient.device().then((device) => sendResponse({ paired: device !== null,
+                                                             accountLabel: device?.accountLabel ?? null }));
+    return true;
+  }
   if (typed?.type === "popup_start_fill" && typeof typed.tabId === "number") {
     void startSafeFillOnTab(typed.tabId).catch((err) => console.warn("[JobSearch Handoff] safe FILL failed", err));
     return;
@@ -172,8 +204,12 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   if (typed?.type === "fill_state" && typeof typed.tabId === "number" && !sender.tab) {
     const tabId = typed.tabId;
     void fillPermissionsGranted().then((permissionsGranted) => sendResponse({ view: fillViewFor(tabId),
-      permissionsGranted }));
+      submitView: submitViewFor(tabId), permissionsGranted }));
     return true;
+  }
+  if (typed?.type === "submit_cancel" && typeof typed.tabId === "number" && !sender.tab) {
+    sendResponse({ cancelled: cancelSubmit(typed.tabId) });
+    return;
   }
   if (typed?.type === "fill_detection") {
     routeFillDetection(message as { runId?: unknown; kind?: unknown; detail?: unknown }, sender);

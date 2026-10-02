@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Job Search Workspace{% endblock %}</title>
+  <meta name="csrf-token" content="{{ request.state.csrf_token or '' }}">
+  <script src="/static/csrf.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/onboarding.css">
 </head>
@@ -14,14 +16,26 @@
       <span class="brand-mark">JS</span><span>Job Search Workspace</span>
     </a>
     <nav aria-label="Primary navigation">
+      {% set auth_enabled = request.app.state.settings.auth_enabled %}
+      {% if auth_enabled and not request.state.user %}
+      <a href="/login">Sign in</a><a class="button button-small" href="/signup">Create account</a>
+      {% else %}
       <a href="/" data-onboarding-target="dashboard-link">Dashboard</a>
       {% if active_search %}<label class="workspace-switcher"><span>Search workspace</span><select aria-label="Search workspace" data-search-workspace-switcher>
         {% for workspace in search_workspaces if workspace.status == 'active' %}<option value="/search-workspaces/{{ workspace.id }}/discover" {% if workspace.id == active_search.id %}selected{% endif %}>{{ workspace.name }}</option>{% endfor %}
       </select></label><a href="/search-workspaces/{{ active_search.id }}/discover">Discover jobs</a><a href="/search-workspaces/{{ active_search.id }}/preferences">Search preferences</a>{% endif %}
-      <a href="/autonomy">Autonomy</a><a href="/applications/prepared" data-prepared-link>Prepared</a><a href="/autonomy/inbox" data-autonomy-inbox-link>Inbox <span class="badge" data-autonomy-badge hidden></span></a><a href="/how-it-works">How it works</a><a href="/search-workspaces">Manage searches</a><a href="/profile">Evidence Profile</a><a href="/pairing">Pair extension</a><a href="/walkthroughs">Help</a>
+      <a href="/autonomy">Autonomy</a><a href="/applications/prepared" data-prepared-link>Prepared</a><a href="/inbox" data-inbox-link>Inbox <span class="badge" data-inbox-badge hidden></span></a><a href="/autonomy/inbox" data-autonomy-inbox-link>Automation <span class="badge" data-autonomy-badge hidden></span></a><a href="/how-it-works">How it works</a><a href="/search-workspaces">Manage searches</a><a href="/cvs">My CVs</a><a href="/preferences">Preferences and rules</a><a href="/profile">Evidence Profile</a><a href="/pairing">Pair extension</a><a href="/walkthroughs">Help</a>
       <a class="button button-small" href="/new-job" data-onboarding-target="add-job-button">Add job</a>
+      {% if auth_enabled and request.state.user %}
+      <form class="inline-form" method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small secondary" type="submit">Sign out {{ request.state.user.display_name }}</button></form>
+      {% endif %}
+      {% endif %}
     </nav>
   </header>
+  {% set account_bar = account_header(request) %}
+  {% if account_bar %}<div class="account-status" data-account-status><a href="/settings/billing" class="badge" data-plan-badge>{{ account_bar.plan_name }}</a>
+    <a href="/settings/usage" data-prepare-meter data-used="{{ account_bar.prepare_used }}" data-limit="{{ account_bar.prepare_limit }}">{{ account_bar.prepare_used }} of {{ account_bar.prepare_limit }} prepares used</a></div>
+  {% if account_bar.past_due %}<div class="blocked-note" role="alert" data-past-due-banner>Your last payment didn't go through. <a href="/settings/billing">Update your payment details</a> to keep your plan.</div>{% endif %}{% endif %}
   <main class="page-shell">{% block content %}{% endblock %}</main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/static/app.js" defer></script>

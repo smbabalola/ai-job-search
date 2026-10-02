@@ -1,6 +1,10 @@
 import sqlite3
 
 from webapp.persistence.db import connect, init_db
+import pytest
+
+pytestmark = pytest.mark.sqlite_only  # asserts SQLite file/connection specifics
+
 
 
 def test_init_db_creates_all_tables(tmp_path):

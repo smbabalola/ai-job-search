@@ -1,0 +1,194 @@
+{
+  "observation": {
+    "schema_version": "fill-observation.v1",
+    "context": {
+      "canonical_url": "https://jobs.example.test/acme/123",
+      "origin": "https://jobs.example.test",
+      "adapter_id": "greenhouse",
+      "adapter_version": "greenhouse@2",
+      "tenant_key": "acme",
+      "ats_job_id": "123",
+      "frames": [
+        {
+          "frame_path": "0",
+          "origin": "https://jobs.example.test"
+        }
+      ],
+      "application_root_found": true,
+      "multi_step_indicators": []
+    },
+    "elements": [
+      {
+        "page_field_key": "gh:email",
+        "control_kind": "email",
+        "identity": {
+          "tag": "input",
+          "type": "email",
+          "name": "email",
+          "id": "email",
+          "form_owner": "application_form",
+          "label": "Email",
+          "question": "Email",
+          "aria": {},
+          "required": true,
+          "disabled": false,
+          "readonly": false,
+          "visible": true,
+          "options": [],
+          "accept": null,
+          "multiple": false,
+          "maxlength": null,
+          "pattern": null,
+          "min": null,
+          "max": null,
+          "frame_path": "0"
+        },
+        "field_fingerprint": "sha256:1e1d5d915d8715b97c4c6cc2779974220320fb72a771e025fc016638feb6c94a",
+        "classification": "APPLICATION",
+        "proof": null,
+        "value_state": {
+          "state": "NONBLANK",
+          "current_value_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+        }
+      },
+      {
+        "page_field_key": "gh:notice",
+        "control_kind": "text",
+        "identity": {
+          "tag": "input",
+          "type": "text",
+          "name": "notice",
+          "id": "notice",
+          "form_owner": "application_form",
+          "label": "What is your notice period?",
+          "question": "What is your notice period?",
+          "aria": {},
+          "required": true,
+          "disabled": false,
+          "readonly": false,
+          "visible": true,
+          "options": [],
+          "accept": null,
+          "multiple": false,
+          "maxlength": null,
+          "pattern": null,
+          "min": null,
+          "max": null,
+          "frame_path": "0"
+        },
+        "field_fingerprint": "sha256:211f6282a27efcb9314cdb004222264b76e337a0271f147a38c8b4fb9f50a8ac",
+        "classification": "APPLICATION",
+        "proof": null,
+        "value_state": {
+          "state": "BLANK"
+        }
+      },
+      {
+        "page_field_key": "gh:resume",
+        "control_kind": "file",
+        "identity": {
+          "tag": "input",
+          "type": "file",
+          "name": "resume",
+          "id": "resume",
+          "form_owner": "application_form",
+          "label": "Resume/CV",
+          "question": "Resume/CV",
+          "aria": {},
+          "required": false,
+          "disabled": false,
+          "readonly": false,
+          "visible": true,
+          "options": [],
+          "accept": ".pdf,.doc,.docx",
+          "multiple": false,
+          "maxlength": null,
+          "pattern": null,
+          "min": null,
+          "max": null,
+          "frame_path": "0"
+        },
+        "field_fingerprint": "sha256:074ff3c6e8e8302cea8ea7afaa94ec4eefecda9c0d770d3ac11ffee1e2adbc12",
+        "classification": "APPLICATION",
+        "proof": null,
+        "value_state": {
+          "state": "BLANK"
+        }
+      },
+      {
+        "page_field_key": "gh:cover",
+        "control_kind": "file",
+        "identity": {
+          "tag": "input",
+          "type": "file",
+          "name": "cover_letter",
+          "id": "cover_letter",
+          "form_owner": "application_form",
+          "label": "Cover Letter",
+          "question": "Cover Letter",
+          "aria": {},
+          "required": false,
+          "disabled": false,
+          "readonly": false,
+          "visible": true,
+          "options": [],
+          "accept": ".pdf,.doc,.docx",
+          "multiple": false,
+          "maxlength": null,
+          "pattern": null,
+          "min": null,
+          "max": null,
+          "frame_path": "0"
+        },
+        "field_fingerprint": "sha256:ac1c1acc4afd10ae41737273d88b32782cac03368b80199e929b630c172a9dc9",
+        "classification": "APPLICATION",
+        "proof": null,
+        "value_state": {
+          "state": "BLANK"
+        }
+      },
+      {
+        "page_field_key": "gh:csrf",
+        "control_kind": "hidden",
+        "identity": {
+          "tag": "input",
+          "type": "hidden",
+          "name": "authenticity_token",
+          "id": "q",
+          "form_owner": "application_form",
+          "label": "Question",
+          "question": "Question",
+          "aria": {},
+          "required": false,
+          "disabled": false,
+          "readonly": false,
+          "visible": false,
+          "options": [],
+          "accept": null,
+          "multiple": false,
+          "maxlength": null,
+          "pattern": null,
+          "min": null,
+          "max": null,
+          "frame_path": "0"
+        },
+        "field_fingerprint": "sha256:66eda11cdb270061188e3893a54e421fceed065807d23c20d4edbdf24238c551",
+        "classification": "NON_APPLICATION",
+        "proof": {
+          "kind": "ADAPTER_NON_APPLICATION_RULE",
+          "rule": "greenhouse.site_state_hidden@1"
+        },
+        "value_state": {
+          "state": "BLANK"
+        }
+      }
+    ],
+    "submit_controls": [
+      {
+        "control_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "structure_fingerprint": "sha256:f4604228d0cd327e05ad8ca95a092d71158f822fc6717716bf22b4b9fd2ca292",
+  "observation_fingerprint": "sha256:d5959a01bef3a52abd24178dcb8aab8c632008c18a4d08944d13dfa363f8e99a"
+}

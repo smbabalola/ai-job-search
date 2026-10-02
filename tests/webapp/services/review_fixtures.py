@@ -136,8 +136,9 @@ def docx_bytes(text):
 
 def table_counts(conn):
     """Row counts of every table (a DB-diff for write-contract tests)."""
-    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
-                                        "AND name NOT LIKE 'sqlite_%'")]
+    from webapp.persistence.schema_catalog import schema_catalog
+
+    names = sorted(schema_catalog(conn))  # dialect-neutral table list
     return {n: conn.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names}
 
 

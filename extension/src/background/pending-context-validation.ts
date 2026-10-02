@@ -66,25 +66,31 @@ export function extractValidPendingContext(
   if (typeof message !== "object" || message === null) return null;
 
   const allowedKeys = new Set([
-    "type", "workspaceId", "packArtifactId", "targetUrl", "requestedAt",
+    "type", "workspaceId", "packArtifactId", "targetUrl", "requestedAt", "handoffTicket",
   ]);
   const keys = Object.keys(message as Record<string, unknown>);
   if (keys.some((key) => !allowedKeys.has(key))) return null;
 
   const candidate = message as {
     type?: unknown; workspaceId?: unknown; packArtifactId?: unknown;
-    targetUrl?: unknown; requestedAt?: unknown;
+    targetUrl?: unknown; requestedAt?: unknown; handoffTicket?: unknown;
   };
   if (candidate.type !== "set_pending_handoff_context") return null;
   if (typeof candidate.workspaceId !== "string" || candidate.workspaceId.length === 0) return null;
   if (typeof candidate.packArtifactId !== "string" || candidate.packArtifactId.length === 0) return null;
   if (typeof candidate.targetUrl !== "string" || !isValidHttpTargetUrl(candidate.targetUrl)) return null;
   if (!isValidRequestedAt(candidate.requestedAt)) return null;
+  // Bundle 7 spec X4: the server-signed ticket binding this launch to the
+  // signed-in user; checked by the server when the session starts.
+  if (typeof candidate.handoffTicket !== "string" || !/^v1\.[A-Za-z0-9._-]{8,300}$/.test(candidate.handoffTicket)) {
+    return null;
+  }
 
   return {
     workspaceId: candidate.workspaceId,
     packArtifactId: candidate.packArtifactId,
     targetUrl: candidate.targetUrl,
     requestedAt: candidate.requestedAt,
+    handoffTicket: candidate.handoffTicket,
   };
 }

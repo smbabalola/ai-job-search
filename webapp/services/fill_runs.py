@@ -12,7 +12,6 @@ EXECUTOR_LOST (FILLED_CONTEXT_UNVERIFIED after FILLED) and never authorizes
 resumption; the reaper only reduces."""
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping
@@ -36,6 +35,7 @@ from webapp.services.autonomy_context import ApplyTargetObservation
 from webapp.services.autonomy_controls import run_immediate
 from webapp.services.fill_plans import _open_deltas, approval_context, propose_plan_in_transaction
 from webapp.services.fill_results import run_plan_hash, write_result
+from webapp.persistence import dbapi
 
 
 class FillRefused(Exception):
@@ -93,6 +93,7 @@ def finish_in_transaction(conn, *, run_id: str, event: str, reason: str | None =
         raise ValueError(f"not a stop reason: {reason}")
     f.append_run_event(conn, fill_run_id=run_id, event=event, reason=reason, detail=dict(detail or {}), now=now)
     result = write_result(conn, run_id, now=now)
+    _notify_finished(conn, run_id, event=event, reason=reason, now=now)
     f.release_active_run(conn, run_id)
     if event != "FILLED_AWAITING_SUBMISSION":
         f.delete_lease(conn, run_id)
@@ -100,6 +101,18 @@ def finish_in_transaction(conn, *, run_id: str, event: str, reason: str | None =
         if binding is not None:
             revoke_grant(conn, grant_id=binding["grant_id"], reason=f"fill_run_stopped:{reason or event}", now=now)
     return result
+
+
+def _notify_finished(conn, run_id: str, *, event: str, reason: str | None, now: datetime) -> None:
+    """Bundle 7 §17.2: FILLED → fill.completed_awaiting_submit; any other end → fill.failed."""
+    from webapp.services.notifications import notify
+    run = conn.execute("SELECT account_id, application_workspace_id FROM fill_runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        return
+    kind = "fill.completed_awaiting_submit" if event == "FILLED_AWAITING_SUBMISSION" else "fill.failed"
+    notify(conn, account_id=run["account_id"], kind=kind, subject_type="workspace",
+           subject_id=run["application_workspace_id"], dedupe_key=f"fill:{run_id}:{event}",
+           detail={"fill_run_id": run_id, "state": event, "reason": reason}, now=now)
 
 
 def stop_run_in_transaction(conn, *, run_id: str, reason: str, detail: Mapping[str, Any] | None = None,
@@ -181,6 +194,10 @@ def start_run(conn, *, settings: Settings, account_id: str, handoff_session_id: 
         workspace = get_workspace(conn, ws, account_id=account_id)
         if workspace is None or workspace.get("kind") != "job":
             raise LookupError(ws)
+        from webapp.services.manual_rules import fill_start_refusal  # Bundle 7 16.3
+        refusal = fill_start_refusal(conn, account_id=account_id, workspace_id=ws, now=now)
+        if refusal:
+            raise FillRefused(refusal)
         _reap_in_transaction(conn, now=now)  # an expired run never blocks a fresh one
         run = f.insert_run(conn, account_id=account_id, application_workspace_id=ws,
                            handoff_session_id=handoff_session_id, executor_instance_id=executor_instance_id,
@@ -189,7 +206,7 @@ def start_run(conn, *, settings: Settings, account_id: str, handoff_session_id: 
         try:
             f.claim_active_run(conn, application_workspace_id=ws, fill_run_id=run["id"],
                                context_key=context_key(executor_instance_id, browser_session_id, execution_tab_id))
-        except sqlite3.IntegrityError:
+        except dbapi.IntegrityError:
             raise FillRefused("run_active" if f.active_run_for(conn, ws) else "context_in_use") from None
         f.touch_lease(conn, fill_run_id=run["id"], expires_at=now + RUN_LEASE_TTL, now=now)
         f.append_run_event(conn, fill_run_id=run["id"], event="OBSERVING", now=now)

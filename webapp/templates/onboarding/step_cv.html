@@ -1,0 +1,10 @@
+{% extends "onboarding/_layout.html" %}
+{% block step %}
+<p>Upload the CV you usually send. It becomes "My CV" in <a href="/cvs">My CVs</a>; you can add more later.</p>
+<form method="post" action="/onboarding/cv" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+  <label class="field"><span>Name</span><input name="title" value="My CV" maxlength="120"></label>
+  <label class="field"><span>File (Word .docx or PDF, up to 10 MB)</span><input type="file" name="file" accept=".docx,.pdf" required></label>
+  <button class="button" type="submit">Upload and continue</button>
+</form>
+{% if items %}<p>Already added: {% for i in items %}{{ i.title }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+{% endblock %}

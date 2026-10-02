@@ -15,6 +15,7 @@ from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import ensure_profile_workspace
 from webapp.services.pipeline import create_job_from_source_record
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 POSTING_TEXT = "Python is required.\nBuild reliable data pipelines.\n"
@@ -81,7 +82,7 @@ def live_server(tmp_path):
 @pytest.fixture
 def live_server_with_job(live_server):
     conn = connect(live_server.db_path)
-    ensure_profile_workspace(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     result = create_job_from_source_record(
         conn, company="Acme Robotics", title="Data Engineer",
         source_record={
@@ -89,7 +90,7 @@ def live_server_with_job(live_server):
             "captured_at": "2026-08-28T00:00:00+00:00", "company": "Acme Robotics",
             "title": "Data Engineer", "raw_text": POSTING_TEXT,
         },
-    )
+     account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
     live_server.workspace_id = result["workspace"]["id"]
     return live_server

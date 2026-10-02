@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -11,14 +10,13 @@ from product.user_profile import normalize_user_profile
 from webapp.persistence.user_profile import get_current_user_profile
 from product.discovery_search import available_discovery_source_ids
 from webapp.persistence.discovery import get_latest_discovery_run
-from webapp.persistence.discovery_sources import list_discovery_source_settings
+from webapp.persistence.discovery_sources import list_discovery_source_settings, list_enabled_discovery_source_ids
 from webapp.persistence.search_workspaces import (
     DEFAULT_SEARCH_WORKSPACE_ID,
     get_search_workspace,
     list_search_workspaces,
 )
 from webapp.services.discovery import discovery_run_is_stale, grouped_discovery_candidates
-from webapp.services.handoff import generate_pairing_secret
 from webapp.services.http_api import JobWorkspaceNotFound
 from webapp.services.workspace_view import (
     build_dashboard_view_model,
@@ -29,12 +27,14 @@ from webapp.services.profile_manager import get_profile_manager
 from webapp.services.ownership import AccountScope
 from product.onboarding_walkthroughs import WALKTHROUGH_LAUNCH_CONTEXTS
 from webapp.services.onboarding import list_walkthrough_statuses
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(tags=["views"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["views"])
 
 
 def _search_context(
-    conn: sqlite3.Connection, account_id: str,
+    conn: dbapi.Connection, account_id: str,
     selected_search_workspace: dict | None = None,
 ) -> dict:
     return {
@@ -46,7 +46,7 @@ def _search_context(
 
 
 def _require_search_workspace(
-    conn: sqlite3.Connection, search_workspace_id: str, account_id: str
+    conn: dbapi.Connection, search_workspace_id: str, account_id: str
 ) -> dict:
     workspace = get_search_workspace(
         conn, search_workspace_id, account_id=account_id
@@ -57,7 +57,7 @@ def _require_search_workspace(
 
 
 def _selected_search_workspace_id(
-    request: Request, conn: sqlite3.Connection, account_id: str
+    request: Request, conn: dbapi.Connection, account_id: str
 ) -> str:
     selected = request.cookies.get("search_workspace_id", DEFAULT_SEARCH_WORKSPACE_ID)
     workspace = get_search_workspace(conn, selected, account_id=account_id)
@@ -70,9 +70,11 @@ def _selected_search_workspace_id(
 @router.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request, filter: str = "active",
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
+    if request.app.state.settings.auth_enabled and not getattr(request.state, "user", None):
+        return request.app.state.templates.TemplateResponse(request, "landing.html", {})
     if filter not in {"all", "active", "drafted", "applied", "interview", "offer", "final"}:
         filter = "active"
     pending_replay = request.query_params.get("onboarding_replay")
@@ -91,26 +93,40 @@ def dashboard(
                 in ("job_workflow_intro", "document_workflow_intro")
             ),
             **_search_context(conn, scope.account_id),
+            "onboarding_checklist": _onboarding_checklist(request, conn, scope),
         },
     )
+
+
+def _onboarding_checklist(request: Request, conn, scope: AccountScope):
+    """Bundle 7 15.4: the onboarding.v1 checklist until every required step is DONE or SKIPPED."""
+    if not request.app.state.settings.auth_enabled:
+        return None
+    from webapp.api.onboarding_v1 import STEP_TITLES
+    from webapp.services.onboarding_v1 import OPTIONAL_STEPS, onboarding_state
+    state = onboarding_state(conn, scope)
+    if state["complete"]:
+        return None
+    return [{"step": step, "title": STEP_TITLES[step], "state": value, "optional": step in OPTIONAL_STEPS}
+            for step, value in state["steps"].items()]
 
 
 @router.get("/profile", response_class=HTMLResponse)
 def profile_page(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return_to = request.query_params.get("return_to", "")
     if not return_to.startswith("/workspaces/"):
         return_to = ""
     view = build_profile_view_model(
-        conn, profile_root=scope.profile_root, account_id=scope.account_id
+        conn, profile_root=scope.profile_sources(conn), account_id=scope.account_id
     )
     manager = None
     if not view["setup_required"]:
         manager = get_profile_manager(
-            conn, root=scope.profile_root, account_id=scope.account_id
+            conn, root=scope.profile_sources(conn), account_id=scope.account_id
         )
     return request.app.state.templates.TemplateResponse(
         request, "profile.html", {
@@ -124,7 +140,7 @@ def profile_page(
 
 @router.get("/user-profile", response_class=HTMLResponse)
 def user_profile_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return RedirectResponse(
@@ -135,7 +151,7 @@ def user_profile_page(
 
 @router.get("/discover", response_class=HTMLResponse)
 def discovery_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return RedirectResponse(
@@ -148,7 +164,7 @@ def discovery_page(
 def scoped_user_profile_page(
     search_workspace_id: str,
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     workspace = _require_search_workspace(
@@ -174,7 +190,7 @@ def scoped_user_profile_page(
 def scoped_discovery_page(
     search_workspace_id: str,
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     workspace = _require_search_workspace(
@@ -187,7 +203,7 @@ def scoped_discovery_page(
     latest_run = get_latest_discovery_run(conn, search_workspace_id)
     registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
     available_sources = available_discovery_source_ids(
-        [source_id for source_id, row in registry.items() if row["enabled"]]
+        list_enabled_discovery_source_ids(conn, hosted=request.app.state.settings.is_hosted)  # DP-9
     )
     response = request.app.state.templates.TemplateResponse(
         request,
@@ -219,7 +235,7 @@ def scoped_discovery_page(
 
 @router.get("/new-job", response_class=HTMLResponse)
 def new_job_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return request.app.state.templates.TemplateResponse(
@@ -229,7 +245,7 @@ def new_job_page(
 
 @router.get("/how-it-works", response_class=HTMLResponse)
 def how_it_works_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     return request.app.state.templates.TemplateResponse(
@@ -239,10 +255,16 @@ def how_it_works_page(
 
 @router.get("/pairing", response_class=HTMLResponse)
 def pairing_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
-    one_time_secret = generate_pairing_secret(conn, account_id=scope.account_id)
+    from datetime import datetime, timezone
+
+    from webapp.services.extension_auth import create_pairing_code
+
+    _, one_time_secret = create_pairing_code(conn, account_id=scope.account_id, user_id=scope.user_id,
+                                             now=datetime.now(timezone.utc))
+    conn.commit()
     return request.app.state.templates.TemplateResponse(
         request, "pairing.html",
         {"one_time_secret": one_time_secret, **_search_context(conn, scope.account_id)},
@@ -251,7 +273,7 @@ def pairing_page(
 
 @router.get("/search-workspaces", response_class=HTMLResponse)
 def search_workspaces_page(
-    request: Request, conn: sqlite3.Connection = Depends(get_conn),
+    request: Request, conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     selected_id = _selected_search_workspace_id(
@@ -273,7 +295,7 @@ def search_workspaces_page(
 )
 def cv_v2_review_page(
     workspace_id: str, plan_id: str, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -302,7 +324,7 @@ def cv_v2_review_page(
 @router.get("/workspaces/{workspace_id}", response_class=HTMLResponse)
 def workspace_detail_page(
     workspace_id: str, request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     try:
@@ -325,15 +347,34 @@ def workspace_detail_page(
             **view,
             "cv_quality_v2_enabled": request.app.state.settings.cv_quality_v2_enabled,
             "onboarding_replay_expected": onboarding_replay_expected,
+            **_cv_library_context(conn, scope.account_id, workspace_id),
+            "prepare_cost": _prepare_cost(request, conn, scope, workspace_id),
             **_search_context(conn, scope.account_id),
         }
     )
 
 
+def _prepare_cost(request: Request, conn, scope: AccountScope, workspace_id: str):
+    from webapp.api.settings import prepare_cost
+    try:
+        return prepare_cost(request, conn, scope, workspace_id)
+    except Exception:  # noqa: BLE001 - the disclosure never breaks the page
+        return None
+
+
+def _cv_library_context(conn, account_id: str, workspace_id: str) -> dict:
+    """Bundle 7 §14.4/§14.6: which library CV this application uses, and the CVs it could use."""
+    from webapp.services import cv_library, cv_strategy
+    items = [i for i in cv_library.list_items(conn, account_id=account_id)
+             if i["status"] == "ACTIVE" and i["latest_version_id"]]
+    return {"cv_used": cv_strategy.cv_used_label(conn, account_id=account_id, workspace_id=workspace_id),
+            "library_cvs": items}
+
+
 @router.get("/walkthroughs", response_class=HTMLResponse)
 def walkthroughs_page(
     request: Request,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     statuses = list_walkthrough_statuses(conn, account_id=scope.account_id)

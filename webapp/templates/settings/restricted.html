@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Your account · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact" data-restricted-page="{{ account_status }}"><div><p class="eyebrow">Your account</p>
+  {% if account_status == "SUSPENDED" %}<h1>Your account is suspended</h1><p>You can still export your data or delete your account. Contact support if you think this is a mistake.</p>
+  {% elif account_status == "DELETION_REQUESTED" %}<h1>Your account is being deleted</h1><p>{% if purge_after %}Your data will be erased on or after {{ purge_after[:10] }}.{% endif %} You can still export your data, or keep your account.</p>
+  {% else %}<h1>Your account</h1>{% endif %}</div></section>
+{% if account_status == "DELETION_REQUESTED" %}<form class="panel" method="post" action="/settings/account/delete/cancel" data-keep-account><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><p>Keeping your account restores access. Automation stays switched off until you turn it back on.</p><button class="button" type="submit">Keep my account</button></form>{% endif %}
+<section class="panel"><p><a href="/settings/account/export" data-restricted-export>Export your data</a>{% if account_status != "DELETION_REQUESTED" %} · <a href="/settings/account/delete">Delete your account</a>{% endif %}</p>
+<form class="inline-form" method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}"><button class="button button-small secondary" type="submit">Sign out</button></form></section>
+{% endblock %}

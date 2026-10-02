@@ -17,6 +17,8 @@ from webapp.config import Settings
 from webapp.persistence.artifacts import save_artifact
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace, ensure_profile_workspace
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from tests.webapp.api.test_handoff_routes import _paired_credential, _ticket
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "handoff"
 
@@ -67,6 +69,15 @@ def live_server(tmp_path, monkeypatch):
     assert not thread.is_alive(), "Uvicorn handoff fixture did not stop cleanly"
 
 
+@pytest.fixture(scope="session")
+def browser_context_args(browser_context_args):
+    # The adapter bundle is injected as a page <script>, standing in for an
+    # extension content script. Real content scripts run in an isolated world
+    # that the page's CSP does not govern; the app's CSP (Bundle 7 Task 6)
+    # would otherwise refuse the inline stand-in.
+    return {**browser_context_args, "bypass_csp": True}
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _build_adapter_bundle():
     npm = shutil.which("npm")
@@ -93,24 +104,20 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
     app = create_app(settings)
     with TestClient(app) as client:
         conn = connect(settings.db_path)
-        ensure_profile_workspace(conn)
-        workspace = create_workspace(conn, company="Acme", title="Engineer")
+        ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+        workspace = create_workspace(conn, company="Acme", title="Engineer", account_id=DEFAULT_ACCOUNT_ID)
         artifact = save_artifact(
             conn, workspace_id=workspace["id"], artifact_type="application_pack",
             payload={"schema_version": "application-pack.v1"},
         )
         conn.close()
 
-        generated = client.post("/api/handoff/pairing/generate")
-        one_time_secret = generated.json()["one_time_secret"]
-        exchanged = client.post(
-            "/api/handoff/pairing/exchange", json={"one_time_secret": one_time_secret},
-        )
-        credential = exchanged.json()["durable_secret"]
+        bearer = _paired_credential(client)
 
         started = client.post(
-            "/api/handoff/sessions", headers={"X-Handoff-Credential": credential},
+            "/api/handoff/sessions",
             json={
+                "handoff_ticket": _ticket(client, workspace["id"]),
                 "workspace_id": workspace["id"], "pack_artifact_id": artifact["id"],
                 "target_url": "http://testserver/test-fixtures/handoff/generic_fixture.html",
                 "target_domain": "testserver", "ats_adapter_id": "generic",
@@ -119,7 +126,8 @@ def test_handoff_session_lifecycle_against_fixture_workspace(tmp_path):
         )
         assert started.status_code == 201
         session_id = started.json()["id"]
-        headers = {"X-Handoff-Session-Token": started.json()["session_token"]}
+        headers = {"X-Handoff-Session-Token": started.json()["session_token"],
+                   "Authorization": f"Bearer {bearer}"}
 
         # Simulates what the extension's content script + background
         # worker would report after scanning the real fixture page: only

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -22,8 +21,10 @@ from webapp.services.onboarding import (
     skip_walkthrough,
 )
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/onboarding", tags=["onboarding"])
 
 
 class StrictBody(BaseModel):
@@ -45,7 +46,7 @@ def _translate(exc: Exception) -> HTTPException:
 @router.get("/walkthroughs")
 def list_walkthroughs(
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> list[dict]:
     return list_walkthrough_statuses(conn, account_id=scope.account_id)
 
@@ -54,7 +55,7 @@ def list_walkthroughs(
 def get_walkthrough(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return get_walkthrough_status(
@@ -100,7 +101,7 @@ def get_walkthrough_definition(
 def begin(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return begin_walkthrough(
@@ -114,7 +115,7 @@ def begin(
 def advance(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return advance_walkthrough(
@@ -128,7 +129,7 @@ def advance(
 def back(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return go_back_walkthrough(
@@ -142,7 +143,7 @@ def back(
 def interrupt(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return interrupt_walkthrough(
@@ -156,7 +157,7 @@ def interrupt(
 def resume(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return resume_walkthrough(
@@ -170,7 +171,7 @@ def resume(
 def complete(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return complete_walkthrough(
@@ -185,7 +186,7 @@ def skip(
     walkthrough_id: str,
     body: SkipBody,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return skip_walkthrough(
@@ -200,7 +201,7 @@ def skip(
 def replay(
     walkthrough_id: str,
     scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> dict:
     try:
         return replay_walkthrough(

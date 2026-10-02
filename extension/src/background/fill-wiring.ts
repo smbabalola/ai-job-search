@@ -12,6 +12,7 @@ import {
 import { HttpFillServer, type LocalDocument } from "../fill/server";
 import { isOpenerCreated } from "../fill/detections";
 import type { Envelope, PlanAction } from "../fill/executor";
+import { forgetSubmitTab, recoverSubmits, routeSubmitBeat } from "./submit-wiring";
 
 const PAGE_BUNDLE = "fill-page/index.js";
 const FILL_RULE_ID_SET = new Set([9101, 9102, 9111, 9121]);
@@ -189,14 +190,24 @@ export async function startFillRun(tabId: number, session: FillSession, adapterI
   const tab = await chrome.tabs.get(tabId);
   const url = new URL(tab.url!);
   const ids = await identity();
+  let controller: FillRunController | null = null;
   const ports: FillPorts = {
+    // 6E-A: a FILLED run's heartbeat carries the submit directives.
+    onBeat: (beat) => {
+      const runId = controller?.view.runId;
+      if (runId && controller?.view.phase === "FILLED") {
+        routeSubmitBeat({ tabId, runId, sessionId: session.sessionId, sessionToken: session.sessionToken,
+                          executorInstanceId: ids.executorInstanceId, browserSessionId: ids.browserSessionId,
+                          adapterId, employerHost: url.hostname, origin: url.origin, store: sessionStore }, beat);
+      }
+    },
     server: new HttpFillServer(session.sessionId, session.sessionToken),
     page: pagePort(tabId, adapterId, url.href, url.origin),
     quarantine: quarantinePort(tabId, url.hostname),
     browser: browserPort(tabId, url.origin),
     store: sessionStore,
   };
-  const controller = new FillRunController(ports, { tabId, sessionId: session.sessionId,
+  controller = new FillRunController(ports, { tabId, sessionId: session.sessionId,
     sessionToken: session.sessionToken, ...ids }, (view) => views.set(tabId, view));
   controllers.set(tabId, controller);
   views.set(tabId, controller.view);
@@ -211,12 +222,20 @@ export async function fillPermissionsGranted(): Promise<boolean> {
   return chrome.permissions.contains({ permissions: [...SAFE_FILL_OPTIONAL_PERMISSIONS] });
 }
 
+// Restores TOTAL and ends every recorded run: used after a worker restart and
+// when the device is revoked (Bundle 7 spec §9.2).
+export function recoverFillRuns(): Promise<void> {
+  return recoverAfterRestart(sessionStore, (sessionId, token) => new HttpFillServer(sessionId, token))
+    .then(() => undefined);
+}
+
 export function registerFillListeners(): void {
   chrome.tabs.onRemoved.addListener((tabId) => {
     const controller = controllers.get(tabId);
     if (!controller) return;
     controllers.delete(tabId);
     views.delete(tabId);
+    forgetSubmitTab(tabId);
     void controller.onTabClosed();
   });
   chrome.tabs.onCreated.addListener((tab) => {
@@ -227,7 +246,9 @@ export function registerFillListeners(): void {
     }
   });
   // A run is never resumed after the worker restarts (spec §11.3, §11.4).
-  void recoverAfterRestart(sessionStore, (sessionId, token) => new HttpFillServer(sessionId, token));
+  void recoverFillRuns();
+  // 6E-A: a restarted worker never clicks again (spec J3).
+  void recoverSubmits(sessionStore);
 }
 
 // A detection from the page bundle of the execution tab, for its own run.

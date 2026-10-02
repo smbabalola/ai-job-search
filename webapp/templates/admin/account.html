@@ -1,0 +1,34 @@
+{% extends "admin/_base.html" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+{% if not account %}<section class="panel"><h1>No such account</h1><p><a href="/admin/accounts">Back to accounts</a></p></section>{% else %}
+{% set csrf = request.state.csrf_token or '' %}
+<section class="hero compact"><div><p class="eyebrow">Account {{ account.id }}</p><h1>{{ account.email }}</h1>
+  <p>{{ account.status }} · {{ account.plan }} · created {{ account.created_at[:10] }} · email {{ "verified" if account.email_verified else "not verified" }} · last sign-in {{ (account.last_login_at or "never")[:16] }}</p></div></section>
+<section class="panel" data-admin-account>
+  <div class="panel-heading"><h2>At a glance</h2></div>
+  <p>Devices {{ account.devices }} · sessions {{ account.sessions }} · notifications {{ account.notifications }} · automation kill switch {{ "engaged" if account.kill_switch_engaged else "off" }}</p>
+  <p>Onboarding: {% for step, status in account.onboarding.items() %}{{ step }} {{ status }}{% if not loop.last %} · {% endif %}{% else %}not started{% endfor %}</p>
+  <table><thead><tr><th>Allowance</th><th>Used</th><th>Limit</th></tr></thead><tbody>{% for u in account.usage %}<tr><td>{{ u.allowance }}</td><td>{{ u.used }}</td><td>{{ u.limit if u.limit is not none else "—" }}</td></tr>{% endfor %}</tbody></table>
+</section>
+{% if 'accounts.resend' in permissions %}<section class="panel"><div class="panel-heading"><h2>Help the user sign in</h2></div>
+  <form data-json-form="/api/admin/accounts/{{ account.id }}/resend-verification"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="button secondary" type="submit">Resend verification email</button></form>
+  <form data-json-form="/api/admin/accounts/{{ account.id }}/password-reset"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="button secondary" type="submit">Send password-reset link</button></form></section>{% endif %}
+{% if 'accounts.suspend' in permissions %}<section class="panel"><div class="panel-heading"><h2>Access</h2></div><p class="muted">These need a fresh <a href="/admin/reauth?next=/admin/accounts/{{ account.id }}">confirmation</a>.</p>
+  {% if account.status == "ACTIVE" %}<form data-json-form="/api/admin/accounts/{{ account.id }}/suspend"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label class="field"><span>Reason</span><input name="reason" required></label><button class="button" type="submit">Suspend account</button></form>{% endif %}
+  {% if account.status == "SUSPENDED" %}<form data-json-form="/api/admin/accounts/{{ account.id }}/unsuspend"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label class="field"><span>Reason</span><input name="reason" required></label><button class="button" type="submit">Lift suspension</button></form>{% endif %}
+  <form data-json-form="/api/admin/accounts/{{ account.id }}/revoke-sessions"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="button secondary" type="submit">Sign out all sessions and devices</button></form></section>{% endif %}
+{% if 'accounts.kill_switch' in permissions %}<section class="panel"><div class="panel-heading"><h2>Automation kill switch</h2></div>
+  <form data-json-form="/api/admin/accounts/{{ account.id }}/kill-switch"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="engage" value="{{ 'false' if account.kill_switch_engaged else 'true' }}"><label class="field"><span>Reason</span><input name="reason" required></label><button class="button" type="submit">{{ "Release" if account.kill_switch_engaged else "Engage" }} kill switch</button></form></section>{% endif %}
+{% if 'grants.manage' in permissions %}<section class="panel"><div class="panel-heading"><h2>Grants</h2></div>
+  <table><thead><tr><th>Kind</th><th>Plan / allowance</th><th>Expires</th><th></th></tr></thead><tbody>{% for g in account.grants %}<tr><td>{{ g.kind }}</td><td>{{ g.plan_id or g.allowance }}{% if g.amount %} +{{ g.amount }}{% endif %}</td><td>{{ (g.expires_at or "—")[:10] }}</td><td>{% if not g.revoked_at %}<form data-json-form="/api/admin/grants/{{ g.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="button button-small secondary" type="submit">Revoke</button></form>{% else %}revoked{% endif %}</td></tr>{% else %}<tr><td colspan="4">No grants.</td></tr>{% endfor %}</tbody></table>
+  <form data-json-form="/api/admin/accounts/{{ account.id }}/grants"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label class="field"><span>Kind</span><select name="kind"><option>PLAN_OVERRIDE</option><option>ALLOWANCE_BONUS</option></select></label>
+    <label class="field"><span>Plan (override)</span><select name="plan_id"><option value="">—</option><option>pro</option><option>power</option></select></label>
+    <label class="field"><span>Allowance (bonus)</span><input name="allowance"></label><label class="field"><span>Amount (bonus)</span><input name="amount" type="number" min="1"></label>
+    <label class="field"><span>Expires (override)</span><input name="expires_at" type="date"></label><label class="field"><span>Reason</span><input name="reason" required></label>
+    <button class="button" type="submit">Add grant</button></form></section>{% endif %}
+<section class="panel"><div class="panel-heading"><h2>Audit</h2></div><table><thead><tr><th>When</th><th>Who</th><th>Action</th></tr></thead><tbody>
+  {% for e in account.audit %}<tr><td>{{ e.occurred_at[:16] }}</td><td>{{ e.actor_type }}</td><td>{{ e.action }}</td></tr>{% else %}<tr><td colspan="3">Nothing yet.</td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+{% endblock %}

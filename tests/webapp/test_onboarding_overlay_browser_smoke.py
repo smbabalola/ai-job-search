@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from playwright.sync_api import expect
 import uvicorn
 
 from product.onboarding import WalkthroughDefinition, WalkthroughStep, register_walkthrough
@@ -88,9 +89,7 @@ def test_overlay_next_advances_to_step_two_and_repositions(live_server, page):
     page.evaluate("window.Onboarding.start('overlay_smoke_walkthrough')")
     page.wait_for_selector(".onboarding-popover")
     page.get_by_role("button", name="Next").click()
-    page.wait_for_function(
-        "document.querySelector('.onboarding-popover-title').innerText === 'Add a job'"
-    )
+    expect(page.locator(".onboarding-popover-title")).to_have_text("Add a job")
     # .onboarding-popover-progress is styled text-transform:uppercase, which
     # is what inner_text() reports (the rendered text, not the DOM source).
     assert page.locator(".onboarding-popover-progress").inner_text().strip() == "STEP 2 OF 2"
@@ -101,9 +100,7 @@ def test_overlay_finish_on_last_step_closes_overlay(live_server, page):
     page.evaluate("window.Onboarding.start('overlay_smoke_walkthrough')")
     page.wait_for_selector(".onboarding-popover")
     page.get_by_role("button", name="Next").click()
-    page.wait_for_function(
-        "document.querySelector('.onboarding-popover-title').innerText === 'Add a job'"
-    )
+    expect(page.locator(".onboarding-popover-title")).to_have_text("Add a job")
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
     assert page.locator(".onboarding-backdrop").count() == 0
@@ -114,9 +111,7 @@ def test_replaying_a_completed_walkthrough_reopens_it(live_server, page):
     page.evaluate("window.Onboarding.start('overlay_smoke_walkthrough')")
     page.wait_for_selector(".onboarding-popover")
     page.get_by_role("button", name="Next").click()
-    page.wait_for_function(
-        "document.querySelector('.onboarding-popover-title').innerText === 'Add a job'"
-    )
+    expect(page.locator(".onboarding-popover-title")).to_have_text("Add a job")
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
 

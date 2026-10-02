@@ -39,6 +39,34 @@ def providers_from_app_state(state: Any) -> ProviderSet:
                        pick("application_intelligence_provider", "intelligence"))
 
 
+def request_providers(state: Any, scope: Any, subject_type: str, subject_id: str) -> ProviderSet:
+    """The providers an HTTP route uses (app.state overrides, else the
+    production ones), each behind the Bundle 7 metered boundary (§13.2): the
+    AI control and the hidden cost ceiling are checked before every call and
+    each call's cost is recorded. The local operator account is unmetered."""
+    from webapp.services.metered_provider import metered
+
+    def wrap(provider: Any) -> Any:
+        return metered(provider, scope, subject_type, subject_id, state=state)
+
+    semantic = getattr(state, "semantic_adapter", None)
+    if semantic is None:
+        from webapp.services.openai_semantic_proposer_client import OpenAISemanticProposerClient
+        from webapp.services.semantic_proposal_adapter import SemanticProposalAdapter
+        semantic = SemanticProposalAdapter(wrap(OpenAISemanticProposerClient()))  # meter the model client itself
+    else:
+        semantic = wrap(semantic)
+    understanding = getattr(state, "job_understanding_provider", None)
+    if understanding is None:
+        from product.openai_job_understanding_provider import OpenAIJobUnderstandingProvider
+        understanding = OpenAIJobUnderstandingProvider()
+    intelligence = getattr(state, "application_intelligence_provider", None)
+    if intelligence is None:
+        from product.openai_application_intelligence_provider import OpenAIApplicationIntelligenceProvider
+        intelligence = OpenAIApplicationIntelligenceProvider()
+    return ProviderSet(wrap(understanding), semantic, wrap(intelligence))
+
+
 class CostMeter(Protocol):
     def actual_cost(self, step_kind: str, *, reserved: Decimal) -> Decimal | None: ...
 

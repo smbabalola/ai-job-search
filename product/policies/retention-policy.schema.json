@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "retention-policy.v1 (Bundle 7 DP-4)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_version", "payment_grace_days", "deletion_cooling_off_days",
+               "export_link_days", "retained_periods_days"],
+  "properties": {
+    "schema_version": {"const": "retention-policy.v1"},
+    "policy_version": {"type": "string", "minLength": 1},
+    "payment_grace_days": {"type": "integer", "minimum": 0},
+    "deletion_cooling_off_days": {"type": "integer", "minimum": 0},
+    "export_link_days": {"type": "integer", "minimum": 1},
+    "retained_periods_days": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["BILLING_FINANCIAL", "SECURITY_AUDIT", "CONSENT_PROOF", "SUPPRESSION"],
+      "properties": {
+        "BILLING_FINANCIAL": {"type": ["integer", "null"], "minimum": 1},
+        "SECURITY_AUDIT": {"type": ["integer", "null"], "minimum": 1},
+        "CONSENT_PROOF": {"type": ["integer", "null"], "minimum": 1},
+        "SUPPRESSION": {"type": ["integer", "null"], "minimum": 1}
+      }
+    }
+  }
+}

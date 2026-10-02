@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from webapp.persistence import dbapi
 
 DISPOSITIONS = (
     "acknowledged_and_proceed",
@@ -24,7 +24,7 @@ _SYSTEM_BASIS_KEYS = {"reason", "item_content_hash", "pack_revision"}
 
 
 def save_review_decision(
-    conn: sqlite3.Connection, *, workspace_id: str, review_item_type: str, source_artifact_id: str,
+    conn: dbapi.Connection, *, workspace_id: str, review_item_type: str, source_artifact_id: str,
     domain_item_id: str | None, disposition: str, note: str | None = None,
     commit: bool = True, decision_provenance: str = "USER", system_basis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -55,7 +55,7 @@ def save_review_decision(
 
 
 def list_review_decisions(
-    conn: sqlite3.Connection, workspace_id: str, source_artifact_id: str | None = None
+    conn: dbapi.Connection, workspace_id: str, source_artifact_id: str | None = None
 ) -> list[dict[str, Any]]:
     # Newest first by insertion order (rowid), never by timestamp: equal or
     # skewed created_at values must not change which decision governs.

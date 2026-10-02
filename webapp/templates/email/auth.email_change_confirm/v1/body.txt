@@ -1,0 +1,5 @@
+{% extends "_layout.txt" %}{% block content %}Confirm this address for your JobSearch account:
+
+{{ confirm_url }}
+
+This link expires in 24 hours.{% endblock %}

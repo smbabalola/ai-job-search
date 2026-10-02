@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>6E-A spike: native form POST</title></head>
+<body>
+<!-- 6E-A S-E3a/S-E4 fixture: a plain form whose submit is a main-frame POST
+     to the application path; the server answers 303 to /confirmation. -->
+<form id="application_form" method="post" action="/acme/jobs/123">
+  <label for="first_name">First name</label>
+  <input id="first_name" name="first_name" value="Ada">
+  <button type="submit" id="submit_app">Submit application</button>
+</form>
+<script>
+  window.__probe = {
+    other_post() { fetch("/acme/jobs/999", { method: "POST", body: "x" }).catch(() => {}); },
+    third_party_image() { const img = new Image(); img.src = "http://127.0.0.1:8431/leak.gif?d=1"; },
+  };
+</script>
+</body>
+</html>

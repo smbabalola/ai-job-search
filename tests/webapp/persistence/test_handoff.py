@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import sqlite3
+
+import pytest
 
 from webapp.persistence.db import connect, init_db
 import webapp.persistence.migrations as migrations
@@ -23,6 +28,8 @@ from webapp.persistence.migrations import (
     REVIEW_APPROVAL_MIGRATION_ID,
     FILL_MIGRATION_ID,
     FILL_APPEND_ONLY_TABLES,
+    HUMAN_SUBMIT_MIGRATION_ID,
+    SUBMIT_APPEND_ONLY_TABLES,
 )
 
 
@@ -134,11 +141,12 @@ def test_migration_009_is_idempotent(tmp_path):
     conn.close()
 
 
+@pytest.mark.sqlite_only  # replays the SQLite legacy chain
 def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     db_path = tmp_path / "upgrade-from-004.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    workspace = create_workspace(conn, company="Existing", title="Role")
+    workspace = create_workspace(conn, company="Existing", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     conn.execute(
         "INSERT INTO application_document_versions "
         "(id, account_id, source_workspace_id, document_kind, origin, "
@@ -172,6 +180,9 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     # simulated "upgrade from 004" DB has none of the schema added after 004.
     # All these tables are empty here, so FK-enforced drops succeed regardless
     # of order (SQLite only blocks a DROP TABLE when a referencing row exists).
+    # Bundle 6E-A (021): its tables reference 020's and 6B's, so drop them first.
+    for submit_table in SUBMIT_APPEND_ONLY_TABLES:
+        conn.execute(f"DROP TABLE {submit_table}")
     # Bundle 6D-B (020): its tables reference 6D-A's, so drop them first.
     for fill_table in (*FILL_APPEND_ONLY_TABLES, "fill_run_leases", "active_fill_runs"):
         conn.execute(f"DROP TABLE {fill_table}")
@@ -192,7 +203,7 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
     ):
         conn.execute(f"DROP TABLE {autonomy_table}")
     conn.execute(
-        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "DELETE FROM schema_migrations WHERE id IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             HANDOFF_SESSIONS_MIGRATION_ID,
             ONBOARDING_WALKTHROUGHS_MIGRATION_ID,
@@ -210,13 +221,14 @@ def test_exact_004_application_documents_upgrade_to_005_handoff(tmp_path):
             AUTONOMY_PREPARE_MIGRATION_ID,
             REVIEW_APPROVAL_MIGRATION_ID,
             FILL_MIGRATION_ID,
+            HUMAN_SUBMIT_MIGRATION_ID,
         ),
     )
     conn.commit()
 
     assert [
         row["id"]
-        for row in conn.execute("SELECT id FROM schema_migrations ORDER BY id")
+        for row in conn.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY id")
     ] == [
         "001_search_workspaces",
         "002_evidence_profile_manager",
@@ -516,6 +528,7 @@ from webapp.persistence.handoff import (
     create_submission_confirmation,
     list_handoff_events,
 )
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _session(conn):

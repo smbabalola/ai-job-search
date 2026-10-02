@@ -10,12 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from playwright.sync_api import expect
 import uvicorn
 
 from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import list_workspaces
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _free_port() -> int:
@@ -136,9 +138,7 @@ def test_dashboard_tour_button_walks_all_four_real_targets(live_server, page):
         assert page.locator(".onboarding-fail-notice").count() == 0
         if index < len(expected_titles) - 1:
             page.get_by_role("button", name="Next").click()
-            page.wait_for_function(
-                f"document.querySelector('.onboarding-popover-title').innerText === {json.dumps(expected_titles[index + 1])}"
-            )
+            expect(page.locator(".onboarding-popover-title")).to_have_text(expected_titles[index + 1])
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
 
@@ -155,7 +155,7 @@ def test_dashboard_tour_does_not_create_or_modify_any_workspace(live_server, pag
     page.wait_for_selector(".onboarding-popover", state="detached")
 
     conn = connect(live_server.db_path)
-    workspaces = list_workspaces(conn)
+    workspaces = list_workspaces(conn, account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
     assert workspaces == []
 
@@ -180,9 +180,7 @@ def test_candidate_profile_tour_walks_all_four_real_targets_and_states_no_invent
         assert page.locator(".onboarding-fail-notice").count() == 0
         if index < len(expected_titles) - 1:
             page.get_by_role("button", name="Next").click()
-            page.wait_for_function(
-                f"document.querySelector('.onboarding-popover-title').innerText === {json.dumps(expected_titles[index + 1])}"
-            )
+            expect(page.locator(".onboarding-popover-title")).to_have_text(expected_titles[index + 1])
     page.get_by_role("button", name="Finish").click()
     page.wait_for_selector(".onboarding-popover", state="detached")
     assert any("never invent" in body for body in bodies_seen)
@@ -244,10 +242,7 @@ def test_candidate_profile_tour_retries_one_transient_target_and_stops_after_one
         second_target,
     )
     page.get_by_role("button", name="Next").click()
-    page.wait_for_function(
-        "document.querySelector('.onboarding-popover-title')?.innerText === "
-        + json.dumps(definition["steps"][1]["title"]), timeout=2_000,
-    )
+    expect(page.locator(".onboarding-popover-title")).to_have_text(definition["steps"][1]["title"], timeout=2_000)
     assert page.evaluate("window.__onboardingRetryFrameCount") == 1
     assert page.locator(".onboarding-fail-notice").count() == 0
     assert page.locator(".onboarding-popover").count() == 1

@@ -4,6 +4,9 @@ migrations, and a pre-6D database built by the real master@fc316ee code, with
 answer, upgrades through 019 with every approved answer byte-identical."""
 from __future__ import annotations
 
+# Legacy-chain assertions are scoped to 001-021 (id < '022'); Bundle 7
+# migrations are covered by test_schema_parity.py and their own tests.
+
 import io
 import os
 import sqlite3
@@ -63,7 +66,7 @@ SEED = textwrap.dedent("""
 
 
 def _migrations(c):
-    return [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    return [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
 
 
 def _schema(c):
@@ -79,7 +82,7 @@ def test_fresh_database_gets_all_migrations_through_020_and_a_rerun_is_a_noop(tm
     init_db(db)
     c = connect(db)
     ids, schema = _migrations(c), _schema(c)
-    assert len(ids) == 20 and ids[-2:] == [REVIEW_APPROVAL_MIGRATION_ID, "020_fill"]
+    assert len(ids) == 21 and ids[-3:] == [REVIEW_APPROVAL_MIGRATION_ID, "020_fill", "021_human_submit"]
     init_db(db)
     assert _migrations(c) == ids and _schema(c) == schema
     c.close()
@@ -104,7 +107,7 @@ def pre_6d_db(tmp_path):
 def test_pre_6d_database_upgrades_through_019(pre_6d_db):
     db, ws = pre_6d_db
     c = sqlite3.connect(db)
-    migrations_before = [r[0] for r in c.execute("SELECT id FROM schema_migrations ORDER BY rowid")]
+    migrations_before = [r[0] for r in c.execute("SELECT id FROM schema_migrations WHERE id < '022' ORDER BY rowid")]
     answers_before = [tuple(r) for r in c.execute("SELECT * FROM approved_answers ORDER BY seq")]
     triggers_before = _objects_on(c, "approved_answers", "trigger")
     indexes_before = _objects_on(c, "approved_answers", "index")
@@ -116,7 +119,7 @@ def test_pre_6d_database_upgrades_through_019(pre_6d_db):
 
     init_db(db)
     c = connect(db)
-    assert _migrations(c) == [*migrations_before, REVIEW_APPROVAL_MIGRATION_ID, "020_fill"]
+    assert _migrations(c) == [*migrations_before, REVIEW_APPROVAL_MIGRATION_ID, "020_fill", "021_human_submit"]
     assert [tuple(r) for r in c.execute("SELECT * FROM approved_answers ORDER BY seq")] == answers_before
     assert _objects_on(c, "approved_answers", "trigger") >= triggers_before
     assert _objects_on(c, "approved_answers", "index") >= indexes_before

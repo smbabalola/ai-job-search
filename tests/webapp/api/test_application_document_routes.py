@@ -9,6 +9,7 @@ from webapp.config import Settings
 from webapp.persistence.db import connect
 from webapp.persistence.workspaces import create_workspace
 from webapp.persistence.accounts import create_account
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _docx():
@@ -26,7 +27,7 @@ def _client(tmp_path):
     client = TestClient(app)
     client.__enter__()
     conn = connect(settings.db_path)
-    workspace = create_workspace(conn, company="Example", title="Role")
+    workspace = create_workspace(conn, company="Example", title="Role", account_id=DEFAULT_ACCOUNT_ID)
     conn.close()
     return client, settings, workspace["id"]
 
@@ -76,7 +77,7 @@ def test_user_upload_can_be_reused_in_another_owned_workspace(tmp_path):
     client, settings, workspace_id = _client(tmp_path)
     try:
         conn = connect(settings.db_path)
-        other = create_workspace(conn, company="Other", title="Role")
+        other = create_workspace(conn, company="Other", title="Role", account_id=DEFAULT_ACCOUNT_ID)
         conn.close()
         version = client.post(f"/api/workspaces/{workspace_id}/application-documents/upload/cv", files={"file": ("Reusable CV.docx", _docx(), DOCX_MEDIA_TYPE)}).json()
         saved = client.post(f"/api/workspaces/{workspace_id}/application-documents/{version['id']}/save-for-reuse", json={"label": "  General   CV  "})

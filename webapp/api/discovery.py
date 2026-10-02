@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from product.discovery_search import CliDiscoveryPortalRunner, available_discovery_source_ids
 from webapp.api.dependencies import get_account_scope, get_conn, get_extensions_dir
 from webapp.persistence.discovery import set_discovery_candidate_status
-from webapp.persistence.discovery_sources import list_discovery_source_settings
+from webapp.persistence.discovery_sources import list_discovery_source_settings, list_enabled_discovery_source_ids
 from webapp.services.discovery import (
     DiscoveryServiceError,
     evaluate_discovery_candidate,
@@ -18,11 +18,16 @@ from webapp.services.discovery import (
     promote_discovery_candidate,
     run_discovery_search,
 )
+from webapp.services.autonomy_providers import request_providers
 from webapp.services.extension_registry import resolve_active_extensions
+from webapp.services.metered_provider import reraise_metering_refusal
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
+from webapp.persistence import dbapi
+from webapp.persistence import usage as usage_rows
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(tags=["discovery"])
+router = APIRouter(dependencies=[Depends(USER)], tags=["discovery"])
 
 
 class StrictBody(BaseModel):
@@ -52,7 +57,7 @@ def _error(exc: Exception) -> HTTPException:
 
 def _authorize_search_workspace(
     scope: AccountScope,
-    conn: sqlite3.Connection,
+    conn: dbapi.Connection,
     search_workspace_id: str,
 ) -> None:
     try:
@@ -64,13 +69,14 @@ def _authorize_search_workspace(
 @router.get("/api/search-workspaces/{search_workspace_id}/discovery/sources")
 def get_sources(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    request: Request,
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
     registry = {row["source_id"]: row for row in list_discovery_source_settings(conn)}
     available = available_discovery_source_ids(
-        [source_id for source_id, row in registry.items() if row["enabled"]]
+        list_enabled_discovery_source_ids(conn, hosted=request.app.state.settings.is_hosted)  # DP-9
     )
     return {
         "sources": [
@@ -85,21 +91,28 @@ def post_search(
     body: SearchBody,
     request: Request,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
     runner = getattr(request.app.state, "discovery_portal_runner", None)
     if runner is None:
         runner = CliDiscoveryPortalRunner(Path(request.app.state.settings.profile_root).resolve())
+    run_key = f"discovery:{search_workspace_id}:{uuid.uuid4().hex}"
     try:
-        return run_discovery_search(
-            conn, runner, search_workspace_id=search_workspace_id,
-            sources=body.sources, queries=body.queries,
-            locations=body.locations, limit_per_source=body.limit_per_source,
-            account_id=scope.account_id,
-            deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
-        )
+        return request.app.state.metering.metered(
+            conn, scope, feature="discovery.on_demand", allowance="discovery.on_demand_runs",
+            subject_type="search_workspace", subject_id=search_workspace_id, key=lambda window_key: run_key,
+            action=f"discovery:{search_workspace_id}",
+            settlement_ref=lambda result: result["run"]["id"],  # authorizes the run's candidates for evaluation
+            work=lambda: run_discovery_search(
+                conn, runner, search_workspace_id=search_workspace_id,
+                sources=body.sources, queries=body.queries,
+                locations=body.locations, limit_per_source=body.limit_per_source,
+                account_id=scope.account_id,
+                deployment_ceiling=request.app.state.settings.autonomy_deployment_ceiling(),
+                hosted=request.app.state.settings.is_hosted,
+            ))
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc
 
@@ -107,7 +120,7 @@ def post_search(
 @router.get("/api/search-workspaces/{search_workspace_id}/discovery/candidates")
 def get_candidates(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -123,7 +136,7 @@ def patch_candidate(
     candidate_id: str,
     body: LifecycleBody,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
@@ -142,7 +155,7 @@ def post_evaluate(
     body: EvaluateBody,
     request: Request,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
     scope: AccountScope = Depends(get_account_scope),
 ):
@@ -151,10 +164,20 @@ def post_evaluate(
         extensions = resolve_active_extensions(extensions_dir, body.extension_ids)
     except Exception as exc:
         raise _error(exc) from exc
-    understanding_provider = _job_understanding_provider(request)
-    semantic_adapter = _semantic_adapter(request)
+    # Candidate evaluation is part of the discovery action (Bundle 7 §11.4): it needs the discovery
+    # feature, and only a candidate found by a run that consumed a discovery allowance reaches the AI.
+    # Every AI call still passes the metered boundary (AI switch, hidden cost ceiling, cost recorded).
+    metering = request.app.state.metering
+    metering.require_feature(conn, scope, "discovery.on_demand")
+    providers = request_providers(request.app.state, scope, "search_workspace", search_workspace_id)
+    understanding_provider, semantic_adapter = providers.understanding, providers.semantic_adapter
     results = []
     for index, candidate_id in enumerate(body.candidate_ids):
+        if metering.enforced and not usage_rows.candidate_from_metered_run(
+                conn, account_id=scope.account_id, candidate_id=candidate_id):
+            results.append({"candidate_id": candidate_id, "status": "failed",
+                            "error": "this job was not found by a discovery search on your plan"})
+            continue
         try:
             fit = evaluate_discovery_candidate(
                 conn, candidate_id, semantic_adapter,
@@ -166,6 +189,7 @@ def post_evaluate(
             )
             results.append({"candidate_id": candidate_id, "status": "completed", "fit": fit})
         except Exception as exc:
+            reraise_metering_refusal(exc)  # the whole batch stops at the fair-use limit / AI switched off
             results.append({"candidate_id": candidate_id, "status": "failed", "error": str(exc)})
     return {"results": results}
 
@@ -174,7 +198,7 @@ def post_evaluate(
 def post_promote(
     candidate_id: str,
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     _authorize_search_workspace(scope, conn, search_workspace_id)
@@ -185,20 +209,3 @@ def post_promote(
         )
     except DiscoveryServiceError as exc:
         raise _error(exc) from exc
-
-
-def _job_understanding_provider(request: Request):
-    override = getattr(request.app.state, "job_understanding_provider", None)
-    if override is not None:
-        return override
-    from product.openai_job_understanding_provider import OpenAIJobUnderstandingProvider
-    return OpenAIJobUnderstandingProvider()
-
-
-def _semantic_adapter(request: Request):
-    override = getattr(request.app.state, "semantic_adapter", None)
-    if override is not None:
-        return override
-    from webapp.services.openai_semantic_proposer_client import OpenAISemanticProposerClient
-    from webapp.services.semantic_proposal_adapter import SemanticProposalAdapter
-    return SemanticProposalAdapter(OpenAISemanticProposerClient())

@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}Someone asked to change the email address of your JobSearch account to {{ new_email_hint }}. If this wasn't you, change your password now.{% endblock %}

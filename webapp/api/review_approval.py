@@ -7,13 +7,12 @@ No route here reaches any SUBMIT authority."""
 from __future__ import annotations
 
 import dataclasses
-import sqlite3
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from product.application_document_contract import ApplicationDocumentContractError
 from product.autonomy_contract import Reach
@@ -27,8 +26,10 @@ from webapp.services.ownership import AccountScope
 from webapp.services.pipeline import PipelineError
 from webapp.persistence.application_documents import get_selection
 from webapp.services.review_application import KINDS, ReviewRefused, review_snapshot, review_state
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
-router = APIRouter(prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
+router = APIRouter(dependencies=[Depends(USER)], prefix="/api/workspaces/{workspace_id}/review", tags=["review"])
 
 
 class _Body(BaseModel):
@@ -37,6 +38,10 @@ class _Body(BaseModel):
 
 class ApproveBody(_Body):
     displayed_binding_hash: str
+
+
+class RuleAcknowledgementBody(_Body):
+    rule_id: str
 
 
 class SelectBody(_Body):
@@ -93,6 +98,10 @@ def call(action: Callable[[], Any]) -> Any:
     try:
         return action()
     except ReviewRefused as exc:
+        if exc.reason == "rule_acknowledgement_required":  # Bundle 7 spec 21.3
+            from webapp.api.errors import error_response
+            return error_response("RULE_ACKNOWLEDGEMENT_REQUIRED",
+                                  "This job conflicts with one of your rules. Acknowledge it to continue.", 409)
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="not found") from exc
@@ -137,7 +146,7 @@ def review_payload(conn, *, settings, account_id: str, workspace_id: str) -> dic
 # The bare GET /api/workspaces/{id}/review is the pre-existing Phase 2 review
 # surface (webapp/api/review.py); the 6D-A read-only state lives at /review/state.
 @router.get("/state")
-def get_review(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_review(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_payload(conn, settings=request.app.state.settings, account_id=scope.account_id,
                                        workspace_id=workspace_id))
@@ -145,7 +154,7 @@ def get_review(workspace_id: str, request: Request, conn: sqlite3.Connection = D
 
 @router.post("/documents/{kind}")
 def post_replace(workspace_id: str, kind: str, request: Request, file: UploadFile = File(...),
-                 expected_revision: int = Form(...), conn: sqlite3.Connection = Depends(get_conn),
+                 expected_revision: int = Form(...), conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     content = file.file.read(10 * 1024 * 1024 + 1)
     if file.file.read(1):
@@ -158,7 +167,7 @@ def post_replace(workspace_id: str, kind: str, request: Request, file: UploadFil
 
 @router.post("/documents/{kind}/select")
 def post_select(workspace_id: str, kind: str, body: SelectBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_documents.select_document(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -167,7 +176,7 @@ def post_select(workspace_id: str, kind: str, body: SelectBody, request: Request
 
 
 @router.post("/save")
-def post_save(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_save(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
               scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     def action():
         review_state(conn, settings=request.app.state.settings, account_id=scope.account_id,
@@ -178,8 +187,36 @@ def post_save(workspace_id: str, request: Request, conn: sqlite3.Connection = De
     return call(action)
 
 
+class QuestionAnswerBody(_Body):
+    answer: str = Field(min_length=1, max_length=2000)
+    scope: Literal["APPLICATION_ONLY", "SEARCH_WORKSPACE", "CANDIDATE_FACT"]
+    request_id: str = Field(min_length=1, max_length=100)
+
+
+@router.get("/blockers")
+def get_blockers(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
+                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """The job check's open questions (governing blockers) for this application."""
+    from webapp.services.autonomy_inbox import open_questions
+    return {"blockers": call(lambda: open_questions(conn, account_id=scope.account_id, workspace_id=workspace_id))}
+
+
+@router.post("/blockers/{blocker_id}/answer")
+def post_blocker_answer(workspace_id: str, blocker_id: str, body: QuestionAnswerBody,
+                        conn: dbapi.Connection = Depends(get_conn),
+                        scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    from webapp.services.autonomy_inbox import answer_open_question
+    try:
+        return call(lambda: answer_open_question(
+            conn, account_id=scope.account_id, workspace_id=workspace_id, blocker_id=blocker_id,
+            answer=body.answer.strip(), scope=body.scope, request_id=body.request_id, actor=scope.account_id,
+            now=_now()))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/answers")
-def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.answer_field(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -188,7 +225,7 @@ def post_answer(workspace_id: str, body: AnswerBody, request: Request, conn: sql
 
 @router.post("/proposals/{proposal_id}/accept")
 def post_accept(workspace_id: str, proposal_id: str, body: AcceptBody, request: Request,
-                conn: sqlite3.Connection = Depends(get_conn),
+                conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.accept_proposal(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -198,7 +235,7 @@ def post_accept(workspace_id: str, proposal_id: str, body: AcceptBody, request: 
 
 @router.post("/fields/{answer_key}/disposition")
 def post_disposition(workspace_id: str, answer_key: str, body: DispositionBody, request: Request,
-                     conn: sqlite3.Connection = Depends(get_conn),
+                     conn: dbapi.Connection = Depends(get_conn),
                      scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.set_field_disposition(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -206,7 +243,7 @@ def post_disposition(workspace_id: str, answer_key: str, body: DispositionBody, 
 
 
 @router.post("/warnings/ack")
-def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_ack(workspace_id: str, body: AckBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_answers.acknowledge_warning(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -214,7 +251,7 @@ def post_ack(workspace_id: str, body: AckBody, request: Request, conn: sqlite3.C
 
 
 @router.post("/approve")
-def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: dbapi.Connection = Depends(get_conn),
                  scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_approval.approve(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -222,7 +259,7 @@ def post_approve(workspace_id: str, body: ApproveBody, request: Request, conn: s
 
 
 @router.post("/revoke")
-def post_revoke(workspace_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def post_revoke(workspace_id: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     return call(lambda: review_approval.revoke(
         conn, settings=request.app.state.settings, account_id=scope.account_id, application_workspace_id=workspace_id,
@@ -230,7 +267,7 @@ def post_revoke(workspace_id: str, request: Request, conn: sqlite3.Connection = 
 
 
 @router.post("/deltas", status_code=201)
-def post_delta(workspace_id: str, body: DeltaBody, conn: sqlite3.Connection = Depends(get_conn),
+def post_delta(workspace_id: str, body: DeltaBody, conn: dbapi.Connection = Depends(get_conn),
                scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     """Internal intake for 6D-B (same account scope)."""
     return call(lambda: review_approval.open_review_delta(
@@ -240,7 +277,7 @@ def post_delta(workspace_id: str, body: DeltaBody, conn: sqlite3.Connection = De
 
 
 @router.get("/documents/{kind}/preview")
-def get_preview(workspace_id: str, kind: str, request: Request, conn: sqlite3.Connection = Depends(get_conn),
+def get_preview(workspace_id: str, kind: str, request: Request, conn: dbapi.Connection = Depends(get_conn),
                 scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
     """A read-only rendering of the currently selected document's exact bytes."""
     from webapp.persistence.application_documents import get_document_version, get_selection
@@ -262,3 +299,38 @@ def get_preview(workspace_id: str, kind: str, request: Request, conn: sqlite3.Co
             raise ReviewRefused("not_previewable") from exc
         return {"document_version_id": document["id"], "sha256": document["sha256"], "paragraphs": paragraphs}
     return call(action)
+
+
+@router.get("/rule-advisories")
+def get_rule_advisories(workspace_id: str, conn: dbapi.Connection = Depends(get_conn),
+                        scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """Bundle 7 16.3: the standing-policy rules as advisories for this application."""
+    from webapp.persistence.workspaces import get_workspace
+    from webapp.services import manual_rules
+    if get_workspace(conn, workspace_id, account_id=scope.account_id) is None:
+        raise HTTPException(status_code=404, detail="not found")
+    blocked = {a.rule_id for a in manual_rules.unacknowledged_blocks(conn, account_id=scope.account_id,
+                                                                     workspace_id=workspace_id)}
+    return {"advisories": [{"rule_id": a.rule_id, "effect": a.effect, "message_key": a.message_key,
+                            "via_unknown": a.via_unknown, "needs_acknowledgement": a.rule_id in blocked}
+                           for a in manual_rules.advisories(conn, account_id=scope.account_id,
+                                                            workspace_id=workspace_id)]}
+
+
+@router.post("/rule-acknowledgements")
+def post_rule_acknowledgement(workspace_id: str, body: RuleAcknowledgementBody,
+                              conn: dbapi.Connection = Depends(get_conn),
+                              scope: AccountScope = Depends(get_account_scope)) -> dict[str, Any]:
+    """The user proceeds with this application despite a BLOCK rule (for this application only)."""
+    from webapp.persistence.workspaces import get_workspace
+    from webapp.services import manual_rules
+    if get_workspace(conn, workspace_id, account_id=scope.account_id) is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        row = manual_rules.acknowledge(conn, account_id=scope.account_id, workspace_id=workspace_id,
+                                       rule_id=body.rule_id, actor=scope.user_id or scope.account_id, now=_now())
+    except LookupError as exc:
+        conn.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conn.commit()
+    return {"acknowledged": row["rule_id"]}

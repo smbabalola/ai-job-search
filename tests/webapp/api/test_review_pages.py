@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from webapp.app import create_app
 from webapp.persistence import review_approval as ra
+from tests.webapp.route_inventory import all_routes
 from tests.webapp.services.review_fixtures import NOW, V2_ACCOUNT, docx_bytes, v2_chain  # noqa: F401
 
 COPY = "Filling does not submit. Submission will ask you separately."
@@ -76,8 +77,11 @@ def test_no_submission_action_or_route_exists(ui):
         assert actions <= ALLOWED_ACTIONS, actions
         assert not re.search(r'<form[^>]*action="[^"]*submit', html, re.IGNORECASE)
         assert COPY in html or path.startswith("/applications")
-    submit_routes = {r.path for r in client.app.routes if "submit" in getattr(r, "path", "").lower()}
-    assert submit_routes <= {"/api/handoff/sessions/{session_id}/confirm-submission"}, submit_routes
+    # 6E-A: the only submit routes are the Phase 3 confirmation and the human-authorized inventory.
+    from tests.webapp.test_submit_structure import CONFIRM_SUBMISSION, SUBMIT_ROUTES_6E_A
+    submit_routes = {r.path for r in all_routes(client.app) if "submit" in r.path.lower()}
+    assert SUBMIT_ROUTES_6E_A <= submit_routes, "the inventory sees the 6E-A routes (never vacuous)"
+    assert submit_routes <= {CONFIRM_SUBMISSION} | SUBMIT_ROUTES_6E_A, submit_routes
 
 
 def test_prepared_page_lists_applications_with_bulk_control(ui):

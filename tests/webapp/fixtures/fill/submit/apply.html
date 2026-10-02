@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme - application (6E-A submit fixture)</title>
+<!-- The 6D-B greenhouse@2-shaped form, served at a Greenhouse-shaped URL
+     (/acme/jobs/123) so the certified E1/E2 egress resolves. The form posts
+     to that exact path; ?s=<scenario> loads /submit/<scenario>.js and sets
+     the scenario cookie the server reads on the POST. -->
+<script>
+  (function () {
+    var s = new URLSearchParams(location.search).get("s");
+    if (s && /^[a-z_]+$/.test(s)) {
+      document.cookie = "s=" + s + "; path=/";
+      document.write('<script src="/submit/' + s + '.js"><\/script>');
+    }
+  })();
+</script>
+</head>
+<body>
+<form id="application_form" method="post" action="/acme/jobs/123">
+  <input type="hidden" name="authenticity_token" value="fixture-token">
+  <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+  <div><label for="notice">What is your notice period?</label><input id="notice" name="notice" type="text" required></div>
+  <div><label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx"></div>
+  <div><label for="cover_letter">Cover Letter</label><input id="cover_letter" name="cover_letter" type="file" accept=".pdf,.doc,.docx"></div>
+  <button type="submit" id="submit_app">Submit Application</button>
+</form>
+</body>
+</html>

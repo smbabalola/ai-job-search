@@ -1,0 +1,10 @@
+{
+  "pricing_version": "dev-1",
+  "currency": "USD",
+  "_comment": "Development and test values only. Never used in hosted mode.",
+  "missing_usage_call_micro_usd": 20000,
+  "models": {
+    "default": {"input_per_mtok_micro_usd": 2000000, "output_per_mtok_micro_usd": 8000000},
+    "gpt-5.4-mini": {"input_per_mtok_micro_usd": 750000, "output_per_mtok_micro_usd": 4500000}
+  }
+}

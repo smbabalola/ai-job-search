@@ -1,0 +1,5 @@
+{% extends "_layout.txt" %}{% block content %}Someone asked to reset the password for your JobSearch account. To choose a new password, open:
+
+{{ reset_url }}
+
+This link expires in 1 hour. If this wasn't you, ignore this message; your password is unchanged.{% endblock %}

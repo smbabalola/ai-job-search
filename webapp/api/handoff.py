@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from webapp.api.route_classes import EXTENSION, PUBLIC, USER
 from webapp.api.dependencies import (
     get_account_scope,
     get_conn,
@@ -25,22 +26,21 @@ from webapp.services.handoff import (
     HandoffSessionNotActive,
     HandoffSessionNotFound,
     HandoffSessionTokenInvalid,
-    PairingSecretInvalid,
     SessionScope,
     confirm_handoff_submission,
     discover_resumable_handoff_sessions,
-    exchange_pairing_secret_for_credential,
     fetch_session_document,
-    generate_pairing_secret,
     mint_session_token,
     record_handoff_event,
     replay_handoff_session,
-    resolve_account_scope_from_extension_credential,
     resolve_session_scope,
     resume_handoff_session,
     start_handoff_session,
 )
+from webapp.api.extension_auth import ExtensionScope, get_extension_scope
+from webapp.services.extension_auth import AccountMismatch, ExtensionPrincipal, TicketInvalid, consume_handoff_ticket
 from webapp.services.ownership import AccountScope, OwnedResourceNotFound
+from webapp.persistence import dbapi
 
 router = APIRouter(prefix="/api/handoff", tags=["handoff"])
 
@@ -49,11 +49,8 @@ class StrictBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ExchangePairingBody(StrictBody):
-    one_time_secret: str
-
-
 class StartSessionBody(StrictBody):
+    handoff_ticket: str
     workspace_id: str
     pack_artifact_id: str
     target_url: str
@@ -76,28 +73,20 @@ class ConfirmSubmissionBody(StrictBody):
     effective_date: str | None = None
 
 
-def get_extension_scope(
-    request: Request,
-    x_handoff_credential: str = Header(...),
-    conn: sqlite3.Connection = Depends(get_conn),
-) -> AccountScope:
-    try:
-        return resolve_account_scope_from_extension_credential(
-            conn, presented_secret=x_handoff_credential,
-            base_profile_root=request.app.state.settings.profile_root,
-        )
-    except PairingSecretInvalid as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-
 def get_session_scope(
     x_handoff_session_token: str = Header(...),
-    conn: sqlite3.Connection = Depends(get_conn),
+    device: ExtensionScope = Depends(get_extension_scope),
+    conn: dbapi.Connection = Depends(get_conn),
 ) -> SessionScope:
+    """A handoff session token is honoured only with a bearer device token of
+    the same account (spec §9.2): a leaked session token is useless alone."""
     try:
-        return resolve_session_scope(conn, raw_token=x_handoff_session_token)
+        scope = resolve_session_scope(conn, raw_token=x_handoff_session_token)
     except (HandoffSessionTokenInvalid, HandoffSessionExpired) as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if scope.account_id != device.account_id:
+        raise HTTPException(status_code=404, detail="handoff session not found")
+    return scope
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -120,49 +109,34 @@ def _translate(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/pairing/generate", status_code=201)
-def post_generate_pairing(
-    scope: AccountScope = Depends(get_account_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
-):
-    return {
-        "one_time_secret": generate_pairing_secret(conn, account_id=scope.account_id),
-        "account_id": scope.account_id,
-    }
-
-
-@router.post("/pairing/exchange", status_code=201)
-def post_exchange_pairing(
-    body: ExchangePairingBody,
-    conn: sqlite3.Connection = Depends(get_conn),
-):
-    try:
-        return exchange_pairing_secret_for_credential(
-            conn, one_time_secret=body.one_time_secret,
-        )
-    except HandoffError as exc:
-        raise _translate(exc) from exc
-
-
-@router.post("/sessions", status_code=201)
+@router.post("/sessions", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_start_session(
     body: StartSessionBody,
-    scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    request: Request,
+    scope: ExtensionScope = Depends(get_extension_scope),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
+    # X4: the web page's ticket must belong to the same user as this device.
     try:
-        session = start_handoff_session(conn, scope, **body.model_dump())
+        consume_handoff_ticket(conn, body.handoff_ticket, principal=ExtensionPrincipal(
+            scope.device_id, scope.user_id, scope.account_id), workspace_id=body.workspace_id, purpose="HANDOFF",
+            now=datetime.now(timezone.utc), secret=request.app.state.settings.secret_key)
+    except (AccountMismatch, TicketInvalid) as exc:
+        conn.rollback()
+        raise HTTPException(status_code=403, detail={"error": exc.code, "message": str(exc)}) from exc
+    try:
+        session = start_handoff_session(conn, scope, **body.model_dump(exclude={"handoff_ticket"}))
     except (HandoffError, OwnedResourceNotFound) as exc:
         raise _translate(exc) from exc
     token = mint_session_token(conn, handoff_session_id=session["id"])
     return {**session, "session_token": token}
 
 
-@router.get("/sessions/discover")
+@router.get("/sessions/discover", dependencies=[Depends(EXTENSION)])
 def get_discover_sessions(
     workspace_id: str, target_domain: str,
     scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     # Metadata-only: never mints or rotates a token, and never refreshes
     # last_activity_at for any session it lists — merely listing resumable
@@ -178,11 +152,11 @@ def get_discover_sessions(
         raise _translate(exc) from exc
 
 
-@router.post("/sessions/{session_id}/resume", status_code=201)
+@router.post("/sessions/{session_id}/resume", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_resume_session(
     session_id: str,
     scope: AccountScope = Depends(get_extension_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         token = resume_handoff_session(conn, scope, handoff_session_id=session_id)
@@ -191,11 +165,17 @@ def post_resume_session(
     return {"session_token": token}
 
 
-@router.get("/sessions/{session_id}/documents/{kind}")
+def download_filename(kind: str, media_type: str) -> str:
+    """The ASCII fallback filename: the kind plus the document's own extension (DOCX or PDF)."""
+    from product.application_document_contract import MEDIA_TYPE_EXTENSIONS
+    return f"{kind}{MEDIA_TYPE_EXTENSIONS.get(media_type, '.docx')}"
+
+
+@router.get("/sessions/{session_id}/documents/{kind}", dependencies=[Depends(EXTENSION)])
 def get_session_document(
     session_id: str, kind: str,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     documents_root: Path = Depends(get_documents_root),
 ):
     # No workspace_id/pack_artifact_id request parameter exists on this
@@ -221,18 +201,18 @@ def get_session_document(
         headers={
             "Content-Disposition": (
                 f"attachment; filename*=UTF-8''{quote(rendered_file.filename)}; "
-                f'filename="{kind}.docx"'
+                f'filename="{download_filename(kind, rendered_file.mime_type)}"'
             ),
             "X-Content-Hash": rendered_file.content_hash,
         },
     )
 
 
-@router.post("/sessions/{session_id}/events", status_code=201)
+@router.post("/sessions/{session_id}/events", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_record_event(
     session_id: str, body: RecordEventBody,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         return record_handoff_event(
@@ -242,11 +222,11 @@ def post_record_event(
         raise _translate(exc) from exc
 
 
-@router.get("/sessions/{session_id}/events")
+@router.get("/sessions/{session_id}/events", dependencies=[Depends(EXTENSION)])
 def get_replay_events(
     session_id: str,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
 ):
     try:
         return replay_handoff_session(conn, scope, session_id)
@@ -254,11 +234,11 @@ def get_replay_events(
         raise _translate(exc) from exc
 
 
-@router.post("/sessions/{session_id}/confirm-submission", status_code=201)
+@router.post("/sessions/{session_id}/confirm-submission", status_code=201, dependencies=[Depends(EXTENSION)])
 def post_confirm_submission(
     session_id: str, body: ConfirmSubmissionBody,
     scope: SessionScope = Depends(get_session_scope),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     extensions_dir: Path = Depends(get_extensions_dir),
 ):
     try:

@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}You've used all {{ limit }} {{ allowance_label }} this period. It resets on {{ window_end }}, or you can upgrade for more.{% endblock %}

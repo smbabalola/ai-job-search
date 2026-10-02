@@ -8,6 +8,7 @@ export interface PendingHandoffContext {
   packArtifactId: string;
   targetUrl: string;
   requestedAt: number;
+  handoffTicket: string;
 }
 
 const PENDING_CONTEXT_KEY = "handoff_pending_context";

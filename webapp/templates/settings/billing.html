@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Billing · Job Search Workspace{% endblock %}
+{% block content %}
+<section class="hero compact"><div><p class="eyebrow">Settings</p><h1>Billing</h1></div></section>
+{% include "settings/_nav.html" %}
+{% if checkout %}{% include "checkout_return.html" %}{% endif %}
+<section class="panel" data-billing-status="{{ status.state or 'none' }}">
+  <p>Plan: <strong>{{ plan_name }}</strong>{% if status.state %} · {{ status.state | replace("_", " ") | lower }}{% endif %}</p>
+  {% if status.current_period_end %}<p>{% if status.cancel_at_period_end %}Ends{% else %}Renews{% endif %} on {{ status.current_period_end[:10] }}.</p>{% endif %}
+  <p><a class="button" href="/plans">Change plan</a>
+  {% if status.state and has_billing_account %}<button class="button secondary" type="button" data-billing-portal>Manage payment details</button>
+  {% if not status.cancel_at_period_end %}<button class="button secondary" type="button" data-billing-cancel>Cancel at period end</button>{% endif %}{% endif %}</p>
+</section>
+{% endblock %}

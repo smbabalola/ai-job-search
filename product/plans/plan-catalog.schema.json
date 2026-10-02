@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan-catalog.v1",
+  "description": "Bundle 7 spec 11.1. Enforced by product/entitlements.py:parse_catalog, which also requires rank strictly increasing in catalog order and free with empty provider_prices and trial_days 0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "catalog_version",
+    "plans"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plan-catalog.v1"
+    },
+    "catalog_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plans": {
+      "type": "object",
+      "required": [
+        "free"
+      ],
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "display_name",
+          "rank",
+          "trial_days",
+          "features",
+          "allowances",
+          "provider_prices"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "trial_days": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "features": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workspace.tracking",
+              "library.cv",
+              "profile.onboarding",
+              "profile.cv_import",
+              "ai.prepare",
+              "ai.cv_tailor",
+              "apply.assisted_fill",
+              "apply.human_submit",
+              "discovery.on_demand",
+              "discovery.scheduled",
+              "automation.screening",
+              "automation.prepare",
+              "rules.enforced_automation",
+              "notifications.digest"
+            ],
+            "properties": {
+              "workspace.tracking": {
+                "type": "boolean"
+              },
+              "library.cv": {
+                "type": "boolean"
+              },
+              "profile.onboarding": {
+                "type": "boolean"
+              },
+              "profile.cv_import": {
+                "type": "boolean"
+              },
+              "ai.prepare": {
+                "type": "boolean"
+              },
+              "ai.cv_tailor": {
+                "type": "boolean"
+              },
+              "apply.assisted_fill": {
+                "type": "boolean"
+              },
+              "apply.human_submit": {
+                "type": "boolean"
+              },
+              "discovery.on_demand": {
+                "type": "boolean"
+              },
+              "discovery.scheduled": {
+                "type": "boolean"
+              },
+              "automation.screening": {
+                "type": "boolean"
+              },
+              "automation.prepare": {
+                "type": "boolean"
+              },
+              "rules.enforced_automation": {
+                "type": "boolean"
+              },
+              "notifications.digest": {
+                "type": "boolean"
+              }
+            }
+          },
+          "allowances": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "applications.prepare",
+              "cv.tailor",
+              "profile.cv_import",
+              "library.cv_items",
+              "storage.bytes",
+              "discovery.on_demand_runs",
+              "discovery.scheduled_searches",
+              "automation.prepare",
+              "ai.cost_micro_usd"
+            ],
+            "properties": {
+              "applications.prepare": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "cv.tailor": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "profile.cv_import": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "library.cv_items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "storage.bytes": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "discovery.on_demand_runs": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "discovery.scheduled_searches": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "automation.prepare": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              },
+              "ai.cost_micro_usd": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "limit",
+                  "window"
+                ],
+                "properties": {
+                  "limit": {
+                    "oneOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window": {
+                    "const": "period"
+                  }
+                }
+              }
+            }
+          },
+          "provider_prices": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "month": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "year": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.webapp.route_inventory import all_routes
 from tests.product.fill_observation_fixtures import element
 from tests.webapp.services.fill_fixtures import (  # noqa: F401
     NOW, V2_ACCOUNT, fill_world, grant_world, observation_doc, store_observation, v2_chain,
@@ -165,8 +166,11 @@ def test_no_submit_or_release_control_on_the_fill_pages(ui):
     controls = re.findall(r"<button[^>]*>([^<]*)</button>", html)
     assert not [c for c in controls if re.search(r"submit|release|lift|unquarantine", c, re.IGNORECASE)], controls
     assert not re.search(r'<form[^>]*action="', html, re.IGNORECASE)
-    submit_routes = {r.path for r in client.app.routes if "submit" in getattr(r, "path", "").lower()}
-    assert submit_routes <= {"/api/handoff/sessions/{session_id}/confirm-submission"}
+    # 6E-A: the only submit routes are the Phase 3 confirmation and the human-authorized inventory.
+    from tests.webapp.test_submit_structure import CONFIRM_SUBMISSION, SUBMIT_ROUTES_6E_A
+    submit_routes = {r.path for r in all_routes(client.app) if "submit" in r.path.lower()}
+    assert SUBMIT_ROUTES_6E_A <= submit_routes, "the inventory sees the 6E-A routes (never vacuous)"
+    assert submit_routes <= {CONFIRM_SUBMISSION} | SUBMIT_ROUTES_6E_A
 
 
 def test_new_and_modified_templates_never_use_the_global_data_action_hook():

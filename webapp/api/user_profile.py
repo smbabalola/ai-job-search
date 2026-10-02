@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,9 +13,11 @@ from webapp.persistence.search_workspaces import (
     get_search_workspace,
 )
 from webapp.services.ownership import AccountScope
+from webapp.persistence import dbapi
+from webapp.api.route_classes import USER
 
 
-router = APIRouter(
+router = APIRouter(dependencies=[Depends(USER)], 
     prefix="/api/search-workspaces/{search_workspace_id}/user-profile",
     tags=["user-profile"],
 )
@@ -43,12 +44,17 @@ class UserProfileBody(StrictBody):
     source_preferences: list[str] = Field(default_factory=list)
     recency_days: int = 14
     compensation: CompensationBody | None = None
+    # user-profile.v2 (Bundle 7 spec §16.1)
+    rotation_preference: str = "no_preference"
+    acceptable_rotations: list[str] = Field(default_factory=list)
+    relocation: str = "no"
+    job_family_ids: list[str] = Field(default_factory=list)
 
 
 @router.get("")
 def get_scoped_user_profile(
     search_workspace_id: str,
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if get_search_workspace(
@@ -81,7 +87,7 @@ def put_scoped_user_profile(
     search_workspace_id: str,
     body: UserProfileBody,
     if_match: str | None = Header(default=None, alias="If-Match"),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: dbapi.Connection = Depends(get_conn),
     scope: AccountScope = Depends(get_account_scope),
 ):
     if get_search_workspace(

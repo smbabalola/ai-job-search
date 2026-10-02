@@ -1,0 +1,1 @@
+{% extends "_layout.txt" %}{% block content %}Your {{ plan_name }} subscription was canceled.{% if ends_at is defined %} You keep it until {{ ends_at }}.{% endif %} Your account stays on the Free plan afterwards.{% endblock %}

@@ -20,6 +20,8 @@ from webapp.persistence.db import connect
 from webapp.persistence.discovery import ingest_discovery_record
 from webapp.persistence.workspaces import ensure_profile_workspace
 from webapp.services.discovery import promote_discovery_candidate
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
+from webapp.persistence.search_workspaces import DEFAULT_SEARCH_WORKSPACE_ID
 
 ROOT = Path(__file__).parents[2]
 EXTENSION_ROOT = ROOT / "extension"
@@ -102,7 +104,7 @@ def _discoverable_confirmed_workspace(db_path, *, source_url: str) -> str:
     Task 5's Apply-with-extension CTA requires — via the real
     ingest/promote/save-artifact path, not hand-crafted rows."""
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
     record = {
         "schema_version": "job-source-record.v0", "source": "freehire-search",
         "source_record_id": "bridge-test-1", "source_url": source_url,
@@ -111,8 +113,8 @@ def _discoverable_confirmed_workspace(db_path, *, source_url: str) -> str:
         "requirements": [], "responsibilities": [], "language_requirements": [],
         "eligibility_requirements": [], "logistics_requirements": [],
     }
-    candidate = ingest_discovery_record(conn, record)["candidate"]
-    workspace = promote_discovery_candidate(conn, candidate["id"])["workspace"]
+    candidate = ingest_discovery_record(conn, record, account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["candidate"]
+    workspace = promote_discovery_candidate(conn, candidate["id"], account_id=DEFAULT_ACCOUNT_ID, search_workspace_id=DEFAULT_SEARCH_WORKSPACE_ID)["workspace"]
     save_artifact(
         conn, workspace_id=workspace["id"], artifact_type="application_pack",
         payload=completion_ready_pack_payload("bridge-test"),
@@ -169,9 +171,14 @@ def test_apply_click_stores_pending_context_and_navigates_to_target_url(
     assert isinstance(context["packArtifactId"], str) and context["packArtifactId"]
     assert isinstance(context["requestedAt"], (int, float))
 
-    # No candidate data, credential, or session token anywhere in the
-    # persisted pending context.
-    assert set(context.keys()) == {"workspaceId", "packArtifactId", "targetUrl", "requestedAt"}
+    # Bundle 7 spec X4/§9.2: the page embeds a server-signed handoff ticket
+    # (single use, 5 minutes, bound to user/account/workspace) that the
+    # extension presents on session start.
+    assert isinstance(context["handoffTicket"], str) and context["handoffTicket"]
+
+    # No candidate data, device credential, or session token anywhere in the
+    # persisted pending context — only the bounded handoff ticket.
+    assert set(context.keys()) == {"workspaceId", "packArtifactId", "targetUrl", "requestedAt", "handoffTicket"}
     page.close()
 
 

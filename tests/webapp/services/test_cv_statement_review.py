@@ -25,14 +25,15 @@ from webapp.services.cv_statement_review import (
     save_cv_statement_review_decision,
 )
 from webapp.services.pipeline import PipelineError
+from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID
 
 
 def _workspace(tmp_path):
     db_path = tmp_path / "jobsearch.sqlite3"
     init_db(db_path)
     conn = connect(db_path)
-    ensure_profile_workspace(conn)
-    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer")
+    ensure_profile_workspace(conn, account_id=DEFAULT_ACCOUNT_ID)
+    workspace = create_workspace(conn, company="Acme / Corp", title="Backend Engineer", account_id=DEFAULT_ACCOUNT_ID)
     return conn, workspace["id"]
 
 
@@ -237,7 +238,7 @@ class TestGetReviewAuthorizedStatementPlan:
 
         result = get_review_authorized_cv_statement_plan(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
 
         assert result["statement_plan_artifact_id"] == plan["id"]
         assert [s["statement_id"] for s in result["projected_statement_plan"]["statements"]] == ["stmt_a"]
@@ -249,7 +250,7 @@ class TestGetReviewAuthorizedStatementPlan:
         conn, workspace_id = _workspace(tmp_path)
         plan = _seed_statement_plan(conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")])
         with pytest.raises(CvReviewProjectionError):
-            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     def test_some_reviewed_one_pending_fails_closed(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -259,7 +260,7 @@ class TestGetReviewAuthorizedStatementPlan:
         ])
         _ack(conn, workspace_id, plan["id"], "stmt_a")
         with pytest.raises(CvReviewProjectionError):
-            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     def test_original_order_preserved_in_projection(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -270,7 +271,7 @@ class TestGetReviewAuthorizedStatementPlan:
         ])
         for sid in ("stmt_c", "stmt_a", "stmt_b"):
             _ack(conn, workspace_id, plan["id"], sid)
-        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         assert [s["statement_id"] for s in result["projected_statement_plan"]["statements"]] == [
             "stmt_c", "stmt_a", "stmt_b",
         ]
@@ -280,7 +281,7 @@ class TestGetReviewAuthorizedStatementPlan:
         plan = _seed_statement_plan(conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")])
         _ack(conn, workspace_id, plan["id"], "stmt_a")
         before = copy.deepcopy(plan["payload"])
-        get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         from webapp.persistence.artifacts import get_artifact
 
         after = get_artifact(conn, plan["id"])
@@ -290,8 +291,8 @@ class TestGetReviewAuthorizedStatementPlan:
         conn, workspace_id = _workspace(tmp_path)
         plan = _seed_statement_plan(conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")])
         _ack(conn, workspace_id, plan["id"], "stmt_a")
-        first = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
-        second = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        first = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
+        second = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         assert first == second
 
 
@@ -309,7 +310,7 @@ class TestNoHistoricalAuthorizationLeakage:
             content_id="cvstatementplan_B",
         )
         with pytest.raises(CvReviewProjectionError):
-            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_b["id"])
+            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_b["id"], account_id=DEFAULT_ACCOUNT_ID)
 
     def test_same_text_under_a_different_statement_id_is_not_authorized(self, tmp_path):
         conn, workspace_id = _workspace(tmp_path)
@@ -321,9 +322,9 @@ class TestNoHistoricalAuthorizationLeakage:
         with pytest.raises(CvReviewProjectionError):
             # stmt_lookalike is still pending despite identical text to an
             # authorized statement -- authorization must never transfer by text.
-            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         _omit(conn, workspace_id, plan["id"], "stmt_lookalike")
-        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         assert result["authorized_statement_ids"] == ["stmt_original"]
 
     def test_asking_for_a_newer_unreviewed_plan_never_falls_back_to_an_older_reviewed_one(self, tmp_path):
@@ -333,14 +334,14 @@ class TestNoHistoricalAuthorizationLeakage:
             content_id="cvstatementplan_A",
         )
         _ack(conn, workspace_id, plan_a["id"], "stmt_a")
-        get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_a["id"])
+        get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_a["id"], account_id=DEFAULT_ACCOUNT_ID)
 
         plan_b = _seed_statement_plan(
             conn, workspace_id, [_statement("stmt_a", "professional_summary", "A")],
             content_id="cvstatementplan_B",
         )
         with pytest.raises(CvReviewProjectionError):
-            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_b["id"])
+            get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan_b["id"], account_id=DEFAULT_ACCOUNT_ID)
 
 
 class TestDecisionSupersession:
@@ -360,7 +361,7 @@ class TestDecisionSupersession:
         # all_authorized. Projection succeeds; it just authorizes nothing.
         result = get_review_authorized_cv_statement_plan(
             conn, workspace_id, statement_plan_artifact_id=plan["id"],
-        )
+         account_id=DEFAULT_ACCOUNT_ID)
         assert result["authorized_statement_ids"] == []
         assert result["omitted_statement_ids"] == ["stmt_a"]
 
@@ -375,5 +376,5 @@ class TestDecisionSupersession:
 
         state = resolve_cv_statement_review_state(conn, workspace_id, plan["id"])
         assert state == {"authorized": ["stmt_a"], "omitted": [], "pending": []}
-        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"])
+        result = get_review_authorized_cv_statement_plan(conn, workspace_id, statement_plan_artifact_id=plan["id"], account_id=DEFAULT_ACCOUNT_ID)
         assert result["authorized_statement_ids"] == ["stmt_a"]

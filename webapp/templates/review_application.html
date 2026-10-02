@@ -7,6 +7,18 @@
 <section class="hero compact"><div><p class="eyebrow">Prepared application</p><h1>Review and approve</h1>
   <p>State: <strong data-review-state>{{ review.state.state }}</strong>{% if review.state.reasons %} · {{ review.state.reasons | join(", ") }}{% endif %}</p>
   <p data-copy>Filling does not submit. Submission will ask you separately.</p></div></section>
+{% if rule_advisories %}
+<section class="panel" data-rule-advisories>
+  <div class="panel-heading"><h2>Your rules</h2></div>
+  {% for a in rule_advisories %}<article class="evidence-row" data-rule-advisory="{{ a.rule_id }}" data-effect="{{ a.effect }}">
+    <div>{% if a.effect == "BLOCK" %}<strong>This job conflicts with your rule: {{ a.description }}</strong>{% else %}<strong>{{ a.description }}</strong> ({{ "check this" if a.effect == "REQUIRE_USER" else a.effect | lower }}){% endif %}
+      {% if a.via_unknown %}<p>We couldn't tell from the job posting, so the rule's "when unsure" setting applies.</p>{% endif %}
+      {% if a.needs_acknowledgement %}<p>To approve anyway, confirm you want to go ahead with this application.</p>
+      <button class="button secondary" type="button" data-rule-ack="{{ a.rule_id }}" data-workspace-id="{{ ws }}">Go ahead with this application</button>
+      {% elif a.effect == "BLOCK" %}<p>You chose to go ahead with this application.</p>{% endif %}</div>
+  </article>{% endfor %}
+</section>
+{% endif %}
 
 {% if mode.mode == "delta_only" %}
 <section class="panel" data-delta-only-banner>
@@ -78,6 +90,16 @@
     {% else %}No suggested meaning; answer it as a one-off question.{% endif %}
   </div></article>{% endfor %}
 </section>{% endif %}
+{% if open_questions %}<section class="panel" data-review-section="questions">
+  <div class="panel-heading"><h2>Questions about this job</h2></div>
+  <p class="muted">The job check needs your answer before the extension can fill this application.</p>
+  {% for q in open_questions %}<form method="post" action="/workspaces/{{ ws }}/review/blockers/{{ q.id }}/answer" data-blocker="{{ q.id }}">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token or '' }}">
+    <label class="field"><span>{{ q.question }}</span><textarea name="answer" rows="2" required maxlength="2000"></textarea></label>
+    <label class="field"><span>Applies to</span><select name="scope">{% for s in q.allowed_scopes %}<option value="{{ s }}">{{ {"APPLICATION_ONLY": "This application", "SEARCH_WORKSPACE": "This search", "CANDIDATE_FACT": "Me (a fact about me)"}.get(s, s) }}</option>{% endfor %}</select></label>
+    <button class="button secondary" type="submit">Answer</button>
+  </form>{% endfor %}
+</section>{% endif %}
 <section class="panel" data-review-section="warnings">
   <div class="panel-heading"><h2>Warnings</h2></div>
   {% for w in r.warnings %}<p data-warning-level="{{ w.level }}"><strong>{{ w.level }}</strong> {{ w.message }}
@@ -90,12 +112,12 @@
   <button class="button" type="button" data-review-action="approve"{% if displayed_binding_hash %} data-displayed-binding-hash="{{ displayed_binding_hash }}"{% else %} disabled{% endif %}>Approve for filling</button>
   <button class="button secondary" type="button" data-review-action="revoke">Revoke approval</button>
 </section>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   const base = "/api/workspaces/{{ ws }}/review";
   async function send(path, init) {
     const r = await fetch(base + path, Object.assign({method: "POST"}, init || {}));
-    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert(b.detail || "Failed"); return; }
+    if (!r.ok) { const b = await r.json().catch(function () { return {}; }); window.alert((typeof b.detail === "string" && b.detail) || b.message || "Failed"); return; }
     window.location.reload();
   }
   function json(body) { return {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}; }

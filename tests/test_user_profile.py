@@ -23,6 +23,11 @@ def test_empty_input_normalizes_to_explicit_v1_defaults():
         "source_preferences": [],
         "recency_days": 14,
         "compensation": None,
+        # user-profile.v2 (Bundle 7 spec §16.1)
+        "rotation_preference": "no_preference",
+        "acceptable_rotations": [],
+        "relocation": "no",
+        "job_family_ids": [],
     }
 
 
