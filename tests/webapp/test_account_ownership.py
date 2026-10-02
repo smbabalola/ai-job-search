@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import collections
+
 import pytest
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from webapp.app import create_app
 from webapp.api.dependencies import get_account_scope, restricted_scope
-from webapp.api.route_classes import route_class_of
+from tests.webapp.route_inventory import assert_inventory_complete
 from webapp.api.handoff import get_extension_scope, get_session_scope
 from webapp.config import Settings
 from webapp.persistence.accounts import DEFAULT_ACCOUNT_ID, create_account
@@ -61,18 +62,18 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
     staff_session_routes = {"/admin/logout"}
 
     unscoped = []
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or route.path in system_routes or route.path in user_session_routes:
+    checked = collections.Counter()
+    for route in assert_inventory_complete(app):  # the effective inventory, never vacuous
+        if route.path in system_routes or route.path in user_session_routes:
             continue
         # WEBHOOK routes are authenticated by the provider's signature and
         # attribute events through provider ids, never a caller's account;
         # METRICS by the operator's bearer token (test_ops_routes).
-        route_class = route_class_of(route)
+        route_class = list(route.route_class)
         if route_class in (["PUBLIC"], ["WEBHOOK"], ["METRICS"]):
             continue
-        dependency_calls = {
-            dependency.call for dependency in route.dependant.dependencies
-        }
+        checked[route_class[0] if route_class else "UNCLASSIFIED"] += 1
+        dependency_calls = route.dependency_calls
         if route_class == ["ADMIN"]:
             if route.path not in staff_session_routes and not any(
                     hasattr(call, "admin_permission") for call in dependency_calls):
@@ -82,7 +83,49 @@ def test_every_user_facing_route_resolves_account_scope(tmp_path):
             unscoped.append(f"{','.join(sorted(route.methods or []))} {route.path}")
 
     assert unscoped == []
+    # The scope checks above really ran over the customer, extension and staff routes.
+    assert checked["USER"] >= 190 and checked["EXTENSION"] >= 25 and checked["ADMIN"] >= 37, checked
 
+
+
+def test_every_staff_route_resolves_the_permission_it_is_registered_with(tmp_path):
+    """Release pass: staff routes are found in the effective inventory and each
+    resolves get_admin_scope with a real permission. The registry the behavioural
+    permission matrix walks (ADMIN_ENDPOINTS) is exactly the served /api/admin
+    routes with the same permissions, and each console page requires what its
+    API twin does (the pages have no matrix of their own)."""
+    from webapp.api.admin_api import ADMIN_ENDPOINTS
+
+    app = create_app(_settings(tmp_path))
+    any_staff = {"/admin/reauth"}  # re-authentication is open to every staff role
+    staff_session = {"/admin/logout"}  # acts on the staff session itself (the ADMIN class requires it)
+    permission_of, problems = {}, []
+    for route in assert_inventory_complete(app):
+        if route.route_class != ("ADMIN",):
+            continue
+        scopes = [call for call in route.dependency_calls if hasattr(call, "admin_permission")]
+        for method in route.methods - {"HEAD"}:
+            key = (method, route.path)
+            if route.path in staff_session:
+                continue
+            if len(scopes) != 1:
+                problems.append(f"{key}: {len(scopes)} staff scopes")
+                continue
+            permission_of[key] = scopes[0].admin_permission
+            if permission_of[key] is None and route.path not in any_staff:
+                problems.append(f"{key}: staff scope without a permission")
+    assert len(permission_of) >= 37, permission_of  # the staff routes were really found
+    registry = {(method, path): permission for method, path, permission in ADMIN_ENDPOINTS}
+    served_api = {key: perm for key, perm in permission_of.items() if key[1].startswith("/api/admin/")}
+    assert served_api == registry, {"served_not_registered": served_api.keys() - registry.keys(),
+                                    "registered_not_served": registry.keys() - served_api.keys(),
+                                    "differs": {k for k in served_api.keys() & registry.keys()
+                                                if served_api[k] != registry[k]}}
+    for (method, path), permission in permission_of.items():
+        twin = ("GET", "/api" + path if path != "/admin" else "/api/admin/dashboard")
+        if method == "GET" and path.startswith("/admin") and twin in registry and permission != registry[twin]:
+            problems.append(f"{method} {path}: {permission} but its API twin needs {registry[twin]}")
+    assert problems == [], problems
 
 def test_account_ids_cannot_escape_the_isolated_profile_root(tmp_path):
     settings = _settings(tmp_path)

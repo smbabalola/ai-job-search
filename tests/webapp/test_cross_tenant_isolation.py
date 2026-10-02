@@ -14,12 +14,11 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from tests.webapp.auth_helpers import csrf_token, publish_legal_documents, sign_in, sign_up_and_verify
 from tests.webapp.factories import build_account_graph
-from webapp.api.route_classes import route_class_of
+from tests.webapp.route_inventory import assert_inventory_complete
 from webapp.app import create_app
 from webapp.config import Settings
 from webapp.persistence.db import connect
@@ -31,6 +30,7 @@ FALLBACK_IDS = {"run_id": "run_absent", "attempt_id": "attempt_absent", "action_
                 "delta_id": "delta_absent", "proposal_id": "proposal_absent", "candidate_id": "cand_absent",
                 "entry_id": "entry_absent", "exception_id": "exc_absent", "answer_key": "subject:contact.email",
                 "walkthrough_id": "dashboard", "source_path": "CLAUDE.md"}
+MIN_PROBES = 129  # (method, route) probes at the release pass (2026-10-02); a drop must be deliberate
 PARAM = re.compile(r"\{(\w+)(?::\w+)?\}")
 
 
@@ -46,13 +46,12 @@ def _snapshot(conn, account_id: str) -> str:
 
 
 def probe_every_route(app, b_client, graph_a, graph_b):
-    """Walk every USER/EXTENSION route with A's ids as B. Returns (leaks, probed, statuses)."""
+    """Walk every USER/EXTENSION route with A's ids as B. Returns (leaks, probed,
+    statuses, candidates); candidates counts every (method, route) the walk owed."""
     b_client.headers["X-CSRF-Token"] = csrf_token(b_client)
-    leaks, probed, statuses = [], 0, {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        klass = route_class_of(route)[0]
+    leaks, probed, statuses, candidates = [], 0, {}, 0
+    for route in assert_inventory_complete(app):  # the effective inventory, never vacuous
+        klass = route.route_class[0]
         if klass not in ("USER", "EXTENSION"):
             continue
         names = PARAM.findall(route.path)
@@ -64,6 +63,7 @@ def probe_every_route(app, b_client, graph_a, graph_b):
         for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
             if (method, route.path) in OPT_OUTS:
                 continue
+            candidates += 1
             kwargs = {"headers": headers}
             if method != "GET":
                 kwargs["json"] = {}
@@ -74,7 +74,7 @@ def probe_every_route(app, b_client, graph_a, graph_b):
                 leaks.append(f"{method} {route.path} -> {response.status_code} leaked A's data")
             if 200 <= response.status_code < 300 and method != "GET":
                 leaks.append(f"{method} {route.path} -> {response.status_code} accepted a write on A's ids")
-    return leaks, probed, statuses
+    return leaks, probed, statuses, candidates
 
 
 @pytest.fixture
@@ -103,11 +103,13 @@ def test_account_b_cannot_read_or_change_account_a_through_any_route(world):
     conn = connect(settings)
     before = _snapshot(conn, a_account)
     conn.close()
-    leaks, probed, statuses = probe_every_route(app, b_client, graph_a, graph_b)
+    leaks, probed, statuses, candidates = probe_every_route(app, b_client, graph_a, graph_b)
     conn = connect(settings)
     after = _snapshot(conn, a_account)
     conn.close()
-    assert probed > 50
+    # Every customer/extension route with ids was probed, and that set did not
+    # quietly shrink (the release-pass inventory had MIN_PROBES such calls).
+    assert probed == candidates >= MIN_PROBES, (probed, candidates)
     # The probes reached real handlers: most are refused by ownership checks
     # (404), not by auth or CSRF (401/403 on every call would prove nothing).
     assert statuses.get(404, 0) >= probed // 3, statuses
@@ -133,7 +135,7 @@ def test_the_harness_catches_a_route_that_ignores_ownership(world):
         finally:
             conn.close()
 
-    leaks, _, _ = probe_every_route(app, b_client, graph_a, graph_b)
+    leaks, _, _, _ = probe_every_route(app, b_client, graph_a, graph_b)
     assert any("__leaky" in leak for leak in leaks), leaks
 
 

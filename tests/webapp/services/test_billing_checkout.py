@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from product.entitlements import load_catalog
+from tests.webapp.route_inventory import all_routes
 from tests.webapp.test_deployment_modes import hosted_settings
 from webapp.app import create_app
 from webapp.billing.fake import FakeBillingProvider, WebhookSignatureInvalid
@@ -240,8 +241,9 @@ def test_the_fake_provider_is_never_used_in_hosted_mode():
 def test_dev_billing_pages_exist_only_in_local_mode(tmp_path):
     local = create_app(Settings(db_path=tmp_path / "db.sqlite3"))
     hosted = create_app(hosted_settings())
-    local_paths = {getattr(route, "path", "") for route in local.routes}
-    hosted_paths = {getattr(route, "path", "") for route in hosted.routes}
+    local_paths = {route.path for route in all_routes(local)}
+    hosted_paths = {route.path for route in all_routes(hosted)}
+    assert "/api/billing/checkout" in hosted_paths, "the hosted inventory is the real one (never vacuous)"
     assert "/dev/billing/checkout/{session_id}" in local_paths
     assert not any(path.startswith("/dev/billing") for path in hosted_paths)
 

@@ -3,6 +3,7 @@ reach SUBMIT authority, no route path submits (except the pre-existing
 handoff confirm-submission), and nothing lifts a quarantine."""
 from __future__ import annotations
 
+from tests.webapp.route_inventory import all_routes
 import ast
 from pathlib import Path
 
@@ -36,12 +37,14 @@ def test_fill_modules_never_reach_submit_authority(path):
 
 def _routes(tmp_path):
     app = create_app(Settings(db_path=tmp_path / "s.sqlite3"))
-    return [(sorted(getattr(r, "methods", None) or []), r.path) for r in app.routes]
+    return [(sorted(r.methods), r.path) for r in all_routes(app)]
 
 
 def test_no_route_path_submits_except_the_confirmation_and_the_6e_a_human_routes(tmp_path):
     from tests.webapp.test_submit_structure import SUBMIT_ROUTES_6E_A
-    offenders = [p for _, p in _routes(tmp_path) if "submit" in p.lower() and not p.endswith("/confirm-submission")
+    paths = {p for _, p in _routes(tmp_path)}
+    assert SUBMIT_ROUTES_6E_A <= paths, "the inventory sees the 6E-A routes (never vacuous)"
+    offenders = [p for p in sorted(paths) if "submit" in p.lower() and not p.endswith("/confirm-submission")
                  and p not in SUBMIT_ROUTES_6E_A]
     assert offenders == []
 

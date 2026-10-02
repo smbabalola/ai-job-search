@@ -9,6 +9,7 @@ import re
 
 import pytest
 
+from tests.webapp.route_inventory import all_routes
 from tests.webapp.api.test_submit_routes import (  # noqa: F401
     Clock, api, app_call, to_dispatched, to_ready,
 )
@@ -110,7 +111,7 @@ def test_prepared_list_and_dossier_show_the_status_without_cleartext(ui):
 
 def test_the_submit_route_inventory_is_exact(ui):
     ext, client, w = ui
-    registered = {r.path for r in client.app.routes if "submit" in getattr(r, "path", "").lower()}
+    registered = {r.path for r in all_routes(client.app) if "submit" in r.path.lower()}
     assert registered - {"/api/handoff/sessions/{session_id}/confirm-submission"} == SUBMIT_ROUTES_6E_A
 
 
