@@ -93,7 +93,21 @@ def test_hosted_mode_adds_hsts():
             captured.update({k.decode(): v.decode() for k, v in message["headers"]})
 
     import asyncio
+    import threading
 
     middleware = SecurityHeadersMiddleware(app, hosted=True)
-    asyncio.run(middleware({"type": "http", "path": "/", "headers": [], "state": {}}, None, send))
+    # Its own thread and event loop: in a full single-process run pytest-playwright's
+    # session keeps an event loop running on the main thread, where asyncio.run refuses.
+    errors = []
+
+    def call():
+        try:
+            asyncio.run(middleware({"type": "http", "path": "/", "headers": [], "state": {}}, None, send))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread below
+            errors.append(exc)
+
+    thread = threading.Thread(target=call)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive() and not errors, errors
     assert captured["strict-transport-security"] == "max-age=31536000; includeSubDomains"
