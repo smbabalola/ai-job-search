@@ -57,6 +57,45 @@ def test_a_refused_upload_returns_its_code(client):
     assert client.get("/api/cvs").json()["items"] == []
 
 
+
+def _near_limit_pdf() -> bytes:
+    """A valid PDF just under the 10 MiB limit (an incompressible attachment)."""
+    import io
+    import os
+
+    from pypdf import PdfWriter
+
+    from webapp.services.cv_library import MAX_UPLOAD_BYTES
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_attachment("padding.bin", os.urandom(MAX_UPLOAD_BYTES - 64 * 1024))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    content = buffer.getvalue()
+    assert MAX_UPLOAD_BYTES - 128 * 1024 < len(content) <= MAX_UPLOAD_BYTES, len(content)
+    return content
+
+
+def test_a_valid_upload_just_under_the_limit_is_accepted_and_one_byte_over_is_the_products_refusal(client):
+    """Release pass (Starlette 1.x / python-multipart 0.0.3x add their own multipart
+    limits): the framework must not refuse what the product accepts (10 MiB), and
+    an over-limit file gets the product's code, not a framework 400/413."""
+    from webapp.services.cv_library import MAX_UPLOAD_BYTES
+
+    item_id = _create(client).json()["item"]["id"]
+    near = _near_limit_pdf()
+    accepted = client.post(f"/api/cvs/{item_id}/versions", data={"note": "near the limit"},
+                           files={"file": ("cv.pdf", near, "application/pdf")},
+                           headers={"X-CSRF-Token": csrf_token(client)})
+    assert accepted.status_code == 201, accepted.text[:300]
+    version_id = accepted.json()["version"]["id"]
+    assert client.get(f"/api/cvs/{item_id}/versions/{version_id}/download").content == near
+    over = _create(client, content=b"%PDF-" + b"0" * (MAX_UPLOAD_BYTES + 1 - 5), filename="cv.pdf",
+                   media_type="application/pdf")
+    assert over.status_code == 400 and over.json()["error"] == "DOCUMENT_REJECTED", over.text[:300]
+    assert over.json()["detail"]["code"] == "TOO_LARGE"
+
 def test_the_free_item_limit_refuses_a_new_cv_but_existing_ones_stay_usable(client):
     for n in range(5):  # Free: library.cv_items 5 (dev catalog)
         assert _create(client, title=f"CV {n}").status_code == 201
